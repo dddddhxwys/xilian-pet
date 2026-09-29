@@ -17,8 +17,10 @@
 
 import {
   createPetState,
-  normalizeEvent,
+  normalizeSessionEvent,
+  normalizeStreamChunk,
   reducePetEvent,
+  reduceStreamChunk,
   releaseHeld,
   snapshot,
 } from './reducer.js'
@@ -108,33 +110,64 @@ export function apply(ctx, config = {}) {
     if (rawShapes.length > captureRawShapes * 4) rawShapes.splice(0, rawShapes.length - captureRawShapes * 4)
   }
 
-  /** 观测入口：归一化 + 记形状 + 推帧。永不返回决策。 */
-  function observe(channel, raw) {
+  function warn(message) {
     try {
-      noteRawShape(channel, raw)
-      const ev = normalizeEvent(raw)
+      ctx.logger?.warn?.(`xilian-pet: ${message}`)
+    } catch {
+      /* logger 不可用时静默，绝不让观测逻辑影响宿主 */
+    }
+  }
+
+  /** 观测 session/event。真实签名是 (session, event) 两个参数。 */
+  function observeSession(session, event) {
+    try {
+      noteRawShape('session/event', { sessionId: session?.id, event })
+      const ev = normalizeSessionEvent(session, event)
       if (ev === null) return
       const result = reducePetEvent(state, ev, Date.now())
       state = result.state
       publishFrames(result.frames)
     } catch (error) {
-      ctx.logger?.warn?.(`xilian-pet: observe(${channel}) failed: ${error?.message ?? error}`)
+      warn(`observe(session/event) failed: ${error?.message ?? error}`)
+    }
+  }
+
+  /** 观测 agent/assistant-stream。真实签名是 ({ agent, frame }) 一个对象。 */
+  function observeStream(payload) {
+    try {
+      noteRawShape('agent/assistant-stream', { agentId: payload?.agent?.id, frameType: payload?.frame?.type })
+      const chunk = normalizeStreamChunk(payload)
+      if (chunk === null) return
+      const result = reduceStreamChunk(state, chunk, Date.now())
+      state = result.state
+      publishFrames(result.frames)
+    } catch (error) {
+      warn(`observe(assistant-stream) failed: ${error?.message ?? error}`)
     }
   }
 
   const disposers = []
 
-  // ── 1. 事件观测（只读，不干预 agent 行为）────────────────────────────
-  disposers.push(ctx.on('session/event', (payload) => observe('session/event', payload)))
-  disposers.push(ctx.on('agent/assistant-stream', (chunk) => observe('agent/assistant-stream', chunk)))
-
-  // tools/pre-execute：只观察审批/提问类工具活动，必须返回 undefined
-  disposers.push(
-    ctx.on('tools/pre-execute', (payload) => {
-      observe('tools/pre-execute', payload)
-      return undefined
-    }),
-  )
+  // ── 1. 事件观测（只读通知，返回值无影响）────────────────────────────
+  //
+  // 🚨 血泪教训，不要再犯：**绝不能订阅 tools/pre-execute 或 tools/post-execute。**
+  //
+  // 它们是 **waterfall**，官方是这么用的：
+  //     const gate = await ctx.waterfall(carrier, 'tools/pre-execute', exec,
+  //                                     () => Promise.resolve({ kind: 'allow' }))
+  //     const ask = gate.kind === 'ask' ? ... : ...
+  // 约定监听器必须返回 `next()`（或一个决策对象）来把链路传下去。
+  // 我曾在上面注册 `(payload) => { observe(); return undefined }` —— 没调用 next()，
+  // 于是链路里的值被冲成 undefined，下游 `gate.kind` 抛
+  //   TypeError: Cannot read properties of undefined (reading 'kind')
+  // 后果：**整个 profile 的每一次工具调用全部失败**（read/glob/grep 也不例外），
+  // 而且重启 DSH 也不恢复 —— 插件是开机即加载的。
+  //
+  // 如果以后要做 A7 的审批感知，正确写法是：
+  //     ctx.on('tools/pre-execute', (exec, next) => { observe(exec); return next() })
+  // 并且必须在真实宿主上验证过再提交。
+  disposers.push(ctx.on('session/event', (session, event) => observeSession(session, event)))
+  disposers.push(ctx.on('agent/assistant-stream', (payload) => observeStream(payload)))
 
   // ── 2. 路由注册 ────────────────────────────────────────────────────
   function register(method, path, handler, label) {

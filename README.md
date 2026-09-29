@@ -155,6 +155,32 @@ tools/
    - **你自己终端里跑没有这个限制**：`& $NODE packages\pet-shell\scripts\launch.mjs`
    - 启动脚本内置探测：如果 Chromium 沙箱初始化失败会自动追加 `--no-sandbox --disable-gpu` 并打印原因。
 
+### ⚠️ 挂载插件前必读：一次真实事故（2026-09-29）
+
+第一次挂载时，本会话**所有**工具调用立刻失效，报 harness 内部错误 `Cannot read properties of undefined (reading 'kind')`，重启 DSH 也不恢复。原因不是环境，**是插件自身的 bug**：
+
+`tools/pre-execute` 是 **waterfall** 事件，官方约定监听器必须 `return next()`：
+
+```js
+const gate = await ctx.waterfall(carrier, 'tools/pre-execute', exec, () => ({ kind: 'allow' }))
+const askResolution = gate.kind === 'ask' ? ... : ...   // ← gate 被冲成 undefined 就死在这
+```
+
+我原来写的是 `(payload) => { observe(); return undefined }` —— 漏了 `next()`，把链路值冲掉，于是**整个 profile 的每一次工具调用全废**。已修复，并补了 `runWaterfall()` 回归测试 + 负向对照（见 `tools/check-plugin.mjs`）。
+
+顺带修掉的另外两个错（同样靠读源码核实）：`session/event` 的真实签名是 `(session, event)` 两参数、`agent/assistant-stream` 是 `{ agent, frame }`；所有事件类型名也已从"我猜的"换成 asar 里普查出的真实字面量。
+
+**两条规矩**：
+
+1. 观测插件**只订阅通知型事件**（`session/event`、`agent/assistant-stream`）。要订阅 waterfall 事件必须 `return next()`，并且必须在真实宿主上验证过。
+2. **改 profile patch 前必备份**，回滚命令事先讲清楚：
+
+```powershell
+# 安装脚本会自动生成 .bak-<时间戳>，回滚就是拷回去再重启 DSH
+Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间戳>" `
+          "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml" -Force
+```
+
 ### 挂载 Host 插件（两种方式，任选其一）
 
 - **方式 1｜bundle 安装**：把 `packages/pet-plugin` 作为 bundle 装进 `desktop` profile（走 GUI 插件管理页最稳）。包内 `cordis.patch.yml` 已写好 insert 行。
