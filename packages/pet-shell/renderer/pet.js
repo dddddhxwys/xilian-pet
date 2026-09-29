@@ -235,3 +235,7 @@ buildAlphaMap().catch((error) => {
 updateInteractive(false)
 status.dataset.link = 'down'
 api.log(`渲染端已加载（href=${location.href.slice(-40)}）`)
+// 握手：handler 都注册好了，请主进程补发最近的连接状态与快照。
+// 不做这一步，主进程在页面加载完成前发出的 'pet:link' 会被直接丢掉，
+// 表现就是"日志说 SSE 已连接，状态点却是红的"（实测踩过）。
+api.ready()

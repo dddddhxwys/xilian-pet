@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('xilianPet', {
   moveBy: (dx, dy) => ipcRenderer.send('pet:move-by', Math.round(dx), Math.round(dy)),
   /** 反向操控：prompt / interrupt / focus */
   control: (action, payload) => ipcRenderer.invoke('pet:control', action, payload),
+  /** 通知主进程：渲染端 handler 已注册完毕，可以补发最近状态了 */
+  ready: () => ipcRenderer.send('pet:ready'),
   log: (message) => ipcRenderer.send('pet:log', String(message)),
   quit: () => ipcRenderer.send('pet:quit'),
 })

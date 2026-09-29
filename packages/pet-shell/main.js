@@ -55,6 +55,25 @@ function saveWindowState(win) {
 let sseRequest
 let sseRetryMs = 1000
 let sseConnected = false
+let retryTimer
+
+// 实测踩过：createWindow() 之后立刻连 SSE，'pet:link' 会在渲染端注册好 handler
+// **之前**发出去，被直接丢掉 —— 于是日志说"SSE 已连接"，右下角状态点却一直是红的。
+// 所以主进程记住最近一次的连接状态与快照帧，等渲染端发来 'pet:ready' 时补发。
+let lastLink = { connected: false }
+let lastSnapshot
+
+/** 页面还在加载时发送会丢，统一走这里判断 */
+function send(win, channel, payload) {
+  if (win.isDestroyed()) return
+  if (win.webContents.isLoading()) return
+  win.webContents.send(channel, payload)
+}
+
+function pushLink(win, link) {
+  lastLink = link
+  send(win, 'pet:link', link)
+}
 
 function startSse(win) {
   const url = new URL(`${ROUTE_PREFIX}/events`, DSH_URL)
@@ -68,7 +87,7 @@ function startSse(win) {
     sseConnected = true
     sseRetryMs = 1000
     log(`SSE 已连接 ${url.href}`)
-    win.webContents.send('pet:link', { connected: true, url: url.href })
+    pushLink(win, { connected: true, url: url.href })
 
     res.setEncoding('utf8')
     let buffer = ''
@@ -81,7 +100,9 @@ function startSse(win) {
         for (const line of block.split('\n')) {
           if (!line.startsWith('data:')) continue
           try {
-            win.webContents.send('pet:frame', JSON.parse(line.slice(5).trim()))
+            const frame = JSON.parse(line.slice(5).trim())
+            if (frame.type === 'snapshot') lastSnapshot = frame
+            send(win, 'pet:frame', frame)
           } catch (error) {
             log('frame parse failed:', error.message)
           }
@@ -90,24 +111,26 @@ function startSse(win) {
     })
     res.on('end', () => {
       sseConnected = false
-      win.webContents.send('pet:link', { connected: false })
+      pushLink(win, { connected: false })
       scheduleRetry(win)
     })
   })
   sseRequest.on('error', (error) => {
     sseConnected = false
     log(`SSE 连接失败：${error.message}`)
-    win.webContents.send('pet:link', { connected: false, error: error.message })
+    pushLink(win, { connected: false, error: error.message })
     scheduleRetry(win)
   })
 }
 
 function scheduleRetry(win) {
+  clearTimeout(retryTimer)
   const delay = sseRetryMs
   sseRetryMs = Math.min(sseRetryMs * 2, 10_000)
-  setTimeout(() => {
+  retryTimer = setTimeout(() => {
     if (!win.isDestroyed()) startSse(win)
-  }, delay).unref?.()
+  }, delay)
+  retryTimer.unref?.()
 }
 
 /** 启动自检：直接问插件的 /health，一眼看出插件到底装没装 */
@@ -276,6 +299,13 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('pet:control', (_event, action, payload) => postControl(action, payload))
   ipcMain.on('pet:log', (_event, message) => log('[renderer]', message))
+  // 渲染端注册好 handler 之后握手一次，补发最近的连接状态与快照帧
+  ipcMain.on('pet:ready', () => {
+    if (win.isDestroyed()) return
+    win.webContents.send('pet:link', lastLink)
+    if (lastSnapshot !== undefined) win.webContents.send('pet:frame', lastSnapshot)
+    log(`渲染端就绪，补发 lastLink=${JSON.stringify(lastLink)} snapshot=${lastSnapshot !== undefined}`)
+  })
   ipcMain.on('pet:quit', () => app.quit())
 
   // 点击穿透下窗口收不到键盘，用全局快捷键退出
