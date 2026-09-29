@@ -1,0 +1,11 @@
+{
+  "name": "xilian-pet-shell",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Electron 透明置顶窗外壳：加载宠物页面，订阅 Host 插件的 SSE 事件",
+  "main": "main.js",
+  "devDependencies": {
+    "electron": "latest"
+  }
+}

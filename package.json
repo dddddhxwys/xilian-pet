@@ -1,0 +1,13 @@
+{
+  "name": "xilian-pet",
+  "private": true,
+  "type": "module",
+  "description": "西莲桌宠 —— DSH 桌面透明置顶窗桌宠（Phase 0 最小骨架）",
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "pet": "node packages/pet-shell/scripts/launch.mjs",
+    "pet:install": "node packages/pet-shell/scripts/launch.mjs --install-only",
+    "plugin:check": "node tools/check-plugin.mjs",
+    "asset:placeholder": "node tools/make-placeholder.mjs"
+  }
+}

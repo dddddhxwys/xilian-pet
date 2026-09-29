@@ -116,6 +116,8 @@ DSH Host 插件 (Node, 零外部依赖)
 
 1. ~~**环境与格式确认**~~ → **已于 2026-09-29 完成**：本机 DSH = `0.1.7-rc.1`；`dsh.bundle.patch`、`shell.overlay`(40 处)、`settings.section`(39)、`session/event`(148)、`agent/assistant-stream`(12)、`agent/pre-step`(76)、`tools/pre-execute`(45)、`tools/post-execute`(50)、`agent/turn-stopping`(18) 等扩展点**已在 `app.asar` 内逐一确认存在**；插件安装通道 = GUI 插件管理页。**剩余未决项**：是否需要一份 DSH 源码 checkout 以启用 `dev:web` HMR 重建链。详见 `chajian/环境体检报告.md`。
 2. **最小插件骨架**：Host 插件注册 SSE + 静态资源；client 端一个 div 出现在右下角（先不放 Live2D），跑通 A1/A2/A3。
+   → **2026-09-29 已按修订决策落地（改为独立 Electron 窗、不写 client 插件）**：Host 插件（纯 ESM、零依赖、零构建）+ Electron 透明置顶窗 + 程序化占位素材 + 28 项自测全部通过。
+   ⚠️ 尚未装进 profile（沙箱写边界）→ **A1/A2 待验证**；窗口未实际启动（Electron 下载中）→ **A3/A8/A9 待验证**。见 `README.md` §六。
 3. **事件层**：`session/event` + `agent/assistant-stream` 归一化 → `PetReducer` 纯函数 + 单测（Node 内置 `node --test`，零依赖）；跑通 A4/A5。
 4. **Live2D 渲染**：引入 Cubism Core + pixi + pixi-live2d-display（走官方示例模型，留意许可），实现状态→动作/表情映射；命中测试 alpha 掩码；跑通 A9/A10。
 5. **双向操控**（差异点 1）：气泡输入 → `followup()`；中断按钮 → `cancel()`；跑通 A6。

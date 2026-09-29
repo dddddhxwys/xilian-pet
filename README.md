@@ -104,7 +104,72 @@ git -c http.sslBackend=openssl ls-remote https://gitee.com/...
 
 ---
 
-## 六、待人工处理的项（沙箱外才能做）
+## 六、Phase 0 骨架：怎么跑
+
+```
+packages/
+  pet-plugin/            DSH Host 插件（纯 ESM、零依赖、零构建）
+    index.js             路由 + SSE + 会话事件观测 + 反向操控
+    reducer.js           纯函数状态机（优先级聚合 + 最短保持时间）
+    cordis.patch.yml     挂载层（bundle 方式 / 免安装直挂方式）
+  pet-shell/             Electron 透明置顶窗
+    main.js              透明置顶 + 点击穿透 + 窗口状态持久化 + SSE 订阅
+    preload.cjs          最小 IPC 桥
+    renderer/            宠物页面（alpha 掩码命中、拖拽、气泡、派活输入条）
+    scripts/launch.mjs   启动脚本（处理 ELECTRON_RUN_AS_NODE 等本机坑）
+tools/
+  check-plugin.mjs       插件自测：mock ctx + 真 HTTP + 真 SSE 往返
+  make-placeholder.mjs   程序化生成占位素材
+  inspect-png.mjs        校验素材透明通道与关键像素
+```
+
+### 三条命令
+
+```powershell
+# 1. 插件自测（不需要 DSH、不需要安装）
+& $NODE tools\check-plugin.mjs
+
+# 2. 生成 / 重生成占位素材
+& $NODE tools\make-placeholder.mjs
+
+# 3. 桌面窗（启动时会先自检 Host 插件是否在线）
+& $NODE packages\pet-shell\scripts\launch.mjs --check   # 只自检，不开窗
+& $NODE packages\pet-shell\scripts\launch.mjs           # 开窗
+```
+
+（`$NODE` = 内置 node，见 §二。）
+
+### 挂载 Host 插件（两种方式，任选其一）
+
+- **方式 1｜bundle 安装**：把 `packages/pet-plugin` 作为 bundle 装进 `desktop` profile（走 GUI 插件管理页最稳）。包内 `cordis.patch.yml` 已写好 insert 行。
+- **方式 2｜免安装直挂**：把 `packages/pet-plugin/cordis.patch.yml` 里的 `name` 换成 `index.js` 的绝对路径或 file URL，粘进 profile 的 `cordis.patch.yml`（官方契约明确支持「包标识符 / 绝对文件系统路径 / file URL」）。
+
+装好后自检：`GET http://127.0.0.1:19387/xilian-pet/health` 应返回 `{"ok":true,...}`。
+（本机 shell 里 `curl` 走 Schannel 会失败 —— 见 §三，用 `node -e` 或窗口的启动自检代替。）
+
+### 关键设计决定（都写在代码注释里）
+
+| 决定 | 原因 |
+|---|---|
+| 路由前缀用 `/xilian-pet`，不用 `/api/xilian-pet` | `/api` 是 `dsh-client-connection` 的 prefix 路由，带自己的准入校验（不过直接 401）；exact 路由挂在它下面会被前缀规则吞掉 |
+| 全部注册成 `kind: 'exact'` | 精确匹配优先于前缀匹配，不会被任何前缀路由抢先 |
+| 反向操控拿不到 agent 时返回 **503** 而不是假装成功 | 能区分"插件在但 API 不对"和"插件根本没装" |
+| 会话聚焦返回 **501** | Phase 0 未实现，不做假成功 |
+| SSE 订阅放在 Electron **主进程** | 渲染端 origin 是 `null`（`file://`），EventSource 会撞 CORS；主进程订阅没这问题，重连也好管 |
+| 窗口位置存包内 `.state/` | Electron 默认 userData 在 AppData，agent shell 沙箱写不进去 |
+| 点击穿透默认开启 + `forward: true` | 透明区域不挡下层应用，同时仍收得到 `mousemove` 做 alpha 命中测试 |
+| 素材用程序化占位图 | 零版权风险，且 alpha 掩码命中测试现在就能验证 |
+
+### 尚未验证 / 待接线（诚实标注）
+
+- **插件尚未真正装进 profile**（沙箱写边界，见 §三）→ 验收项 A1/A2 未验证
+- **窗口未在本机实际启动过**（Electron 依赖仍在下载）→ A3/A8/A9 待验
+- **事件载荷的真实形状未知**：`session/event` 的字段归一化是**推测**。插件已内置 `GET /xilian-pet/debug/shapes` 记录真实载荷样本，装好后先看它再定案，不要照现在这份猜测继续加功能
+- `agent.followup()` / `agent.cancel()` 的确切方法名待真实运行确认（代码已做多候选探测与降级）
+
+---
+
+## 七、待人工处理的项（沙箱外才能做）
 
 1. `~/.dsh/storages/workspace.json` 仍注册着 `F:\dsh\project\chajian`、`C:\Users\project`、`default-workspace` 三个历史工作区 → 可清理。
 2. `F:\dsh\project\chajian` 仍有同内容副本 + 上一轮遗留的 `.write-probe` → 可删除（**保留 C: 这一份为唯一权威**）。
@@ -113,10 +178,15 @@ git -c http.sslBackend=openssl ls-remote https://gitee.com/...
 
 ---
 
-## 七、目录
+## 八、目录
 
 ```
 PLAN.md                             调研结论与技术验证计划（含验收标准 A1–A10）
+README.md                           本文（环境事实 / 边界 / 怎么跑）
+package.json · pnpm-workspace.yaml  工作区与 pnpm 配置（storeDir、hoisted、npmmirror）
+packages/pet-plugin/                DSH Host 插件（零依赖、零构建）
+packages/pet-shell/                 Electron 透明置顶窗
+tools/                              自测、素材生成、素材校验
 chajian/
   环境体检报告.md                    2026-09-29 环境隐患实测报告（13 项 + 证据）
   dsh-desktop-pet-选型对比.md        独立原生透明置顶窗路线选型

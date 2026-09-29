@@ -6,8 +6,13 @@ out/
 build/
 *.log
 
+# 运行时状态（窗口位置、Electron 用户数据）
+packages/*/.state/
+.state/
+
 # 本地环境探针（诊断脚本请勿入库）
 _env_*.mjs
+tools/_probe-*.mjs
 
 # 编辑器/系统
 .vscode/

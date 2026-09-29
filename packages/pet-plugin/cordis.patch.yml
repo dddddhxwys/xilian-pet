@@ -1,0 +1,25 @@
+# 西莲桌宠 Host 插件挂载层
+#
+# 两种挂载方式，任选其一：
+#
+# 【方式 1｜bundle 安装（推荐，走 GUI 插件管理页）】
+#   本文件随 packages/pet-plugin 作为 bundle 一起被安装，下面的 insert 会用包名解析。
+#
+# 【方式 2｜免安装直挂（最快，改 profile 的 cordis.patch.yml）】
+#   把下面 name 换成 index.js 的绝对路径或 file URL，即可完全不安装包：
+#     - insert:
+#         - id: xilian-pet
+#           name: 'file:///C:/Users/怒C大伟出奇迹/dsh-projects/xilian%20pet/packages/pet-plugin/index.js'
+#   （官方契约：插入条目的 name 可以是包标识符、绝对文件系统路径或 file URL）
+
+- insert:
+    - id: xilian-pet
+      name: '@local/xilian-pet-plugin'
+      config:
+        # 路由前缀。刻意避开 /api —— /api 是 dsh-client-connection 的 prefix 路由，
+        # 带自己的准入校验（未通过直接 401），exact 路由挂在它下面会被前缀规则吞掉。
+        pathPrefix: '/xilian-pet'
+        # 保留最近多少条原始事件的“形状样本”，用于在真实运行中确认事件载荷结构
+        captureRawShapes: 20
+        # 状态切换最短保持时间（毫秒），防事件突发导致闪烁
+        minHoldMs: 500

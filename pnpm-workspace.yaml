@@ -1,0 +1,26 @@
+# 西莲桌宠 · pnpm workspace
+# 注意：本机 agent shell 的沙箱只允许写「工作区 + TEMP」，
+# 而 pnpm 默认 store 在 %LOCALAPPDATA%\pnpm（工作区外，会被拒），
+# 所以这里显式把 storeDir 指到工作区内。
+packages:
+  - packages/*
+
+storeDir: .pnpm-store
+
+# Windows + 本机路径（含空格/非 ASCII）下，pnpm 默认的 isolated linker 会报
+# [ERR_PNPM_SYMLINK_FAILED] [symlinkAllModules] Maximum call stack size exceeded。
+# 改用 hoisted 布局 + 复制式导入（不建符号链接）规避。
+nodeLinker: hoisted
+packageImportMethod: copy
+
+# 本机到 registry.npmjs.org 很慢（单请求 14–30s），导致依赖下载超时失败。
+# 统一走 npmmirror，并放宽超时/重试。
+registry: https://registry.npmmirror.com
+fetchTimeout: 180000
+fetchRetries: 5
+networkConcurrency: 4
+
+# pnpm 10+ 默认拦截依赖的构建脚本；Electron 的 postinstall 负责下载二进制，
+# 必须显式放行，否则装完没有可执行文件。
+onlyBuiltDependencies:
+  - electron
