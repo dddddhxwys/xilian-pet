@@ -83,7 +83,13 @@ git -c http.sslBackend=openssl ls-remote https://gitee.com/...
 ## 四、开发循环现状（重要）
 
 - HMR **传输**随包提供（`@deepseek-ai/dsh-client-hmr`），HMR 用的系统通道是 `GET /plugins/events`。
-- ⚠️ **但 `pnpm run dev:web` 重建 watcher 没有在跑**，且本机**没有可编辑的 DSH 源码树**（只有打包好的 `app.asar`）。因此"改插件源码 → 浏览器自动热重载"这条链**当前不可用**；自研插件改完代码需要重新安装。
+- ⚠️ **缺的不是 Host，而是"重建 + 盖戳"那一步。** 官方 `dsh-client-hmr` README 原文：
+  > *Run `pnpm run dev:web`, which starts the host and the rebuild watchers together (`--no-serve` attaches only the watchers to a host started elsewhere, **as does any watch process using the shared Client tsdown preset**). The preset stamps `lib/client.js` after all package-local chunks are written…*
+  >
+  > *The Host half watches each package's stamped entry artifact and serves `/plugins/events`.*（`pollIntervalMs` 默认 500ms）
+
+  即：**正在跑的桌面版本身就是 Host**，它会 stat-poll **已安装插件**的 `lib/client.js`（比 mtime/ctime/size，不哈希内容）。只要把重建并盖过戳的产物写到插件安装位置，浏览器就会自动热换（**无需刷新、无需重启**）。本机缺的只有两件：① `dev:web` 脚本与"共享 Client tsdown 预设"都在源码仓库里，本机只有 `app.asar`；② 插件安装目录在沙箱写边界之外。
+- 另注（原文）：*"Web transport only — Electron installation and backend restart handling do not use this SSE path."*
 - ⚠️ **`GET /plugins/events` 推的是插件图变化与重建通知（`graph` / `rebuilt` 帧），不是 agent 状态**，拿不到"思考中/工具调用/余额"。要拿 agent 状态必须按 `PLAN.md` 第三节自建 Host 插件：监听 `session/event` + `agent/assistant-stream`，再以自己的同源 SSE 路由推给桌宠壳。
 - 本机已验证**存在**的扩展点：`shell.overlay`、`settings.section`、`session/event`、`agent/assistant-stream`、`agent/pre-step`、`agent/turn-stopping`、`tools/pre-execute`、`tools/post-execute`、`dsh.bundle.patch`。
 
