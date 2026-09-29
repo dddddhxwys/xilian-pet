@@ -134,6 +134,8 @@ DSH Host 插件 (Node, 零外部依赖)
 | ~~本机 workspace ACL 异常（`SetNamedSecurityInfoW failed (Win32 5)`）~~ | ✅ **已解决** | — | 工作区已迁至 `C:\…\dsh-projects\xilian pet`，沙箱授权 ACE 正常。**注意 F: 旧路径仍无授权，搬回去即复现** |
 | **沙箱写边界 = 工作区 + TEMP** | ⚠️ **现存（高）** | `~/.dsh/profiles/desktop`（插件安装目标）与 pnpm store（`%LOCALAPPDATA%\pnpm`）写入均被拒 → 命令行装插件必失败，每步需提权 | 装插件走 **GUI 插件管理页**；纯前端依赖实验用 `pnpm --store-dir .\.pnpm-store add …`；必要时对安装命令提权 |
 | **agent shell 内 Schannel TLS 全挂** | ⚠️ **现存（高）** | `curl` / PowerShell / `git` 默认后端的 HTTPS 全部失败（`SEC_E_NO_CREDENTIALS`）→ 任何靠 PS/curl 下载的脚本会静默失败 | 联网固定走 Node 系（npm/pnpm/`node fetch`）；git 加 `-c http.sslBackend=openssl`；网页抓取用 `web_fetch` |
+| **Electron / Chromium 无法在 agent shell 内启动** | ⚠️ **现存（高，2026-09-29 实测）** | Chromium 的 Mojo IPC 走**命名管道**，受限沙箱禁止创建 → `FATAL platform_channel.cc: Check failed: 拒绝访问 (0x5)`；`--no-sandbox` 也绕不过。**我无法自己运行宠物窗口做验证** | 启动脚本已内置探测与自动放宽（`--no-sandbox --disable-gpu`）；实机验证需提权单次执行，或由你在自己终端跑（见 `README.md` §六） |
+| **Electron 二进制安装链路在本机是坏的** | ⚠️ **现存（中）** | postinstall 被 pnpm 拦；放行后 `install.js` 因缓存目录在工作区外而失败、改到工作区内仍空转；镜像速度差 130 倍（npmmirror 85 KB/s vs 华为云 11 MB/s） | 用 `tools/fetch-electron.mjs`（镜像探测 + 8 路分段并行 + 纯 JS 解压）；`tools/probe-mirrors.mjs` 可复测 |
 | **`github.com` / `raw.githubusercontent.com` 不可达** | ⚠️ **现存（中）** | GitHub 源码 clone、raw 链接抓取失败 | 走 npm registry、`codeload.github.com` tarball 或镜像 |
 | **没有可编辑的 DSH 源码树 → `dev:web` HMR 重建链不可用** | ⚠️ **现存（中）** | 自研插件改代码后无法自动热重载，需重新安装；官方的"改一行就重载"循环拿不到 | 先决定是否需要一份 DSH 源码 checkout；不需要就接受"改→重装"循环 |
 | **插件安装命令不存在** | ⚠️ **现存（中）** | 文档里的 `dsh plugin --profile desktop add <name>` 会 command not found（PATH 无 `dsh`；npm 上 `deepseek-harness` 是占位包） | 用 GUI 插件管理页；CLI 调用方式待确认 |

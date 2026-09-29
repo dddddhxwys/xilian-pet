@@ -44,9 +44,14 @@ const probes = [
   ['身体外左下', 20, 240],
 ]
 
-for (const [label, x, y] of probes) {
-  const [r, g, b, a] = px(x, y)
-  console.log(`  ${label.padEnd(18)} (${String(x).padStart(3)},${String(y).padStart(3)})  rgba(${r},${g},${b},${a})`)
+if (W === 256 && H === 256) {
+  // 这些坐标是针对 256×256 的占位素材标的，换尺寸就不适用
+  for (const [label, x, y] of probes) {
+    const [r, g, b, a] = px(x, y)
+    console.log(`  ${label.padEnd(18)} (${String(x).padStart(3)},${String(y).padStart(3)})  rgba(${r},${g},${b},${a})`)
+  }
+} else {
+  console.log(`  （${W}×${H} 不是 256×256，跳过固定坐标探针，只看整体统计）`)
 }
 
 // 统计 alpha 分布

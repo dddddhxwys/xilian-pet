@@ -8,11 +8,15 @@
  *  2. 拖动自己做：命中不透明像素后按 mousedown 进入拖拽，用 screenX/screenY 求增量，
  *     经 IPC 让主进程移动窗口（不用 -webkit-app-region，避免与命中测试打架）。
  *  3. 素材是占位图；状态用光环表达。换成 Live2D 时只需替换渲染层。
+ *
+ * 命名注意：桥接对象叫 window.xilianPet，**不能**叫 window.pet ——
+ * HTML 里任何 id="pet" 的元素都会自动创建 window.pet，撞名会让本文件直接
+ * SyntaxError 而完全不执行（实测踩过）。
  */
 
-const pet = window.pet
+const api = window.xilianPet
 const stage = document.getElementById('stage')
-const img = document.getElementById('pet')
+const img = document.getElementById('petSprite')
 const halo = document.getElementById('halo')
 const badge = document.getElementById('badge')
 const bubble = document.getElementById('bubble')
@@ -36,7 +40,7 @@ let bubbleTimer = null
 let latestSessionId = undefined
 let unread = 0
 
-// ── alpha 掩码 ───────────────────────────────────────────────────────
+// ── alpha 掩码 ──────────────────────────────────────────────────────
 async function buildAlphaMap() {
   const canvas = document.createElement('canvas')
   const context = canvas.getContext('2d', { willReadFrequently: true })
@@ -49,7 +53,7 @@ async function buildAlphaMap() {
   mapH = canvas.height
   alphaMap = new Uint8Array(mapW * mapH)
   for (let i = 0; i < alphaMap.length; i++) alphaMap[i] = data[i * 4 + 3]
-  pet.log(`alpha 掩码就绪 ${mapW}×${mapH}`)
+  api.log(`alpha 掩码就绪 ${mapW}×${mapH}`)
 }
 
 function overOpaquePixel(clientX, clientY) {
@@ -77,11 +81,11 @@ function shouldBeInteractive(clientX, clientY) {
 function updateInteractive(next) {
   if (next === interactive) return
   interactive = next
-  pet.setInteractive(next)
+  api.setInteractive(next)
   document.body.style.cursor = next ? 'grab' : 'default'
 }
 
-// ── 鼠标：命中测试 + 拖拽 ────────────────────────────────────────────
+// ── 鼠标：命中测试 + 拖拽 ───────────────────────────────────────────
 window.addEventListener(
   'mousemove',
   (event) => {
@@ -90,7 +94,7 @@ window.addEventListener(
       const dy = event.screenY - dragY
       dragX = event.screenX
       dragY = event.screenY
-      if (dx !== 0 || dy !== 0) pet.moveBy(dx, dy)
+      if (dx !== 0 || dy !== 0) api.moveBy(dx, dy)
       return
     }
     updateInteractive(shouldBeInteractive(event.clientX, event.clientY))
@@ -119,7 +123,7 @@ window.addEventListener('mouseup', (event) => {
   document.body.style.cursor = 'grab'
 })
 
-// 双击宠物 → 唤出/收起派活输入条
+// 双击宠物 → 唤出 / 收起派活输入条
 window.addEventListener('dblclick', (event) => {
   if (!overOpaquePixel(event.clientX, event.clientY)) return
   const now = Date.now()
@@ -162,7 +166,7 @@ function toggleComposer() {
   composer.hidden = !composer.hidden
   if (!composer.hidden) {
     composerInput.focus()
-    pet.log('派活输入条已打开')
+    api.log('派活输入条已打开')
   }
 }
 
@@ -172,30 +176,31 @@ composer.addEventListener('submit', async (event) => {
   if (text === '') return
   composerInput.value = ''
   showBubble('收到，正在派活…')
-  const result = await pet.control('prompt', { text, sessionId: latestSessionId })
-  pet.log(`prompt → ${result.status} ${JSON.stringify(result.body)}`)
+  const result = await api.control('prompt', { text, sessionId: latestSessionId })
+  api.log(`prompt → ${result.status} ${JSON.stringify(result.body)}`)
   if (result.status !== 200) {
     showBubble(`派活失败（${result.status}）：${result.body?.message ?? result.error ?? '未知原因'}`)
   }
 })
 
 interruptBtn.addEventListener('click', async () => {
-  const result = await pet.control('interrupt', { sessionId: latestSessionId })
-  pet.log(`interrupt → ${result.status} ${JSON.stringify(result.body)}`)
+  const result = await api.control('interrupt', { sessionId: latestSessionId })
+  api.log(`interrupt → ${result.status} ${JSON.stringify(result.body)}`)
   showBubble(result.status === 200 ? '已打断' : `打断失败（${result.status}）`)
 })
 
 // ── 与主进程的帧通道 ────────────────────────────────────────────────
-pet.onLink((link) => {
+api.onLink((link) => {
   status.dataset.link = link.connected ? 'up' : 'down'
   status.title = link.connected ? `已连接 ${link.url ?? ''}` : `未连接${link.error ? `：${link.error}` : ''}`
-  if (!link.connected) setState('error')
+  // 刻意不把断连映射成 'error' 状态：那是 agent 出错的意思。
+  // 连接状态由右下角状态点表达，宠物状态只反映与会话有关的事实。
 })
 
-pet.onFrame((frame) => {
+api.onFrame((frame) => {
   switch (frame.type) {
     case 'hello':
-      pet.log(`hello protocol=${frame.protocol}`)
+      api.log(`hello protocol=${frame.protocol}`)
       break
     case 'snapshot':
       setState(frame.state)
@@ -213,20 +218,20 @@ pet.onFrame((frame) => {
       showBubble(frame.text)
       break
     case 'control':
-      pet.log(`control ${frame.action} ok=${frame.ok}`)
+      api.log(`control ${frame.action} ok=${frame.ok}`)
       break
     default:
-      pet.log(`未识别的帧：${JSON.stringify(frame).slice(0, 160)}`)
+      api.log(`未识别的帧：${JSON.stringify(frame).slice(0, 160)}`)
   }
 })
 
 // ── 启动 ────────────────────────────────────────────────────────────
 buildAlphaMap().catch((error) => {
-  pet.log(`alpha 掩码构建失败：${error.message}`)
+  api.log(`alpha 掩码构建失败：${error.message}`)
   // 掩码失败时退化为「整窗可交互」，避免完全点不到
   updateInteractive(true)
 })
 
 updateInteractive(false)
 status.dataset.link = 'down'
-pet.log('渲染端已加载')
+api.log(`渲染端已加载（href=${location.href.slice(-40)}）`)

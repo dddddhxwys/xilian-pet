@@ -7,6 +7,13 @@
   padding: 0;
 }
 
+/* HTML 的 hidden 属性靠 UA 样式表的 display:none 生效，任何作者样式里的
+   display 声明都会把它覆盖掉 —— #composer 就因此默认显示了出来（截图才发现）。
+   这条 !important 兜住所有 hidden 元素。 */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   width: 100%;
@@ -27,7 +34,7 @@ body {
   justify-content: center;
 }
 
-#pet {
+#petSprite {
   width: 168px;
   height: 168px;
   margin-bottom: 8px;
@@ -37,7 +44,7 @@ body {
   transition: transform 120ms ease-out;
 }
 
-#pet.squish {
+#petSprite.squish {
   transform: scale(0.94, 0.9);
 }
 

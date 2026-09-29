@@ -14,7 +14,7 @@
  */
 
 import { createRequire } from 'node:module'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -52,6 +52,27 @@ console.log('[launch] prefix     =', env.PET_ROUTE_PREFIX)
 console.log('[launch] state dir  =', env.PET_STATE_DIR)
 console.log('[launch] ELECTRON_RUN_AS_NODE 已删除 =', !('ELECTRON_RUN_AS_NODE' in env))
 
+// 坑 3（实测）：Chromium 自带的沙箱在 agent shell 的受限令牌下初始化会直接失败 ——
+// `electron.exe --version` 退出码 0x80000003（STATUS_BREAKPOINT）且没有任何输出；
+// 加上 `--no-sandbox` 就能正常打印 v44.4.5。所以启动前探测一次，失败就自动放宽。
+// 放宽的理由：宠物页面只加载本地文件（CSP 里 connect-src 'none'、img/script 仅 'self'），
+// 不加载任何远程内容，renderer 沙箱在这里不是主要防线。你自己终端里跑则会走默认沙箱。
+const relaxFlags = []
+if (process.env.PET_FORCE_NO_SANDBOX === '1') {
+  relaxFlags.push('--no-sandbox', '--disable-gpu')
+  console.log('[launch] PET_FORCE_NO_SANDBOX=1，直接使用放宽参数')
+} else {
+  // stdio: 'ignore' 是刻意的 —— 受限沙箱下管道 stdio 会 EPERM，而我们只需要退出码
+  const probe = spawnSync(electronPath, ['--version'], { env, stdio: 'ignore', timeout: 20_000 })
+  if (probe.status === 0) {
+    console.log('[launch] Chromium 沙箱探测通过，使用默认沙箱设置')
+  } else {
+    relaxFlags.push('--no-sandbox', '--disable-gpu')
+    console.log(`[launch] Chromium 沙箱探测失败（exit=${probe.status}）→ 自动追加 ${relaxFlags.join(' ')}`)
+    console.log('[launch] 原因：受限令牌下 Chromium 无法初始化自带沙箱；宠物只加载本地文件，风险可控')
+  }
+}
+
 if (checkOnly) {
   console.log('[launch] --check 模式，不启动窗口')
   process.exit(0)
@@ -61,7 +82,12 @@ if (checkOnly) {
 // 放在应用路径之前最稳妥。默认 userData 在 AppData，沙箱写不进去。
 const child = spawn(
   electronPath,
-  [`--user-data-dir=${userDataDir}`, join(packageDir, 'main.js'), ...process.argv.slice(2)],
+  [
+    ...relaxFlags,
+    `--user-data-dir=${userDataDir}`,
+    join(packageDir, 'main.js'),
+    ...process.argv.slice(2),
+  ],
   {
     stdio: 'inherit',
     env,

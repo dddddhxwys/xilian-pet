@@ -6,8 +6,10 @@
   "packageManager": "pnpm@11.7.0",
   "scripts": {
     "pet": "node packages/pet-shell/scripts/launch.mjs",
-    "pet:install": "node packages/pet-shell/scripts/launch.mjs --install-only",
+    "pet:check": "node packages/pet-shell/scripts/launch.mjs --check",
     "plugin:check": "node tools/check-plugin.mjs",
+    "plugin:install": "node tools/install-plugin.mjs",
+    "deps:electron": "node tools/fetch-electron.mjs",
     "asset:placeholder": "node tools/make-placeholder.mjs"
   }
 }

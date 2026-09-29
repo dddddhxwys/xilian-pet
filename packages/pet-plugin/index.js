@@ -286,29 +286,37 @@ export function apply(ctx, config = {}) {
     `xilian-pet: POST ${pathPrefix}/focus`,
   )
 
-  const heartbeat = setInterval(() => {
-    // 释放被最短保持时间压住的状态切换：没有新事件也要能降档，
-    // 否则"运行中 → 空闲"这类降级会永久卡住。
-    try {
-      const released = releaseHeld(state, Date.now())
-      state = released.state
-      publishFrames(released.frames)
-    } catch (error) {
-      ctx.logger?.warn?.(`xilian-pet: releaseHeld failed: ${error?.message ?? error}`)
-    }
-    for (const res of connections) {
-      try {
-        res.write(': ping\n\n')
-      } catch {
-        connections.delete(res)
-      }
-    }
-  }, HEARTBEAT_MS)
-  if (typeof heartbeat.unref === 'function') heartbeat.unref()
+  // 心跳也放进 ctx.effect —— 官方契约要求资源都经由 ctx.effect/ctx.on 注册，
+  // 这样即使宿主不采用 apply 的返回值，插件销毁时它依然会被清理。
+  disposers.push(
+    ctx.effect(() => {
+      const heartbeat = setInterval(() => {
+        // 释放被最短保持时间压住的状态切换：没有新事件也要能降档，
+        // 否则"运行中 → 空闲"这类降级会永久卡住。
+        try {
+          const released = releaseHeld(state, Date.now())
+          state = released.state
+          publishFrames(released.frames)
+        } catch (error) {
+          ctx.logger?.warn?.(`xilian-pet: releaseHeld failed: ${error?.message ?? error}`)
+        }
+        for (const res of connections) {
+          try {
+            res.write(': ping\n\n')
+          } catch {
+            connections.delete(res)
+          }
+        }
+      }, HEARTBEAT_MS)
+      if (typeof heartbeat.unref === 'function') heartbeat.unref()
+      return () => clearInterval(heartbeat)
+    }, 'xilian-pet: heartbeat'),
+  )
 
   // ── 4. 清理 ────────────────────────────────────────────────────────
+  // 上面每个 ctx.effect/ctx.on 的 disposer 已交由框架管理；这里再返回一个清理函数，
+  // 是为了兼容"直接调用 apply 并手动销毁"的宿主（本仓的自测就是这么用的）。
   return () => {
-    clearInterval(heartbeat)
     for (const res of connections) {
       try {
         res.destroy()

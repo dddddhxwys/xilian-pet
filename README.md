@@ -139,6 +139,22 @@ tools/
 
 （`$NODE` = 内置 node，见 §二。）
 
+### 依赖安装的三个本机坑（实测，换机器会复现）
+
+1. **`pnpm install` 必须走镜像源**：`pnpm-workspace.yaml` 里已配 `registry: https://registry.npmmirror.com`。走官方源时单请求要 14–30s，`@electron-internal/extract-zip` 这类包会直接超时失败。同时已配 `nodeLinker: hoisted` + `packageImportMethod: copy`，规避 `[ERR_PNPM_SYMLINK_FAILED] symlinkAllModules Maximum call stack size exceeded`。
+2. **Electron 二进制不会随 `pnpm install` 装好**：它自带的 `install.js` 把 zip 缓存写进 `%LOCALAPPDATA%\electron\Cache`（沙箱外 → 被拒），改用工作区缓存后在本机仍会**空转**（CPU 0、无连接、10 分钟无输出）。所以改用自己的下载器：
+
+```powershell
+& $NODE tools\fetch-electron.mjs        # = pnpm run deps:electron
+```
+
+   它是「镜像探测 + 8 路分段并行下载 + 纯 JS 解 zip」。实测：npmmirror ~85 KB/s（要半小时），**华为云 ~11 MB/s，150.9 MB 共 14 秒**。`tools/probe-mirrors.mjs` 可随时复测各镜像速度。
+3. **Electron 无法在 agent shell 的沙箱内启动**（重要）：Chromium 的 Mojo IPC 在 Windows 上用**命名管道**，受限沙箱禁止创建，直接 `FATAL ... platform_channel.cc: Check failed: 拒绝访问 (0x5)`；即使加 `--no-sandbox` 也一样（默认沙箱下更早就以 `0x80000003` STATUS_BREAKPOINT 崩掉）。所以：
+
+   - **我在这个 shell 里跑不起来宠物窗口**，只能靠提权验证过一次；
+   - **你自己终端里跑没有这个限制**：`& $NODE packages\pet-shell\scripts\launch.mjs`
+   - 启动脚本内置探测：如果 Chromium 沙箱初始化失败会自动追加 `--no-sandbox --disable-gpu` 并打印原因。
+
 ### 挂载 Host 插件（两种方式，任选其一）
 
 - **方式 1｜bundle 安装**：把 `packages/pet-plugin` 作为 bundle 装进 `desktop` profile（走 GUI 插件管理页最稳）。包内 `cordis.patch.yml` 已写好 insert 行。
@@ -160,12 +176,32 @@ tools/
 | 点击穿透默认开启 + `forward: true` | 透明区域不挡下层应用，同时仍收得到 `mousemove` 做 alpha 命中测试 |
 | 素材用程序化占位图 | 零版权风险，且 alpha 掩码命中测试现在就能验证 |
 
-### 尚未验证 / 待接线（诚实标注）
+### 已验证 / 尚未验证（2026-09-29 实测）
 
-- **插件尚未真正装进 profile**（沙箱写边界，见 §三）→ 验收项 A1/A2 未验证
-- **窗口未在本机实际启动过**（Electron 依赖仍在下载）→ A3/A8/A9 待验
-- **事件载荷的真实形状未知**：`session/event` 的字段归一化是**推测**。插件已内置 `GET /xilian-pet/debug/shapes` 记录真实载荷样本，装好后先看它再定案，不要照现在这份猜测继续加功能
-- `agent.followup()` / `agent.cancel()` 的确切方法名待真实运行确认（代码已做多候选探测与降级）
+**已验证**（`docs/screenshots/phase0-smoke.png` 是实机自检截图）：
+
+- ✅ **插件自测 28/28 通过**：mock ctx 满足官方契约；真 HTTP 往返（health/state/404/405/400/503/501）；真 SSE 读取（`connected` 注释 + `hello` + `snapshot` + `state` + `stream` 帧）；`dispose()` 后路由与监听器全部注销
+- ✅ **插件能通过绝对 file URL 导入**（含中文用户名 + 路径空格）：`name`/`inject`/`apply` 均可正确解析 —— loader 的路径解析这关过了
+- ✅ **窗口实机启动成功**：`260x300` 透明无边框置顶窗，点击穿透已开启，干净退出（exit 0）
+- ✅ **alpha 掩码命中测试机制可用**：渲染端日志 `alpha 掩码就绪 256×256`，窗口 95.5% 像素为全透明
+- ✅ **素材生成管线可用**：`tools/make-placeholder.mjs` 程序化生成带完整透明通道的占位形象
+
+**尚未验证 / 待接线**：
+
+- ⏳ **插件尚未真正装进 profile**（沙箱写边界 + 没有 `plugin_manager` 工具）→ **A1/A2 未验证**。两条路：GUI 插件管理页填 `packages/pet-plugin` 的绝对路径；或在你自己的终端跑 `& $NODE tools\install-plugin.mjs --write`
+- ⏳ **A9「透明区不挡 DSH 界面点击」需人工在桌面上确认** —— 机制已验证，但"点在透明处真的穿过去"只能肉眼+手动试
+- ⏳ **事件载荷的真实形状未知**：`session/event` 的字段归一化是**推测**。插件已内置 `GET /xilian-pet/debug/shapes` 记录真实载荷样本，装好后先看它再定案，别照猜测继续加功能
+- ⏳ `agent.followup()` / `agent.cancel()` 的确切方法名待真实运行确认（代码已做多候选探测与 503 降级）
+
+### 靠"自我截图"抓到的两个真 bug（留作教训）
+
+窗口看不到屏幕时，`PET_SNAPSHOT=<png>` 让 Electron 截自己的窗口（只截我们的透明窗，不碰用户桌面），再加 `console-message` 诊断，一次就抓到两类问题：
+
+1. **渲染端 JS 从未执行**：`<img id="pet">` 会自动创建 `window.pet`，与 preload 的 `exposeInMainWorld('pet', …)` 撞名 →
+   `Uncaught SyntaxError: Identifier 'pet' has already been declared`。**整页 JS 静默失效**，而 CSS 正常，肉眼看截图只以为"样式没生效"。已改名：桥接对象 `window.xilianPet`、元素 `#petSprite`。
+2. **默认隐藏的输入条其实显示了**：HTML 的 `hidden` 靠 UA 样式表的 `display:none`，被作者样式里的 `display:flex` 覆盖。已加 `[hidden] { display: none !important }` 兜底。
+
+> 教训：**这个环境里不要用 pwsh 的 `-replace` 改含中文的源码** —— 一次重写把注释写成了乱码，还吞掉一个换行。改源码一律用 edit/write 工具。
 
 ---
 
@@ -186,7 +222,14 @@ README.md                           本文（环境事实 / 边界 / 怎么跑�
 package.json · pnpm-workspace.yaml  工作区与 pnpm 配置（storeDir、hoisted、npmmirror）
 packages/pet-plugin/                DSH Host 插件（零依赖、零构建）
 packages/pet-shell/                 Electron 透明置顶窗
-tools/                              自测、素材生成、素材校验
+docs/screenshots/                   实机自检截图（窗口渲染证据）
+tools/
+  check-plugin.mjs                  插件自测（28 项断言，不需要 DSH）
+  install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
+  fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）
+  probe-mirrors.mjs                 Electron 镜像速度实测
+  make-placeholder.mjs             程序化生成占位素材
+  inspect-png.mjs                   校验素材透明通道
 chajian/
   环境体检报告.md                    2026-09-29 环境隐患实测报告（13 项 + 证据）
   dsh-desktop-pet-选型对比.md        独立原生透明置顶窗路线选型

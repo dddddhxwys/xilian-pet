@@ -1,7 +1,11 @@
 // 预加载桥：只暴露桌宠需要的几件事，不开放 node 能力。
+//
+// 注意命名：必须避开任何元素的 id —— HTML 里 id="pet" 的元素会自动创建 window.pet，
+// 与 exposeInMainWorld('pet', …) 撞名会让渲染端脚本直接 SyntaxError 而完全不执行
+// （实测踩过：整页 JS 静默失效，只有截图和 console 诊断能发现）。
 const { contextBridge, ipcRenderer } = require('electron')
 
-contextBridge.exposeInMainWorld('pet', {
+contextBridge.exposeInMainWorld('xilianPet', {
   /** 订阅 Host 插件推送的帧（state / stream / snapshot / hello / notice / control） */
   onFrame: (callback) => ipcRenderer.on('pet:frame', (_event, frame) => callback(frame)),
   /** 连接状态变化 */

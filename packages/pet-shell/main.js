@@ -162,6 +162,33 @@ function postControl(action, payload) {
   })
 }
 
+// ── 自检截图（只截我们自己的透明窗，不碰用户桌面）──────────────────
+// 用法：PET_SNAPSHOT=<png路径> [PET_SNAPSHOT_EXIT=1]
+// 有它的意义：agent 看不到屏幕，但可以拿这张图确认"窗口确实渲染出了宠物"，
+// 并且能直接检查透明通道是否正确（透明区域必须是 alpha=0）。
+function maybeSnapshot(win) {
+  const target = process.env.PET_SNAPSHOT
+  if (!target) return
+  const delay = Number(process.env.PET_SNAPSHOT_DELAY_MS ?? 2500)
+  setTimeout(async () => {
+    try {
+      const image = await win.webContents.capturePage()
+      const png = image.toPNG()
+      const { writeFileSync, mkdirSync } = await import('node:fs')
+      const { dirname } = await import('node:path')
+      mkdirSync(dirname(target), { recursive: true })
+      writeFileSync(target, png)
+      log(`自检截图已写出：${target}（${png.length} 字节，${image.getSize().width}x${image.getSize().height}）`)
+      win.webContents.send('pet:snapshot-done', target)
+    } catch (error) {
+      log('自检截图失败：', error.message)
+    }
+    if (process.env.PET_SNAPSHOT_EXIT === '1') {
+      setTimeout(() => app.quit(), 300)
+    }
+  }, delay)
+}
+
 // ── 窗口 ────────────────────────────────────────────────────────────
 function createWindow() {
   const saved = loadWindowState()
@@ -189,12 +216,33 @@ function createWindow() {
   win.setAlwaysOnTop(true, 'screen-saver')
   win.setMenuBarVisibility?.(false)
 
+  // 渲染进程诊断：没有这些，"页面到底是没加载、preload 挂了还是 JS 抛错"只能靠猜。
+  win.webContents.on('console-message', (event, ...rest) => {
+    if (rest.length === 1 && rest[0] !== null && typeof rest[0] === 'object' && 'message' in rest[0]) {
+      const d = rest[0]
+      log(`[renderer:${d.level}] ${d.message} (${d.sourceId ?? ''}:${d.lineNumber ?? ''})`)
+    } else {
+      const [level, message, line, sourceId] = rest
+      log(`[renderer:${level}] ${message} (${sourceId ?? ''}:${line ?? ''})`)
+    }
+  })
+  win.webContents.on('preload-error', (_event, preloadPath, error) => {
+    log(`[preload-error] ${preloadPath}: ${error?.message ?? error}`)
+  })
+  win.webContents.on('did-fail-load', (_event, code, description, url) => {
+    log(`[did-fail-load] ${code} ${description} ${url}`)
+  })
+  win.webContents.on('render-process-gone', (_event, details) => {
+    log(`[render-process-gone] ${JSON.stringify(details)}`)
+  })
+
   // 默认点击穿透 + 转发鼠标移动，让渲染端能做 alpha 掩码命中测试
   win.setIgnoreMouseEvents(true, { forward: true })
 
   win.once('ready-to-show', () => {
     win.showInactive()
     log(`窗口就绪 ${win.getSize().join('x')}，点击穿透已开启（悬停不透明像素才接管鼠标）`)
+    maybeSnapshot(win)
   })
 
   win.on('moved', () => saveWindowState(win))
