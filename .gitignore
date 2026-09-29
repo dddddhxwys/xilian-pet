@@ -1,0 +1,16 @@
+# 依赖与构建产物
+node_modules/
+.pnpm-store/
+dist/
+out/
+build/
+*.log
+
+# 本地环境探针（诊断脚本请勿入库）
+_env_*.mjs
+
+# 编辑器/系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

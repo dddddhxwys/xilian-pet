@@ -1,0 +1,14 @@
+{
+  "name": "dsh-profile-desktop",
+  "private": true,
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "@deepseek-ai/dsh-experimental-agent-team-profile"
+      ]
+    }
+  }
+}
