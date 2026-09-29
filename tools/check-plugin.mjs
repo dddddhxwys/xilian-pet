@@ -132,15 +132,40 @@ check('归一化：session/event 是 (session, event) 两个参数', () => {
   assert.equal(normalizeSessionEvent({ type: 'turn/start' }, undefined), null)
 })
 
-check('归一化：agent/assistant-stream 是 ({ agent, frame })', () => {
+check('归一化：agent/assistant-stream 是 ({ agent, frame })，正文在 frame.chunk.text', () => {
   const chunk = normalizeStreamChunk({
     agent: { session: { id: 's9' } },
-    frame: { type: 'text-delta', text: '喂' },
+    frame: {
+      type: 'chunk',
+      attemptId: 'a1',
+      revision: 1,
+      index: 0,
+      time: 0,
+      chunk: { type: 'text-delta', index: 0, text: '喂' },
+    },
   })
   assert.equal(chunk.sessionId, 's9')
+  assert.equal(chunk.frameType, 'chunk')
+  assert.equal(chunk.chunkType, 'text-delta')
   assert.equal(chunk.text, '喂')
-  assert.equal(chunk.frameType, 'text-delta')
   assert.equal(normalizeStreamChunk({ agent: {} }), null)
+})
+
+check('start 帧把会话推到 running；end 帧不改状态', () => {
+  const started = reduceStreamChunk(createPetState(), { sessionId: 's1', frameType: 'start' }, 0)
+  assert.equal(started.state.sessions.s1.state, 'running')
+  const ended = reduceStreamChunk(started.state, { sessionId: 's1', frameType: 'end', outcome: 'committed' }, 10)
+  assert.equal(ended.state.sessions.s1.state, 'running')
+})
+
+check('只有 text-delta 的 chunk 才累积 tail', () => {
+  const usage = reduceStreamChunk(
+    createPetState(),
+    { sessionId: 's1', frameType: 'chunk', chunkType: 'usage' },
+    0,
+  )
+  assert.equal(usage.state.sessions.s1.tail, '')
+  assert.ok(!usage.frames.some((f) => f.type === 'stream'))
 })
 
 // ─────────────────────────────────────────────────────────────
@@ -350,7 +375,10 @@ await checkAsync('SSE：assistant/stream → 推出 stream 帧', async () => {
   const sse = await openSse(`${base}/xilian-pet/events`)
   await sse.readUntil((b) => b.includes('"snapshot"'), 3000)
   for (const fn of listeners.get('agent/assistant-stream'))
-    fn({ agent: { session: { id: 's1' } }, frame: { type: 'text-delta', text: '西莲在写' } })
+    fn({
+      agent: { session: { id: 's1' } },
+      frame: { type: 'chunk', index: 0, chunk: { type: 'text-delta', index: 0, text: '西莲在写' } },
+    })
   const text = await sse.readUntil((b) => b.includes('"type":"stream"'), 3000)
   sse.close()
   assert.match(text, /西莲在写/)

@@ -112,18 +112,37 @@ export function normalizeSessionEvent(session, event) {
 /**
  * 归一化 `agent/assistant-stream`。
  *
- * ⚠️ 真实签名是**一个对象**：`({ agent, frame })` —— 已核实。frame 带 `type`
- * （见过 `start` / `end`），文本字段名待实测确认，故这里对 text/delta/content 都容忍。
+ * ⚠️ 真实签名是**一个对象** `({ agent, frame })`（已核实）。
+ * 帧结构同样是从 asar 的类型清单里抄出来的，不是猜的：
+ *
+ *   type SessionAssistantStreamFrame =
+ *     | { type: 'start'; attemptId; revision; turn; step; … }
+ *     | { type: 'chunk'; attemptId; revision; index; time; chunk: StreamChunk }
+ *     | { type: 'end';   attemptId; revision; index; outcome: { kind: 'committed'|'abandoned' } }
+ *
+ *   type StreamChunk =
+ *     | { type: 'block-start'; index; blockType } | { type: 'text-delta'; index; text }
+ *     | { type: 'reasoning-delta'; index; text }  | { type: 'tool-call-delta'; … }
+ *     | { type: 'block-end'; index; block }       | { type: 'usage'; … } | { type: 'finish'; … }
+ *
+ * 所以正文文本在 **`frame.chunk.text`**，且 `frame.chunk.type === 'text-delta'`。
+ * （第一版找的是 `frame.text`，永远取不到 —— 这也是"先读源码再写"的又一个理由。）
  */
 export function normalizeStreamChunk(payload) {
   if (payload === null || typeof payload !== 'object') return null
   const { agent, frame } = payload
   if (frame === null || typeof frame !== 'object') return null
   const sessionId = agent?.session?.id ?? agent?.sessionId ?? agent?.id ?? 'unknown'
+  const inner = frame.chunk
+  const innerIsObject = inner !== null && typeof inner === 'object'
   return {
     sessionId: String(sessionId),
     frameType: typeof frame.type === 'string' ? frame.type : undefined,
-    text: textFrom(frame),
+    chunkType: innerIsObject && typeof inner.type === 'string' ? inner.type : undefined,
+    text: innerIsObject && typeof inner.text === 'string' ? inner.text : undefined,
+    turn: frame.turn,
+    step: frame.step,
+    outcome: typeof frame.outcome?.kind === 'string' ? frame.outcome.kind : undefined,
   }
 }
 
@@ -203,14 +222,19 @@ export function reducePetEvent(state, ev, now = 0) {
 }
 
 /**
- * 应用一个逐字流分片。与状态事件分开，是因为它只累积 tail 并发 stream 帧。
+ * 应用一个逐字流帧。与状态事件分开，是因为它只累积 tail、决定"是否在跑"、发 stream 帧。
+ * 帧语义按官方类型定义：
+ *   - `start` 帧、`chunk` + `text-delta` → 这一回合在跑
+ *   - `end` 帧**不**改状态（一个 attempt 结束不代表整个回合结束，回合边界交给 session/event）
  */
 export function reduceStreamChunk(state, chunk, now = 0) {
   const prev = sessionOf(state, chunk.sessionId, now)
   const session = { ...prev }
-  if (chunk.text !== undefined) session.tail = (prev.tail + chunk.text).slice(-180)
-  // 正在吐字说明这一回合在跑
-  if (session.state === 'idle' || session.state === 'done') {
+  const hasText = typeof chunk.text === 'string' && chunk.text !== ''
+  if (hasText) session.tail = (prev.tail + chunk.text).slice(-180)
+
+  const looksBusy = chunk.frameType === 'start' || chunk.chunkType === 'text-delta'
+  if (looksBusy && (session.state === 'idle' || session.state === 'done')) {
     session.state = 'running'
     session.unread = false
     session.since = now
@@ -218,13 +242,18 @@ export function reduceStreamChunk(state, chunk, now = 0) {
 
   const next = { ...state, sessions: { ...state.sessions, [chunk.sessionId]: session } }
   const evaluated = evaluate(next, now)
-  return {
-    state: evaluated.state,
-    frames: [
-      { type: 'stream', sessionId: chunk.sessionId, text: session.tail, frameType: chunk.frameType },
-      ...evaluated.frames,
-    ],
+
+  const frames = []
+  if (hasText) {
+    frames.push({
+      type: 'stream',
+      sessionId: chunk.sessionId,
+      text: session.tail,
+      chunkType: chunk.chunkType,
+    })
   }
+  frames.push(...evaluated.frames)
+  return { state: evaluated.state, frames }
 }
 
 export function snapshot(state) {
