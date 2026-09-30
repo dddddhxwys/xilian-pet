@@ -189,6 +189,29 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 装好后自检：`GET http://127.0.0.1:19387/xilian-pet/health` 应返回 `{"ok":true,...}`。
 （本机 shell 里 `curl` 走 Schannel 会失败 —— 见 §三，用 `node -e` 或窗口的启动自检代替。）
 
+### 插件源码热重载（已配置，需一次重启生效）
+
+profile patch 里加了这一行，让**插件源码改动**也能热重载：
+
+```yaml
+- id: hmr
+  name: "@deepseek-ai/dsh-hmr"
+  disabled: false
+  config:
+    root:
+      - '<repo>\packages\pet-plugin'
+```
+
+⚠️ **官方 README 明确要求 "configure … before launching"** —— chokidar 监视器在 `hmr` 插件初始化时建立，改 config 不会重建它。
+**已实测确认**：加完这行后改插件源码，`/health` 的 `startedAt` 与 `uptimeMs` **都没变** → 没重载。**所以要重启一次 DSH 才生效**；之后就是「改代码 → 自动重载」。
+
+判断"到底有没有热重载"的办法：`/health` 里带 `code`（代码修订号，改 `index.js` / `reducer.js` 时手动 +1）：
+
+| 观察 | 结论 |
+|---|---|
+| `uptimeMs` 归零 **且** `code` 变大 | ✅ 热重载成功 |
+| 两者都没变 | ❌ 没重载（需要重启 DSH） |
+
 ### 关键设计决定（都写在代码注释里）
 
 | 决定 | 原因 |
@@ -202,15 +225,22 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | 点击穿透默认开启 + `forward: true` | 透明区域不挡下层应用，同时仍收得到 `mousemove` 做 alpha 命中测试 |
 | 素材用程序化占位图 | 零版权风险，且 alpha 掩码命中测试现在就能验证 |
 
-### 已验证 / 尚未验证（2026-09-29 实测）
+### 已验证 / 尚未验证（2026-09-30 更新）
 
-**已验证**（`docs/screenshots/phase0-smoke.png` 是实机自检截图）：
+**已验证**（截图见 `docs/screenshots/`）：
 
-- ✅ **插件自测 28/28 通过**：mock ctx 满足官方契约；真 HTTP 往返（health/state/404/405/400/503/501）；真 SSE 读取（`connected` 注释 + `hello` + `snapshot` + `state` + `stream` 帧）；`dispose()` 后路由与监听器全部注销
-- ✅ **插件能通过绝对 file URL 导入**（含中文用户名 + 路径空格）：`name`/`inject`/`apply` 均可正确解析 —— loader 的路径解析这关过了
-- ✅ **窗口实机启动成功**：`260x300` 透明无边框置顶窗，点击穿透已开启，干净退出（exit 0）
-- ✅ **alpha 掩码命中测试机制可用**：渲染端日志 `alpha 掩码就绪 256×256`，窗口 95.5% 像素为全透明
-- ✅ **素材生成管线可用**：`tools/make-placeholder.mjs` 程序化生成带完整透明通道的占位形象
+- ✅ **插件自测 43/43 通过**：状态机（优先级聚合、最短保持、`agent/status` 降档、审批计数、错误档）、归一化（三种真实签名）、mock 契约、真 HTTP 往返、真 SSE 读取、**waterfall 回归 + 负向对照**、清理注销
+- ✅ **端到端实机跑通**（`phase0-live.png`）：插件热挂载 → SSE 连接 → 状态帧应用 → 绿色 `running` 光环 + 绿色连接点
+- ✅ **事件协议从"推测"升级为"事实"**：59 个真实事件类型名、`SessionEventMap`、`agent/status`/`agent/error` 载荷、`SessionAssistantStreamFrame` 与 `StreamChunk`（正文在 `frame.chunk.text`）全部取自 asar 类型清单
+- ✅ **窗口实机启动成功**：`260x300` 透明无边框置顶窗，点击穿透已开启，干净退出
+- ✅ **alpha 掩码命中测试机制可用**：渲染端日志 `alpha 掩码就绪 256×256`，窗口 95.5% 像素全透明
+
+**已写好代码 + 测试、等一次重启生效**（Electron 侧冻结中）：
+
+- 🟡 **A4 状态收尾**：接上 `agent/status`（权威 `idle`/`running`），治掉"状态卡在 running"；`idle` 刻意不冲掉 `done`/`error` 的未读语义
+- 🟡 **A5 逐字气泡**：按 `frame.chunk.text` + `chunkType === 'text-delta'` 取正文
+- 🟡 **A6 派活/打断**：按官方调用点构造 `createUserMessage({ content, source: { kind: 'user' } })`，`cancel({ kind: 'user' })`
+- 🟡 **A7 原料就位**：`approval/asked` / `approval/decided` 计数 + `notice` 帧（**纯通知事件，不碰 waterfall**）；提醒策略与免打扰时段未做
 
 **尚未验证 / 待接线**：
 
