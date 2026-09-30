@@ -48,11 +48,35 @@ const PROTOCOL_VERSION = 1
 const HEARTBEAT_MS = 15_000
 
 /**
- * 代码修订号 —— **每次改本文件或 reducer.js 都要 +1**。
- * 目的：`/health` 会带上它，于是"插件到底有没有热重载"一眼可判：
- *   uptimeMs 归零 + code 变大 = 热重载成功；两者都没变 = 没重载（需要重启 DSH）。
+ * 代码修订号 —— **每次改本文件 / reducer.js / reminders.js 都要 +1**。
+ * 目的：`/health` 会带上它，于是"改动到底有没有被加载"一眼可判：
+ *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
+ * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 4
+const CODE_REVISION = 5
+
+/**
+ * 安全预览：载荷里常有循环引用（例如 agent.ctx）。
+ * 直接 JSON.stringify 会抛，预览就变成 `<unserializable>` —— 而那恰恰是
+ * 诊断时最需要的一条信息（实测：agent/status 的样本预览就是这么丢的）。
+ */
+function safePreview(value, limit = 400) {
+  const seen = new WeakSet()
+  try {
+    const text = JSON.stringify(value, (_key, val) => {
+      if (typeof val === 'function') return `[fn ${val.name || 'anonymous'}]`
+      if (typeof val === 'bigint') return `${val}n`
+      if (val !== null && typeof val === 'object') {
+        if (seen.has(val)) return '[circular]'
+        seen.add(val)
+      }
+      return val
+    })
+    return text === undefined ? '<undefined>' : text.slice(0, limit)
+  } catch (error) {
+    return `<unserializable: ${error?.message ?? error}>`
+  }
+}
 
 function sseData(payload) {
   return `data: ${JSON.stringify(payload)}\n\n`
@@ -126,18 +150,12 @@ export function apply(ctx, config = {}) {
 
   function noteRawShape(channel, raw) {
     if (captureRawShapes <= 0) return
-    let preview
-    try {
-      preview = JSON.stringify(raw)?.slice(0, 400) ?? '<undefined>'
-    } catch {
-      preview = '<unserializable>'
-    }
     const list = rawShapes.get(channel) ?? []
     list.push({
       channel,
       at: Date.now(),
       keys: raw !== null && typeof raw === 'object' ? Object.keys(raw) : typeof raw,
-      preview,
+      preview: safePreview(raw),
     })
     // 只裁剪本通道，其他通道的样本不受影响
     if (list.length > captureRawShapes) list.splice(0, list.length - captureRawShapes)
