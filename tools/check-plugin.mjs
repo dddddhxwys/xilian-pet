@@ -692,6 +692,21 @@ await checkAsync('回归：高频通道灌爆也不会挤掉低频通道的样�
   assert.ok(body.byChannel['agent/status'] >= 1, 'agent/status 的样本必须还在')
 })
 
+await checkAsync('回归：循环引用载荷的预览仍可读（不会变成 <unserializable>）', async () => {
+  // agent/status 的真实载荷里 agent.ctx 是循环引用 —— 实测曾让预览全丢，
+  // 而那恰恰是诊断时最需要的信息。
+  const agent = { session: { id: 's1' } }
+  agent.ctx = { agent, self: agent }
+  for (const fn of listeners.get('agent/status')) fn({ agent, status: 'running' })
+
+  const body = await (await fetch(`${base}/xilian-pet/debug/shapes`)).json()
+  const sample = body.shapes.filter((s) => s.channel === 'agent/status').at(-1)
+  assert.ok(sample, '应记录到 agent/status 样本')
+  assert.ok(!sample.preview.startsWith('<unserializable'), `预览不该不可读：${sample.preview}`)
+  assert.match(sample.preview, /"status":"running"/)
+  assert.match(sample.preview, /\[circular\]/, '循环处应被标记而不是抛错')
+})
+
 await checkAsync('无法识别的载荷不会导致崩溃', async () => {
   for (const fn of listeners.get('session/event')) {
     fn(null, null)
