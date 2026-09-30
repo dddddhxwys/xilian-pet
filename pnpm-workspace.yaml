@@ -1,4 +1,4 @@
-# 西莲桌宠 · pnpm workspace
+# 昔涟桌宠 · pnpm workspace
 # 注意：本机 agent shell 的沙箱只允许写「工作区 + TEMP」，
 # 而 pnpm 默认 store 在 %LOCALAPPDATA%\pnpm（工作区外，会被拒），
 # 所以这里显式把 storeDir 指到工作区内。

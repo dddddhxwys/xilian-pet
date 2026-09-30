@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "西莲桌宠 Host 插件：会话事件 → 桌宠状态，经同源 SSE 推送，并提供反向操控入口",
+  "description": "昔涟桌宠 Host 插件：会话事件 → 桌宠状态，经同源 SSE 推送，并提供反向操控入口",
   "exports": {
     ".": "./index.js"
   },

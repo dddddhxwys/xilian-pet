@@ -1,5 +1,5 @@
 /**
- * 西莲桌宠 Host 插件自测 —— 不需要 DSH，不需要安装。
+ * 昔涟桌宠 Host 插件自测 —— 不需要 DSH，不需要安装。
  *
  * 做法：
  *  1. 用 mock ctx 满足官方插件契约（webServer.register / on / effect / logger）
@@ -128,8 +128,8 @@ check('releaseHeld 在没有新事件时释放被压住的状态', () => {
 
 check('reduceStreamChunk 累积 tail 并产生 stream 帧', () => {
   const r = reduceStreamChunk(createPetState(), { sessionId: 's1', text: '你好' }, 0)
-  const r2 = reduceStreamChunk(r.state, { sessionId: 's1', text: '，西莲' }, 1)
-  assert.equal(r2.state.sessions.s1.tail, '你好，西莲')
+  const r2 = reduceStreamChunk(r.state, { sessionId: 's1', text: '，昔涟' }, 1)
+  assert.equal(r2.state.sessions.s1.tail, '你好，昔涟')
   assert.ok(r2.frames.some((f) => f.type === 'stream'))
 })
 
@@ -655,11 +655,11 @@ await checkAsync('SSE：assistant/stream → 推出 stream 帧', async () => {
   for (const fn of listeners.get('agent/assistant-stream'))
     fn({
       agent: { session: { id: 's1' } },
-      frame: { type: 'chunk', index: 0, chunk: { type: 'text-delta', index: 0, text: '西莲在写' } },
+      frame: { type: 'chunk', index: 0, chunk: { type: 'text-delta', index: 0, text: '昔涟在写' } },
     })
   const text = await sse.readUntil((b) => b.includes('"type":"stream"'), 3000)
   sse.close()
-  assert.match(text, /西莲在写/)
+  assert.match(text, /昔涟在写/)
 })
 
 await checkAsync('GET /debug/shapes → 记录到原始事件形状样本（按 channel 分别限量）', async () => {

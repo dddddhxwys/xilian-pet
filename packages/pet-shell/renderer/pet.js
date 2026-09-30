@@ -1,5 +1,5 @@
 /**
- * 西莲桌宠 · 渲染端逻辑
+ * 昔涟桌宠 · 渲染端逻辑
  *
  * 关键点：
  *  1. 窗口默认点击穿透（setIgnoreMouseEvents(true, {forward:true})），

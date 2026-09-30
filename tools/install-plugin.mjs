@@ -1,5 +1,5 @@
 /**
- * 把西莲桌宠 Host 插件挂进当前 DSH profile。
+ * 把昔涟桌宠 Host 插件挂进当前 DSH profile。
  *
  * 为什么需要这个脚本：agent shell 的文件沙箱只允许写「工作区 + TEMP」，
  * 而 profile 的 patch 文件在 ~/.dsh/profiles/<profile>/ 下 —— 属于工作区外，
@@ -30,7 +30,7 @@ const DSH_HOME = process.env.DSH_HOME
 const PROFILE = process.env.DSH_PROFILE ?? 'desktop'
 const profileDir = process.env.DSH_PROFILE_DIR ?? (DSH_HOME ? join(DSH_HOME, 'profiles', PROFILE) : undefined)
 
-console.log('西莲桌宠 · Host 插件挂载助手')
+console.log('昔涟桌宠 · Host 插件挂载助手')
 console.log('─'.repeat(56))
 console.log(`插件入口   : ${pluginEntry}`)
 console.log(`入口存在   : ${existsSync(pluginEntry) ? '是' : '否 ← 先确认文件在'}`)

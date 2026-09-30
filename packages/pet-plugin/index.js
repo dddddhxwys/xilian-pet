@@ -1,5 +1,5 @@
 /**
- * 西莲桌宠 · DSH Host 插件
+ * 昔涟桌宠 · DSH Host 插件
  *
  * 职责：
  *  1. 观测 DSH 会话事件（session/event、agent/assistant-stream、tools/pre-execute）
