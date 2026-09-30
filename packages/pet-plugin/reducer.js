@@ -6,13 +6,22 @@
  *  2. 状态切换加最短保持时间（minHoldMs），避免事件突发导致闪烁
  *  3. 纯函数：不读时钟、不碰 IO，now 由调用方传入，便于确定性测试
  *
- * 关于事件形状：本文件里的类型名与参数签名都是**从本机 0.1.7-rc.1 的 app.asar 里核实的**，
- * 不是推测。核实方式：
- *   - `grep` 出所有官方监听器写法 → `ctx.on('session/event', (session, event) => …)`
- *   - `grep` 出所有官方监听器写法 → `ctx.on('agent/assistant-stream', ({ agent, frame }) => …)`
- *   - 普查 `type:` / `kind:` 后面的 `x/y` 字面量，得到真实类型名集合
- * 但**"哪个类型对应桌宠哪一档"仍是暂定的**，装好后要用 `GET /xilian-pet/debug/shapes`
- * 收集的真实样本再定案。
+ * ⚠️ 本文件里的事件名、签名、载荷结构**全部来自本机 0.1.7-rc.1 的 app.asar**，
+ * 不是推测。取证方式：读官方类型清单里的 `SessionEventMap` / `KNOWN_SESSION_EVENT_TYPES`、
+ * 以及官方监听器的真实写法。改动前请沿用同样的取证方式。
+ *
+ * 权威依据（摘录）：
+ *   type AgentStatus = 'idle' | 'running'
+ *   type ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+ *   interface SessionEventMap {
+ *     'turn/start': { turn } · 'turn/end': { turn; reason } · 'step/start' · 'step/end'
+ *     'approval/asked':   { id; toolName; callId?; reason? }
+ *     'approval/decided': { id; outcome: ApprovalOutcome }
+ *     'assistant/message': { turn; step; message; stream; usage?; interrupted? }
+ *     …
+ *   }
+ *   ctx.on('agent/status', ({ agent, status }) => …)   // 载荷是 { agent, status }
+ *   ctx.on('agent/error',  ({ agent, turn, error }) => …)
  */
 
 /** 桌宠可见状态，按优先级从高到低 */
@@ -29,32 +38,30 @@ export const STATE_PRIORITY = {
 
 /**
  * 会话事件类型 → 桌宠档位。
- * 左侧全部是 asar 里普查到的真实字面量：
- *   turn/end、step/end、user/message、system/message、tool/result、
- *   tool/code-dispatch(-start)、tool/ptc-dispatch(-start)、session/end-seed
- * 右侧的映射是**暂定**的（见文件头说明）。
+ * 左侧全部是官方 `KNOWN_SESSION_EVENT_TYPES`（共 59 个）里确有其名的类型。
+ * 「空闲」不在这里 —— 它由 `agent/status` 权威给出（见 reduceAgentStatus）。
  */
 export const EVENT_STATE = {
+  // —— 运行中 ——
   'turn/start': 'running',
   'step/start': 'running',
   'user/message': 'running',
-  'tool/code-dispatch-start': 'running',
-  'tool/ptc-dispatch-start': 'running',
-  'tool/code-dispatch': 'running',
-  'tool/ptc-dispatch': 'running',
+  'request/header': 'running',
+  'assistant/attempt': 'running',
+  'assistant/message': 'running',
+  'tool/call': 'running',
   'tool/result': 'running',
-  'step/end': 'running',
+  'tool/ptc-dispatch-start': 'running',
+  'tool/ptc-dispatch': 'running',
+  'tool-workflow/run-start': 'running',
+  'tool-workflow/agent-start': 'running',
+  'compaction/start': 'running',
+  // —— 需要你处理 ——
+  'approval/asked': 'approval',
+  // —— 完成（带未读）——
   'turn/end': 'done',
-  'session/end-seed': 'idle',
-
-  // ⚠️ 以下四个是**占位键名，尚未核实**。
-  // 审批 / 提问 / 出错 / 取消 这四档在优先级表里必须有（否则状态机不完整），
-  // 但我还没从 asar 里确认它们对应的真实 `event.type` 字面量。
-  // 装好后先看 `/xilian-pet/debug/shapes` 收集的真实样本，再把这里换成真名。
-  'attention/approval': 'approval',
-  'attention/question': 'question',
-  'session/error': 'error',
-  'session/cancel': 'idle',
+  // 审批有了结论：回到运行，真正的空档交给 agent/status
+  'approval/decided': 'running',
 }
 
 export function createPetState(options = {}) {
@@ -81,6 +88,11 @@ export function unreadCount(state) {
   return Object.values(state.sessions).filter((s) => s.unread).length
 }
 
+/** 待审批总数（A7 主动提醒的原料） */
+export function pendingApprovalCount(state) {
+  return Object.values(state.sessions).reduce((sum, s) => sum + (s.pendingApprovals ?? 0), 0)
+}
+
 function textFrom(value) {
   if (typeof value === 'string') return value
   if (value === null || typeof value !== 'object') return undefined
@@ -90,53 +102,73 @@ function textFrom(value) {
   return undefined
 }
 
+function sessionIdOf(session) {
+  return String(session?.id ?? session?.header?.id ?? session?.header?.sessionId ?? 'unknown')
+}
+
 /**
  * 归一化 `session/event`。
  *
- * ⚠️ 真实签名是 **两个参数**：`(session, event)` —— 已核实所有官方监听器都这么写。
- * 事件本体在第二个参数上，形如 `{ type, seq, data }`。
+ * ⚠️ 真实签名是**两个参数** `(session, event)` —— 官方监听器一律这么写。
+ * 事件本体在第二个参数，形如 `{ type, seq, data }`；`data` 的类型由 SessionEventMap 决定。
  */
 export function normalizeSessionEvent(session, event) {
   if (event === null || typeof event !== 'object') return null
   if (typeof event.type !== 'string') return null
-  const sessionId = session?.id ?? session?.header?.id ?? session?.header?.sessionId ?? 'unknown'
   const title = session?.header?.title
   return {
     kind: event.type,
-    sessionId: String(sessionId),
+    sessionId: sessionIdOf(session),
+    seq: typeof event.seq === 'number' ? event.seq : undefined,
+    data: event.data,
     text: textFrom(event.data),
     title: typeof title === 'string' ? title : undefined,
   }
 }
 
 /**
+ * 归一化 `agent/status`。载荷 `{ agent, status }`，status 只有 'idle' | 'running'。
+ * 这是**权威**的运行/空闲信号 —— 官方说明 "agent/status … drive UI and coordination state"。
+ */
+export function normalizeAgentStatus(payload) {
+  if (payload === null || typeof payload !== 'object') return null
+  const { agent, status } = payload
+  if (status !== 'idle' && status !== 'running') return null
+  return {
+    sessionId: String(agent?.session?.id ?? agent?.id ?? 'unknown'),
+    status,
+  }
+}
+
+/** 归一化 `agent/error`。载荷 `{ agent, turn, error }`。 */
+export function normalizeAgentError(payload) {
+  if (payload === null || typeof payload !== 'object') return null
+  const { agent, error } = payload
+  return {
+    sessionId: String(agent?.session?.id ?? agent?.id ?? 'unknown'),
+    message: String(error?.message ?? error ?? 'unknown error'),
+  }
+}
+
+/**
  * 归一化 `agent/assistant-stream`。
  *
- * ⚠️ 真实签名是**一个对象** `({ agent, frame })`（已核实）。
- * 帧结构同样是从 asar 的类型清单里抄出来的，不是猜的：
- *
+ * 真实签名是**一个对象** `({ agent, frame })`。帧结构（官方类型清单原文）：
  *   type SessionAssistantStreamFrame =
  *     | { type: 'start'; attemptId; revision; turn; step; … }
  *     | { type: 'chunk'; attemptId; revision; index; time; chunk: StreamChunk }
  *     | { type: 'end';   attemptId; revision; index; outcome: { kind: 'committed'|'abandoned' } }
- *
- *   type StreamChunk =
- *     | { type: 'block-start'; index; blockType } | { type: 'text-delta'; index; text }
- *     | { type: 'reasoning-delta'; index; text }  | { type: 'tool-call-delta'; … }
- *     | { type: 'block-end'; index; block }       | { type: 'usage'; … } | { type: 'finish'; … }
- *
- * 所以正文文本在 **`frame.chunk.text`**，且 `frame.chunk.type === 'text-delta'`。
- * （第一版找的是 `frame.text`，永远取不到 —— 这也是"先读源码再写"的又一个理由。）
+ *   type StreamChunk = … | { type: 'text-delta'; index; text } | …
+ * 所以正文在 **`frame.chunk.text`**，且 `frame.chunk.type === 'text-delta'`。
  */
 export function normalizeStreamChunk(payload) {
   if (payload === null || typeof payload !== 'object') return null
   const { agent, frame } = payload
   if (frame === null || typeof frame !== 'object') return null
-  const sessionId = agent?.session?.id ?? agent?.sessionId ?? agent?.id ?? 'unknown'
   const inner = frame.chunk
   const innerIsObject = inner !== null && typeof inner === 'object'
   return {
-    sessionId: String(sessionId),
+    sessionId: String(agent?.session?.id ?? agent?.sessionId ?? agent?.id ?? 'unknown'),
     frameType: typeof frame.type === 'string' ? frame.type : undefined,
     chunkType: innerIsObject && typeof inner.type === 'string' ? inner.type : undefined,
     text: innerIsObject && typeof inner.text === 'string' ? inner.text : undefined,
@@ -183,8 +215,24 @@ function sessionOf(state, sessionId, now) {
       since: now,
       title: undefined,
       tail: '',
+      pendingApprovals: 0,
     }
   )
+}
+
+function commit(state, session, sessionId, now, extraFrames = []) {
+  const next = { ...state, sessions: { ...state.sessions, [sessionId]: session } }
+  const evaluated = evaluate(next, now)
+  const frames = [...extraFrames, ...evaluated.frames]
+  if (frames.length === 0) {
+    frames.push({
+      type: 'state',
+      seq: evaluated.state.seq,
+      state: evaluated.state.current,
+      unread: unreadCount(evaluated.state),
+    })
+  }
+  return { state: evaluated.state, frames }
 }
 
 /**
@@ -199,33 +247,80 @@ export function reducePetEvent(state, ev, now = 0) {
   const session = { ...prev }
   if (ev.title !== undefined) session.title = ev.title
 
+  const extraFrames = []
+
+  // 审批计数：A7 主动提醒的原料，也是 "+N 背板" 的来源之一
+  if (ev.kind === 'approval/asked') {
+    session.pendingApprovals = (prev.pendingApprovals ?? 0) + 1
+    extraFrames.push({
+      type: 'notice',
+      notice: 'approval',
+      sessionId: ev.sessionId,
+      toolName: typeof ev.data?.toolName === 'string' ? ev.data.toolName : undefined,
+      reason: typeof ev.data?.reason === 'string' ? ev.data.reason : undefined,
+      pending: session.pendingApprovals,
+    })
+  } else if (ev.kind === 'approval/decided') {
+    session.pendingApprovals = Math.max(0, (prev.pendingApprovals ?? 0) - 1)
+    extraFrames.push({
+      type: 'notice',
+      notice: 'approval-decided',
+      sessionId: ev.sessionId,
+      outcome: typeof ev.data?.outcome === 'string' ? ev.data.outcome : undefined,
+      pending: session.pendingApprovals,
+    })
+  }
+
   if (target === 'done' || target === 'error') session.unread = true
   if (target === 'running' || target === 'approval' || target === 'question') session.unread = false
   if (target !== prev.state) session.since = now
   session.state = target
 
-  const next = { ...state, sessions: { ...state.sessions, [ev.sessionId]: session } }
-  const evaluated = evaluate(next, now)
-  const frames = [...evaluated.frames]
-
-  // 状态没变但未读计数可能变了，补一帧让前端跟上
-  if (frames.length === 0) {
-    frames.push({
-      type: 'state',
-      seq: evaluated.state.seq,
-      state: evaluated.state.current,
-      unread: unreadCount(evaluated.state),
-    })
-  }
-
-  return { state: evaluated.state, frames }
+  return commit(state, session, ev.sessionId, now, extraFrames)
 }
 
 /**
- * 应用一个逐字流帧。与状态事件分开，是因为它只累积 tail、决定"是否在跑"、发 stream 帧。
- * 帧语义按官方类型定义：
+ * 应用 `agent/status`（权威运行/空闲信号）。
+ *
+ * 刻意**不冲掉** done / error —— 它们携带未读语义，等用户看过再降档。
+ * 这条同时治掉了"状态挂住"：以前没有任何事件能把会话降回 idle。
+ */
+export function reduceAgentStatus(state, { sessionId, status }, now = 0) {
+  const prev = sessionOf(state, sessionId, now)
+  const session = { ...prev }
+  let changed = false
+
+  if (status === 'running') {
+    if (session.state !== 'running') {
+      session.state = 'running'
+      session.unread = false
+      session.since = now
+      changed = true
+    }
+  } else if (status === 'idle') {
+    if (session.state === 'running' || session.state === 'approval' || session.state === 'question') {
+      session.state = 'idle'
+      session.since = now
+      changed = true
+    }
+  }
+  if (!changed) return { state, frames: [] }
+  return commit(state, session, sessionId, now)
+}
+
+/** 应用 `agent/error`（agent 级错误，带未读）。 */
+export function reduceAgentError(state, { sessionId, message }, now = 0) {
+  const prev = sessionOf(state, sessionId, now)
+  const session = { ...prev, state: 'error', unread: true, since: now, lastError: message }
+  return commit(state, session, sessionId, now, [
+    { type: 'notice', notice: 'error', sessionId, message },
+  ])
+}
+
+/**
+ * 应用一个逐字流帧。帧语义按官方类型定义：
  *   - `start` 帧、`chunk` + `text-delta` → 这一回合在跑
- *   - `end` 帧**不**改状态（一个 attempt 结束不代表整个回合结束，回合边界交给 session/event）
+ *   - `end` 帧**不**改状态（一个 attempt 结束不代表整个回合结束，空档交给 agent/status）
  */
 export function reduceStreamChunk(state, chunk, now = 0) {
   const prev = sessionOf(state, chunk.sessionId, now)
@@ -260,11 +355,13 @@ export function snapshot(state) {
   return {
     state: state.current,
     unread: unreadCount(state),
+    pendingApprovals: pendingApprovalCount(state),
     seq: state.seq,
     sessions: Object.values(state.sessions).map((s) => ({
       sessionId: s.sessionId,
       state: s.state,
       unread: s.unread,
+      pendingApprovals: s.pendingApprovals ?? 0,
       title: s.title,
       tail: s.tail,
     })),

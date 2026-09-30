@@ -18,8 +18,13 @@ import { apply } from '../packages/pet-plugin/index.js'
 import {
   aggregate,
   createPetState,
+  normalizeAgentError,
+  normalizeAgentStatus,
   normalizeSessionEvent,
   normalizeStreamChunk,
+  pendingApprovalCount,
+  reduceAgentError,
+  reduceAgentStatus,
   reducePetEvent,
   reduceStreamChunk,
   releaseHeld,
@@ -77,7 +82,7 @@ check('多会话取最高优先级：running + done → done', () => {
 
 check('审批压过完成：done + approval → approval', () => {
   let s = emit(createPetState(), 'turn/end', 's1', 0)
-  s = emit(s, 'attention/approval', 's2', 1000)
+  s = emit(s, 'approval/asked', 's2', 1000)
   assert.equal(aggregate(s), 'approval')
 })
 
@@ -90,25 +95,25 @@ check('done 记未读，running 清未读', () => {
 
 check('升优先级立即生效', () => {
   const st = createPetState({ minHoldMs: 500 })
-  let s = emit(st, 'turn/start', 's1', 0) // running
-  const r = reducePetEvent(s, { kind: 'session/error', sessionId: 's1' }, 100) // error 更高
+  const s = emit(st, 'turn/start', 's1', 0) // running
+  const r = reduceAgentError(s, { sessionId: 's1', message: 'boom' }, 100) // error 更高
   assert.equal(r.state.current, 'error')
 })
 
 check('降优先级在最短保持时间内被压住', () => {
   const st = createPetState({ minHoldMs: 500 })
-  let s = emit(st, 'attention/approval', 's1', 1000) // approval
+  const s = emit(st, 'approval/asked', 's1', 1000) // approval
   assert.equal(s.current, 'approval')
-  const r = reducePetEvent(s, { kind: 'session/error', sessionId: 's1' }, 1100) // 仅过 100ms
+  const r = reduceAgentStatus(s, { sessionId: 's1', status: 'idle' }, 1100) // 仅过 100ms
   assert.equal(r.state.current, 'approval', '未满 500ms 不应降档')
 })
 
 check('releaseHeld 在没有新事件时释放被压住的状态', () => {
   const st = createPetState({ minHoldMs: 500 })
-  let s = emit(st, 'attention/approval', 's1', 1000)
-  s = reducePetEvent(s, { kind: 'session/error', sessionId: 's1' }, 1100).state
+  let s = emit(st, 'approval/asked', 's1', 1000)
+  s = reduceAgentStatus(s, { sessionId: 's1', status: 'idle' }, 1100).state
   const r = releaseHeld(s, 1600) // 距上次切换 600ms
-  assert.equal(r.state.current, 'error')
+  assert.equal(r.state.current, 'idle')
   assert.equal(r.frames[0].type, 'state')
 })
 
@@ -166,6 +171,77 @@ check('只有 text-delta 的 chunk 才累积 tail', () => {
   )
   assert.equal(usage.state.sessions.s1.tail, '')
   assert.ok(!usage.frames.some((f) => f.type === 'stream'))
+})
+
+// ── agent/status：权威的空档信号（治"状态挂住"）──────────────────
+check('agent/status idle 把运行中的会话降回空闲', () => {
+  let s = emit(createPetState(), 'turn/start', 's1', 0)
+  assert.equal(aggregate(s), 'running')
+  s = reduceAgentStatus(s, { sessionId: 's1', status: 'idle' }, 1000).state
+  assert.equal(aggregate(s), 'idle')
+})
+
+check('agent/status idle **不**冲掉 done（未读语义要保留）', () => {
+  let s = emit(createPetState(), 'turn/end', 's1', 0)
+  assert.equal(aggregate(s), 'done')
+  s = reduceAgentStatus(s, { sessionId: 's1', status: 'idle' }, 1000).state
+  assert.equal(aggregate(s), 'done', 'done 带未读，不能被 idle 抹掉')
+  assert.equal(snapshot(s).unread, 1)
+})
+
+check('agent/status running 清未读', () => {
+  let s = emit(createPetState(), 'turn/end', 's1', 0)
+  s = reduceAgentStatus(s, { sessionId: 's1', status: 'running' }, 2000).state
+  assert.equal(aggregate(s), 'running')
+  assert.equal(snapshot(s).unread, 0)
+})
+
+check('agent/status 非法值被忽略', () => {
+  const r = reduceAgentStatus(createPetState(), { sessionId: 's1', status: 'weird' }, 0)
+  assert.equal(r.frames.length, 0)
+})
+
+// ── 审批：A7 主动提醒的原料 ──────────────────────────────────────
+check('approval/asked 计数 +1 并产生 notice 帧', () => {
+  const r = reducePetEvent(
+    createPetState(),
+    { kind: 'approval/asked', sessionId: 's1', data: { toolName: 'bash', reason: '危险命令' } },
+    0,
+  )
+  assert.equal(pendingApprovalCount(r.state), 1)
+  const notice = r.frames.find((f) => f.type === 'notice')
+  assert.equal(notice?.toolName, 'bash')
+  assert.equal(notice?.pending, 1)
+  assert.equal(aggregate(r.state), 'approval')
+})
+
+check('approval/decided 计数 -1 且不会变负', () => {
+  const asked = reducePetEvent(createPetState(), { kind: 'approval/asked', sessionId: 's1', data: {} }, 0)
+  const decided = reducePetEvent(asked.state, { kind: 'approval/decided', sessionId: 's1', data: { outcome: 'allowed-once' } }, 10)
+  assert.equal(pendingApprovalCount(decided.state), 0)
+  const extra = reducePetEvent(decided.state, { kind: 'approval/decided', sessionId: 's1', data: {} }, 20)
+  assert.equal(pendingApprovalCount(extra.state), 0, '重复 decided 不应把计数压成负数')
+})
+
+// ── agent/error ─────────────────────────────────────────────────
+check('agent/error → 出错档 + 未读 + notice 帧', () => {
+  const r = reduceAgentError(createPetState(), { sessionId: 's1', message: 'boom' }, 0)
+  assert.equal(aggregate(r.state), 'error')
+  assert.equal(snapshot(r.state).unread, 1)
+  assert.equal(r.frames.find((f) => f.type === 'notice')?.notice, 'error')
+})
+
+// ── 归一化 ──────────────────────────────────────────────────────
+check('归一化 agent/status 与 agent/error', () => {
+  assert.deepEqual(normalizeAgentStatus({ agent: { session: { id: 's1' } }, status: 'idle' }), {
+    sessionId: 's1',
+    status: 'idle',
+  })
+  assert.equal(normalizeAgentStatus({ agent: {}, status: 'weird' }), null)
+  assert.equal(normalizeAgentStatus(null), null)
+  const err = normalizeAgentError({ agent: { id: 's2' }, error: new Error('boom') })
+  assert.equal(err.sessionId, 's2')
+  assert.equal(err.message, 'boom')
 })
 
 // ─────────────────────────────────────────────────────────────
@@ -228,13 +304,21 @@ async function runWaterfall(listeners, event, fallback, ...args) {
 
 const calls = []
 const fakeAgent = {
-  followup: async (text) => calls.push(['followup', text]),
-  cancel: async () => calls.push(['cancel']),
+  followup: async (message) => calls.push(['followup', message]),
+  cancel: async (cause) => calls.push(['cancel', cause]),
 }
 const mockAgentGetter = (sessionId) => (sessionId === 'known' ? fakeAgent : undefined)
 
+// 注入 UserMessage 工厂：真实运行时插件会动态 import @deepseek-ai/dsh-llm，
+// 但自测环境里没有那个包，所以走注入点（这也是 config.createUserMessage 存在的理由）。
+const stubCreateUserMessage = (input) => ({ ...input, id: 'msg-test-1', role: 'user' })
+
 const { ctx, routes, listeners, warnings } = createMockCtx({ agents: mockAgentGetter })
-const dispose = apply(ctx, { pathPrefix: '/xilian-pet', minHoldMs: 0 })
+const dispose = apply(ctx, {
+  pathPrefix: '/xilian-pet',
+  minHoldMs: 0,
+  createUserMessage: stubCreateUserMessage,
+})
 
 check('apply 注册了 7 条 exact 路由', () => {
   assert.equal(routes.size, 7, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
@@ -244,9 +328,11 @@ check('所有路由都是 exact（避免被 /api 之类的前缀路由吞掉）'
   for (const r of routes.values()) assert.equal(r.kind, 'exact')
 })
 
-check('只在通知型事件上注册监听器（2 个）', () => {
+check('只在通知型事件上注册监听器（4 个）', () => {
   assert.equal(listeners.get('session/event')?.length, 1)
   assert.equal(listeners.get('agent/assistant-stream')?.length, 1)
+  assert.equal(listeners.get('agent/status')?.length, 1)
+  assert.equal(listeners.get('agent/error')?.length, 1)
 })
 
 check('绝不订阅 waterfall 事件（tools/pre-execute、tools/post-execute）', () => {
@@ -284,12 +370,15 @@ const base = `http://127.0.0.1:${server.address().port}`
 
 console.log(`\n[3] HTTP 往返（真实 socket，${base}）`)
 
-await checkAsync('GET /health → 200 且 ok:true', async () => {
+await checkAsync('GET /health → 200 且 ok:true，并带 code 修订号', async () => {
   const res = await fetch(`${base}/xilian-pet/health`)
   assert.equal(res.status, 200)
   const body = await res.json()
   assert.equal(body.ok, true)
   assert.equal(body.plugin, 'xilian-pet')
+  // code 的用途：判断插件有没有热重载（配合 uptimeMs 归零）
+  assert.ok(Number.isInteger(body.code) && body.code >= 1, `code 应为整数修订号，实际 ${body.code}`)
+  assert.equal(typeof body.pendingApprovals, 'number')
 })
 
 await checkAsync('GET /state → 200 且 state:idle', async () => {
@@ -331,24 +420,57 @@ await checkAsync('POST /prompt 空文本 → 400', async () => {
   assert.equal(res.status, 400)
 })
 
-await checkAsync('POST /prompt 命中 agent → followup 被调用', async () => {
+await checkAsync('POST /prompt 命中 agent → 构造出 UserMessage 再 followup', async () => {
   const res = await fetch(`${base}/xilian-pet/prompt`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ sessionId: 'known', text: '去写个 README' }),
   })
   assert.equal(res.status, 200)
-  assert.deepEqual(calls.at(-1), ['followup', '去写个 README'])
+  const [action, message] = calls.at(-1)
+  assert.equal(action, 'followup', 'followup 必须收到消息对象，不是字符串')
+  assert.equal(message.role, 'user')
+  assert.deepEqual(message.content, [{ type: 'text', text: '去写个 README' }])
+  assert.deepEqual(message.source, { kind: 'user' })
 })
 
-await checkAsync('POST /interrupt 命中 agent → cancel 被调用', async () => {
+await checkAsync('POST /interrupt 命中 agent → cancel({ kind: "user" })', async () => {
   const res = await fetch(`${base}/xilian-pet/interrupt`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ sessionId: 'known' }),
   })
   assert.equal(res.status, 200)
-  assert.deepEqual(calls.at(-1), ['cancel'])
+  assert.deepEqual(calls.at(-1), ['cancel', { kind: 'user' }])
+})
+
+await checkAsync('取不到 UserMessage 工厂时 /prompt 降级为 503（而不是让插件加载失败）', async () => {
+  // 说明：本测试依赖"自测环境里解析不到 @deepseek-ai/dsh-llm"这一事实 ——
+  // 那正是生产环境里唯一可能失败的地方，所以这条测的是真实的降级路径。
+  const m = createMockCtx({ agents: mockAgentGetter })
+  const teardown = apply(m.ctx, { pathPrefix: '/xilian-pet', minHoldMs: 0 }) // 刻意不注入工厂
+  const srv = http.createServer((req, res) => {
+    const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
+    if (route === undefined) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    route.handler(req, res)
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  try {
+    const res = await fetch(`http://127.0.0.1:${srv.address().port}/xilian-pet/prompt`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'known', text: 'hi' }),
+    })
+    assert.equal(res.status, 503)
+    assert.equal((await res.json()).error, 'no-message-factory')
+  } finally {
+    await new Promise((resolve) => srv.close(resolve))
+    teardown()
+  }
 })
 
 await checkAsync('SSE：连接即收到 connected 注释 + hello + snapshot', async () => {

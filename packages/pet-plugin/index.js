@@ -17,8 +17,13 @@
 
 import {
   createPetState,
+  normalizeAgentError,
+  normalizeAgentStatus,
   normalizeSessionEvent,
   normalizeStreamChunk,
+  pendingApprovalCount,
+  reduceAgentError,
+  reduceAgentStatus,
   reducePetEvent,
   reduceStreamChunk,
   releaseHeld,
@@ -32,6 +37,13 @@ export const inject = ['webServer']
 
 const PROTOCOL_VERSION = 1
 const HEARTBEAT_MS = 15_000
+
+/**
+ * 代码修订号 —— **每次改本文件或 reducer.js 都要 +1**。
+ * 目的：`/health` 会带上它，于是"插件到底有没有热重载"一眼可判：
+ *   uptimeMs 归零 + code 变大 = 热重载成功；两者都没变 = 没重载（需要重启 DSH）。
+ */
+const CODE_REVISION = 3
 
 function sseData(payload) {
   return `data: ${JSON.stringify(payload)}\n\n`
@@ -146,6 +158,34 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  /** 观测 agent/status。载荷 { agent, status }，这是权威的运行/空闲信号。 */
+  function observeAgentStatus(payload) {
+    try {
+      noteRawShape('agent/status', payload)
+      const status = normalizeAgentStatus(payload)
+      if (status === null) return
+      const result = reduceAgentStatus(state, status, Date.now())
+      state = result.state
+      publishFrames(result.frames)
+    } catch (error) {
+      warn(`observe(agent/status) failed: ${error?.message ?? error}`)
+    }
+  }
+
+  /** 观测 agent/error。载荷 { agent, turn, error }。 */
+  function observeAgentError(payload) {
+    try {
+      noteRawShape('agent/error', { agentId: payload?.agent?.id, message: payload?.error?.message })
+      const failure = normalizeAgentError(payload)
+      if (failure === null) return
+      const result = reduceAgentError(state, failure, Date.now())
+      state = result.state
+      publishFrames(result.frames)
+    } catch (error) {
+      warn(`observe(agent/error) failed: ${error?.message ?? error}`)
+    }
+  }
+
   const disposers = []
 
   // ── 1. 事件观测（只读通知，返回值无影响）────────────────────────────
@@ -168,6 +208,10 @@ export function apply(ctx, config = {}) {
   // 并且必须在真实宿主上验证过再提交。
   disposers.push(ctx.on('session/event', (session, event) => observeSession(session, event)))
   disposers.push(ctx.on('agent/assistant-stream', (payload) => observeStream(payload)))
+  // agent/status 是权威的运行/空闲信号 —— 没有它，状态只会单向升档、永远降不回来
+  // （实测：插件挂上后 state 卡在 "running" 长达 16 小时）。
+  disposers.push(ctx.on('agent/status', (payload) => observeAgentStatus(payload)))
+  disposers.push(ctx.on('agent/error', (payload) => observeAgentError(payload)))
 
   // ── 2. 路由注册 ────────────────────────────────────────────────────
   function register(method, path, handler, label) {
@@ -212,10 +256,12 @@ export function apply(ctx, config = {}) {
         ok: true,
         plugin: name,
         protocol: PROTOCOL_VERSION,
+        code: CODE_REVISION,
         pid: process.pid,
         startedAt,
         uptimeMs: Date.now() - startedAt,
         subscribers: connections.size,
+        pendingApprovals: pendingApprovalCount(state),
         state: state.current,
       }),
     `xilian-pet: GET ${pathPrefix}/health`,
@@ -265,6 +311,35 @@ export function apply(ctx, config = {}) {
     return agents.get(sessionId)
   }
 
+  /**
+   * UserMessage 工厂。
+   *
+   * 关键：`agent.followup(message: UserMessage)` 收的是**消息对象**，不是字符串。
+   * 官方真实调用点（从 asar 抄的）：
+   *     const message = createUserMessage({ content, source: { kind: 'user' } })
+   *     this.agent.followup(message)
+   *
+   * 取值顺序：
+   *   1. `config.createUserMessage` —— **测试注入点**（YAML 里给不了函数，但自测直接调 apply 可以）
+   *   2. 动态 import `@deepseek-ai/dsh-llm`（宿主会安装 profile 运行时解析，能解析到）
+   *
+   * 刻意用**动态 import + 缓存**而不是顶层静态 import：一旦解析失败，只让 /prompt 返回 503，
+   * 而不是让整个插件加载失败。
+   */
+  let userMessageFactory = typeof config.createUserMessage === 'function' ? config.createUserMessage : undefined
+  async function getUserMessageFactory() {
+    if (userMessageFactory !== undefined) return userMessageFactory
+    try {
+      const mod = await import('@deepseek-ai/dsh-llm')
+      userMessageFactory = typeof mod.createUserMessage === 'function' ? mod.createUserMessage : null
+      warn(`createUserMessage 解析${userMessageFactory === null ? '失败（无该导出）' : '成功'}`)
+    } catch (error) {
+      userMessageFactory = null
+      warn(`import @deepseek-ai/dsh-llm 失败：${error?.message ?? error}`)
+    }
+    return userMessageFactory
+  }
+
   register(
     'POST',
     `${pathPrefix}/prompt`,
@@ -276,16 +351,25 @@ export function apply(ctx, config = {}) {
       if (agent === undefined) {
         return sendJson(res, 503, {
           error: 'no-agent',
-          message: 'ctx.agents.get(sessionId) 不可用或 sessionId 缺失；反向操控待接线',
+          message: 'ctx.agents.get(sessionId) 不可用或 sessionId 缺失',
+        })
+      }
+      const createUserMessage = await getUserMessageFactory()
+      if (createUserMessage === null) {
+        return sendJson(res, 503, {
+          error: 'no-message-factory',
+          message: '取不到 @deepseek-ai/dsh-llm 的 createUserMessage，无法构造 UserMessage',
         })
       }
       const followup = agent.followup ?? agent.steer
       if (typeof followup !== 'function') {
         return sendJson(res, 503, { error: 'no-followup', message: 'agent 未暴露 followup/steer' })
       }
-      await followup.call(agent, text)
+      // 照抄官方调用点：content 是文本块数组，source.kind = 'user'
+      const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+      await followup.call(agent, message)
       publish({ type: 'control', action: 'prompt', sessionId: body.sessionId, ok: true })
-      return sendJson(res, 200, { ok: true })
+      return sendJson(res, 200, { ok: true, messageId: message?.id })
     },
     `xilian-pet: POST ${pathPrefix}/prompt`,
   )
@@ -303,7 +387,9 @@ export function apply(ctx, config = {}) {
       if (typeof cancel !== 'function') {
         return sendJson(res, 503, { error: 'no-cancel', message: 'agent 未暴露 cancel/interrupt/abort' })
       }
-      await cancel.call(agent)
+      // 官方签名：cancel(cause: AgentCancelCause, options?)；
+      // AgentCancelCause = { kind: 'user' } | { kind: 'parent' } | { kind: 'hook'; reason } | { kind: 'disposed' }
+      await cancel.call(agent, { kind: 'user' })
       publish({ type: 'control', action: 'interrupt', sessionId: body.sessionId, ok: true })
       return sendJson(res, 200, { ok: true })
     },
