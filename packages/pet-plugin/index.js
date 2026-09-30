@@ -87,7 +87,11 @@ export function apply(ctx, config = {}) {
 
   let state = createPetState({ minHoldMs })
   const connections = new Set()
-  const rawShapes = []
+  // 形状样本：**按 channel 分别限量**，不是全局环形缓冲。
+  // 踩过的坑：全局环形会被高频通道刷爆 —— agent/assistant-stream 每个 token 一帧，
+  // 实测 80 条样本全被它占满，session/event 与 agent/status 的样本全被挤出去，
+  // 于是"想确认某类事件到底收到没有"根本查不到。
+  const rawShapes = new Map()
   const startedAt = Date.now()
 
   function publish(frame) {
@@ -106,20 +110,23 @@ export function apply(ctx, config = {}) {
   }
 
   function noteRawShape(channel, raw) {
-    if (captureRawShapes <= 0 || rawShapes.length >= captureRawShapes * 4) return
+    if (captureRawShapes <= 0) return
     let preview
     try {
-      preview = JSON.stringify(raw).slice(0, 400)
+      preview = JSON.stringify(raw)?.slice(0, 400) ?? '<undefined>'
     } catch {
       preview = '<unserializable>'
     }
-    rawShapes.push({
+    const list = rawShapes.get(channel) ?? []
+    list.push({
       channel,
       at: Date.now(),
       keys: raw !== null && typeof raw === 'object' ? Object.keys(raw) : typeof raw,
       preview,
     })
-    if (rawShapes.length > captureRawShapes * 4) rawShapes.splice(0, rawShapes.length - captureRawShapes * 4)
+    // 只裁剪本通道，其他通道的样本不受影响
+    if (list.length > captureRawShapes) list.splice(0, list.length - captureRawShapes)
+    rawShapes.set(channel, list)
   }
 
   function warn(message) {
@@ -279,7 +286,14 @@ export function apply(ctx, config = {}) {
   register(
     'GET',
     `${pathPrefix}/debug/shapes`,
-    (req, res) => sendJson(res, 200, { count: rawShapes.length, shapes: rawShapes.slice(-captureRawShapes) }),
+    (req, res) => {
+      const flat = [...rawShapes.values()].flat()
+      sendJson(res, 200, {
+        count: flat.length,
+        byChannel: Object.fromEntries([...rawShapes].map(([c, list]) => [c, list.length])),
+        shapes: flat,
+      })
+    },
     `xilian-pet: GET ${pathPrefix}/debug/shapes`,
   )
 

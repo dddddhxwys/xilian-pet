@@ -506,10 +506,34 @@ await checkAsync('SSE：assistant/stream → 推出 stream 帧', async () => {
   assert.match(text, /西莲在写/)
 })
 
-await checkAsync('GET /debug/shapes → 记录到原始事件形状样本', async () => {
+await checkAsync('GET /debug/shapes → 记录到原始事件形状样本（按 channel 分别限量）', async () => {
   const body = await (await fetch(`${base}/xilian-pet/debug/shapes`)).json()
   assert.ok(body.count >= 1, '应至少记录一条形状样本')
   assert.ok(body.shapes.some((s) => s.channel === 'session/event'))
+  assert.ok(body.byChannel['session/event'] >= 1, 'session/event 的样本不该被高频通道挤掉')
+})
+
+await checkAsync('回归：高频通道灌爆也不会挤掉低频通道的样本', async () => {
+  // 实测踩过：全局环形缓冲被 agent/assistant-stream（每 token 一帧）刷满，
+  // 80 条样本全是它，session/event 与 agent/status 一条不剩，根本没法诊断。
+  for (let i = 0; i < 200; i++) {
+    for (const fn of listeners.get('agent/assistant-stream')) {
+      fn({
+        agent: { session: { id: 's1' } },
+        frame: { type: 'chunk', chunk: { type: 'text-delta', text: 'x' } },
+      })
+    }
+  }
+  for (const fn of listeners.get('session/event')) fn({ id: 's1' }, { type: 'turn/end' })
+  for (const fn of listeners.get('agent/status')) fn({ agent: { session: { id: 's1' } }, status: 'idle' })
+
+  const body = await (await fetch(`${base}/xilian-pet/debug/shapes`)).json()
+  assert.ok(
+    body.byChannel['agent/assistant-stream'] <= 20,
+    `单通道样本应被限制在上限内，实际 ${body.byChannel['agent/assistant-stream']}`,
+  )
+  assert.ok(body.byChannel['session/event'] >= 1, '低频通道的样本必须还在')
+  assert.ok(body.byChannel['agent/status'] >= 1, 'agent/status 的样本必须还在')
 })
 
 await checkAsync('无法识别的载荷不会导致崩溃', async () => {
