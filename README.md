@@ -189,9 +189,9 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 装好后自检：`GET http://127.0.0.1:19387/xilian-pet/health` 应返回 `{"ok":true,...}`。
 （本机 shell 里 `curl` 走 Schannel 会失败 —— 见 §三，用 `node -e` 或窗口的启动自检代替。）
 
-### 插件源码热重载（已配置，需一次重启生效）
+### 插件源码热重载：**实测无效**，已放弃
 
-profile patch 里加了这一行，让**插件源码改动**也能热重载：
+profile patch 里加了这一行（保留着，现在是惰性配置、无害）：
 
 ```yaml
 - id: hmr
@@ -202,15 +202,45 @@ profile patch 里加了这一行，让**插件源码改动**也能热重载：
       - '<repo>\packages\pet-plugin'
 ```
 
-⚠️ **官方 README 明确要求 "configure … before launching"** —— chokidar 监视器在 `hmr` 插件初始化时建立，改 config 不会重建它。
-**已实测确认**：加完这行后改插件源码，`/health` 的 `startedAt` 与 `uptimeMs` **都没变** → 没重载。**所以要重启一次 DSH 才生效**；之后就是「改代码 → 自动重载」。
+**结论：它不生效。** 证据链：
 
-判断"到底有没有热重载"的办法：`/health` 里带 `code`（代码修订号，改 `index.js` / `reducer.js` 时手动 +1）：
+| 步骤 | 结果 |
+|---|---|
+| 加完 config 后改插件源码 | ❌ `code` 不变 |
+| **重启 DSH 后**再改源码（只改一个常量，代码路径完全不变） | ❌ `code` 仍然不变 |
+
+已排除：不是 patch 优先级问题（家目录级 patch 不存在，profile patch 是唯一且最后生效的用户 patch）；`root` 用法与官方 README 示例一致。
+
+未定论的三种可能（记录在 `chajian/环境体检报告.md`）：① 对 `hmr` 行的覆盖没被采纳；② 绝对路径（含空格 + 中文）在 chokidar 的 `cwd` 语义下未被正确解析；③ **模块 HMR 只对 profile 里正式安装的包生效，对"绝对路径直挂"的 insert 行不适用**（文档反复强调 "Package installation and removal run outside this queue"，我倾向这条）。
+
+> **不要再在这上面盲试**。开发循环按下面的方式走。
+
+### 开发循环（已定：改插件 → 重启 DSH）
+
+```
+改 packages/pet-plugin/*.js  →  把 CODE_REVISION +1  →  重启 DSH  →  看 /health
+```
+
+`/health` 里带 `code`（代码修订号）：
 
 | 观察 | 结论 |
 |---|---|
-| `uptimeMs` 归零 **且** `code` 变大 | ✅ 热重载成功 |
-| 两者都没变 | ❌ 没重载（需要重启 DSH） |
+| `code` 变大 **且** `uptimeMs` 归零 | ✅ 新代码已生效 |
+| `code` 没变 | ❌ 改的代码没被加载（确认是否真的重启了） |
+
+### A7 主动提醒（插件侧已完成，显示侧等 Electron）
+
+策略引擎在 `packages/pet-plugin/reminders.js`，**纯函数**、可完全脱离 DSH 单测：
+
+| 提醒 | 级别 | 规则 |
+|---|---|---|
+| **审批积压** | urgent | 待审批数增加即提醒，**可穿透免打扰**；同一批限流 `repeatAfterMs`，**积压清空则重置冷却** |
+| **久坐** | 低 | 连续活跃累计 `afterMs` 才提醒；空闲 `idleResetMs` 重置工作段；守免打扰 + 冷却 + **概率门** |
+| **花销** | 低 | 每会话每累计 `everyTokens` 提一次；跨过下一个阈值才再提 |
+
+- 提醒以 `notice` 帧经 SSE 推送；**窗口没连时发出的提醒会被暂存**（最多 20 条），连上后补发最近 5 条
+- 诊断端点：`GET /xilian-pet/debug/reminders`（配置 / 此刻是否免打扰 / 已发记录 / 暂存条数）
+- 配置项见 `packages/pet-plugin/cordis.patch.yml`，整块可省略（有代码默认值）
 
 ### 关键设计决定（都写在代码注释里）
 

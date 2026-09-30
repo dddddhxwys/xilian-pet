@@ -18,6 +18,7 @@ import { apply } from '../packages/pet-plugin/index.js'
 import {
   aggregate,
   createPetState,
+  hasActivity,
   normalizeAgentError,
   normalizeAgentStatus,
   normalizeSessionEvent,
@@ -29,7 +30,15 @@ import {
   reduceStreamChunk,
   releaseHeld,
   snapshot,
+  spendBySession,
 } from '../packages/pet-plugin/reducer.js'
+import {
+  DEFAULT_REMINDERS,
+  decideReminders,
+  isQuiet,
+  mergeReminderConfig,
+  parseQuietHours,
+} from '../packages/pet-plugin/reminders.js'
 
 let passed = 0
 let failed = 0
@@ -231,6 +240,46 @@ check('agent/error → 出错档 + 未读 + notice 帧', () => {
   assert.equal(r.frames.find((f) => f.type === 'notice')?.notice, 'error')
 })
 
+// ── turn/end 按 reason 分流 ─────────────────────────────────────
+check('turn/end completed → done + 未读', () => {
+  const s = emit(createPetState(), 'turn/end', 's1', 0, { data: { reason: { kind: 'completed' } } })
+  assert.equal(aggregate(s), 'done')
+  assert.equal(snapshot(s).unread, 1)
+})
+
+check('turn/end interrupted → 空闲且**不**产生未读（用户自己打断的）', () => {
+  const s = emit(createPetState(), 'turn/end', 's1', 0, { data: { reason: { kind: 'interrupted' } } })
+  assert.equal(aggregate(s), 'idle')
+  assert.equal(snapshot(s).unread, 0)
+})
+
+check('turn/end error → 出错 + 未读', () => {
+  const s = emit(createPetState(), 'turn/end', 's1', 0, {
+    data: { reason: { kind: 'error', error: { message: 'llm failed' } } },
+  })
+  assert.equal(aggregate(s), 'error')
+  assert.equal(snapshot(s).unread, 1)
+})
+
+check('turn/end 未知 reason 保守当 completed', () => {
+  const s = emit(createPetState(), 'turn/end', 's1', 0, { data: { reason: { kind: 'wat' } } })
+  assert.equal(aggregate(s), 'done')
+})
+
+// ── 花销与提醒引擎需要的视图 ────────────────────────────────────
+check('assistant/message 累积 usage（totalTokens 优先）', () => {
+  let s = emit(createPetState(), 'assistant/message', 's1', 0, { data: { usage: { totalTokens: 1500 } } })
+  s = emit(s, 'assistant/message', 's1', 1, { data: { usage: { inputTokens: 100, outputTokens: 50 } } })
+  assert.equal(snapshot(s).sessions[0].spendTokens, 1650)
+  assert.equal(spendBySession(s).s1, 1650)
+})
+
+check('hasActivity 只在运行/审批/提问时为真', () => {
+  assert.equal(hasActivity(createPetState()), false)
+  assert.equal(hasActivity(emit(createPetState(), 'turn/start', 's1', 0)), true)
+  assert.equal(hasActivity(emit(createPetState(), 'turn/end', 's1', 0, { data: { reason: { kind: 'completed' } } })), false)
+})
+
 // ── 归一化 ──────────────────────────────────────────────────────
 check('归一化 agent/status 与 agent/error', () => {
   assert.deepEqual(normalizeAgentStatus({ agent: { session: { id: 's1' } }, status: 'idle' }), {
@@ -242,6 +291,113 @@ check('归一化 agent/status 与 agent/error', () => {
   const err = normalizeAgentError({ agent: { id: 's2' }, error: new Error('boom') })
   assert.equal(err.sessionId, 's2')
   assert.equal(err.message, 'boom')
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[1b] 提醒策略引擎（A7，纯函数）')
+
+const at = (iso) => new Date(iso).getTime()
+
+check('免打扰时段：同日区间', () => {
+  const q = parseQuietHours(['09:00', '12:00'])
+  assert.equal(isQuiet(at('2026-09-30T10:00:00'), q), true)
+  assert.equal(isQuiet(at('2026-09-30T13:00:00'), q), false)
+})
+
+check('免打扰时段：跨午夜', () => {
+  const q = parseQuietHours(['22:30', '08:00'])
+  assert.equal(isQuiet(at('2026-09-30T23:00:00'), q), true)
+  assert.equal(isQuiet(at('2026-09-30T03:00:00'), q), true)
+  assert.equal(isQuiet(at('2026-09-30T12:00:00'), q), false)
+})
+
+check('免打扰解析：非法输入返回 null', () => {
+  assert.equal(parseQuietHours(['25:00', '08:00']), null)
+  assert.equal(parseQuietHours(['08:00', '08:00']), null)
+  assert.equal(parseQuietHours('22:30'), null)
+  assert.equal(parseQuietHours([]), null)
+})
+
+check('mergeReminderConfig 逐条合并，不整体替换', () => {
+  const merged = mergeReminderConfig({ sedentary: { afterMs: 123 } })
+  assert.equal(merged.sedentary.afterMs, 123)
+  assert.equal(merged.sedentary.probability, DEFAULT_REMINDERS.sedentary.probability, '未指定字段应保留默认')
+  assert.equal(merged.enabled, true)
+})
+
+check('审批积压是 urgent：可穿透免打扰时段', () => {
+  const config = mergeReminderConfig({ quietHours: ['22:30', '08:00'] })
+  const r = decideReminders({ now: at('2026-09-30T23:00:00'), pendingApprovals: 2, config })
+  assert.equal(r.quiet, true)
+  assert.equal(r.fires.length, 1)
+  assert.equal(r.fires[0].notice, 'approval-backlog')
+  assert.equal(r.fires[0].urgent, true)
+})
+
+check('审批积压：同一批不重复，归零后重置', () => {
+  const config = mergeReminderConfig({ approvalBacklog: { repeatAfterMs: 100_000 } })
+  const t0 = at('2026-09-30T10:00:00')
+  let r = decideReminders({ now: t0, pendingApprovals: 1, config })
+  assert.equal(r.fires.length, 1)
+  r = decideReminders({ state: r.state, now: t0 + 1000, pendingApprovals: 1, config })
+  assert.equal(r.fires.length, 0, '同一批积压不该重复提醒')
+  r = decideReminders({ state: r.state, now: t0 + 2000, pendingApprovals: 0, config })
+  r = decideReminders({ state: r.state, now: t0 + 3000, pendingApprovals: 1, config })
+  assert.equal(r.fires.length, 1, '清零后再积压应重新提醒')
+})
+
+check('低优先提醒守免打扰：夜里不发久坐', () => {
+  const config = mergeReminderConfig({
+    quietHours: ['22:30', '08:00'],
+    sedentary: { afterMs: 1000, probability: 1 },
+  })
+  const night = at('2026-09-30T23:00:00')
+  const st = decideReminders({ now: night - 10_000, hasActivity: true, config }).state
+  const r = decideReminders({ state: st, now: night, hasActivity: true, config })
+  assert.equal(r.quiet, true)
+  assert.ok(!r.fires.some((f) => f.notice === 'sedentary'), '免打扰时段的低优先提醒应被压住')
+})
+
+check('久坐：概率门与冷却都生效', () => {
+  const config = mergeReminderConfig({
+    sedentary: { afterMs: 1000, probability: 0.5, cooldownMs: 10_000, idleResetMs: 60_000 },
+  })
+  const t0 = 1_000_000
+  let r = decideReminders({ now: t0, hasActivity: true, config })
+  r = decideReminders({ state: r.state, now: t0 + 2000, hasActivity: true, config, random: () => 0.9 })
+  assert.ok(!r.fires.some((f) => f.notice === 'sedentary'), '概率门应拦住（0.9 > 0.5）')
+  r = decideReminders({ state: r.state, now: t0 + 3000, hasActivity: true, config, random: () => 0.1 })
+  assert.ok(r.fires.some((f) => f.notice === 'sedentary'), '概率通过应发出')
+  const again = decideReminders({ state: r.state, now: t0 + 4000, hasActivity: true, config, random: () => 0.1 })
+  assert.ok(!again.fires.some((f) => f.notice === 'sedentary'), '冷却期内不应重复')
+})
+
+check('久坐：空闲超过 idleResetMs 会重置工作段', () => {
+  const config = mergeReminderConfig({ sedentary: { afterMs: 1000, probability: 1, idleResetMs: 5000 } })
+  const t0 = 2_000_000
+  let st = decideReminders({ now: t0, hasActivity: true, config }).state
+  assert.notEqual(st.workStartedAt, undefined)
+  st = decideReminders({ state: st, now: t0 + 10_000, hasActivity: false, config }).state
+  assert.equal(st.workStartedAt, undefined, '空闲超时后工作段应重置')
+})
+
+check('花销：跨过阈值才提醒，且同一额度不重复', () => {
+  const config = mergeReminderConfig({ spend: { everyTokens: 1000 } })
+  const t0 = 3_000_000
+  let r = decideReminders({ now: t0, spendBySession: { s1: 999 }, config })
+  assert.equal(r.fires.length, 0, '未达阈值不应提醒')
+  r = decideReminders({ state: r.state, now: t0 + 1, spendBySession: { s1: 1000 }, config })
+  assert.equal(r.fires[0]?.notice, 'spend')
+  const again = decideReminders({ state: r.state, now: t0 + 2, spendBySession: { s1: 1000 }, config })
+  assert.equal(again.fires.length, 0, '同一额度不应重复提醒')
+  const more = decideReminders({ state: r.state, now: t0 + 3, spendBySession: { s1: 2000 }, config })
+  assert.equal(more.fires.length, 1, '再跨一个阈值应再提醒')
+})
+
+check('reminders.enabled=false 时一条都不发', () => {
+  const config = mergeReminderConfig({ enabled: false })
+  const r = decideReminders({ now: 4_000_000, pendingApprovals: 5, hasActivity: true, config, random: () => 0 })
+  assert.equal(r.fires.length, 0)
 })
 
 // ─────────────────────────────────────────────────────────────
@@ -320,8 +476,8 @@ const dispose = apply(ctx, {
   createUserMessage: stubCreateUserMessage,
 })
 
-check('apply 注册了 7 条 exact 路由', () => {
-  assert.equal(routes.size, 7, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
+check('apply 注册了 8 条 exact 路由', () => {
+  assert.equal(routes.size, 8, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
 })
 
 check('所有路由都是 exact（避免被 /api 之类的前缀路由吞掉）', () => {

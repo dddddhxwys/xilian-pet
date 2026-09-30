@@ -58,10 +58,27 @@ export const EVENT_STATE = {
   'compaction/start': 'running',
   // —— 需要你处理 ——
   'approval/asked': 'approval',
-  // —— 完成（带未读）——
-  'turn/end': 'done',
   // 审批有了结论：回到运行，真正的空档交给 agent/status
   'approval/decided': 'running',
+  // 注：turn/end 不在这里 —— 它的落点取决于 reason.kind，见 TURN_END_STATE
+}
+
+/**
+ * `turn/end` 的落点，按官方 `TurnEndReasonMap` 的七种 reason.kind 分流。
+ * 依据（asar 类型清单原文）：
+ *   completed | aborted{reason} | blocked | error{error} | max-tokens | interrupted | forked
+ *
+ * 关键区别：**被打断（用户主动）不该亮"完成 + 未读"** —— 那是用户自己干的，
+ * 给他一个红点提醒纯属噪音。
+ */
+export const TURN_END_STATE = {
+  completed: { state: 'done', unread: true },
+  'max-tokens': { state: 'done', unread: true },
+  forked: { state: 'done', unread: true },
+  aborted: { state: 'idle', unread: false },
+  interrupted: { state: 'idle', unread: false },
+  blocked: { state: 'idle', unread: false },
+  error: { state: 'error', unread: true },
 }
 
 export function createPetState(options = {}) {
@@ -91,6 +108,23 @@ export function unreadCount(state) {
 /** 待审批总数（A7 主动提醒的原料） */
 export function pendingApprovalCount(state) {
   return Object.values(state.sessions).reduce((sum, s) => sum + (s.pendingApprovals ?? 0), 0)
+}
+
+/** 是否有会话在忙（提醒引擎判断"工作段"用） */
+export function hasActivity(state) {
+  return Object.values(state.sessions).some(
+    (s) => s.state === 'running' || s.state === 'approval' || s.state === 'question',
+  )
+}
+
+/** 各会话累计 token（提醒引擎判断花销用） */
+export function spendBySession(state) {
+  const out = Object.create(null)
+  for (const s of Object.values(state.sessions)) {
+    const tokens = s.spendTokens ?? 0
+    if (tokens > 0) out[s.sessionId] = tokens
+  }
+  return out
 }
 
 function textFrom(value) {
@@ -216,6 +250,7 @@ function sessionOf(state, sessionId, now) {
       title: undefined,
       tail: '',
       pendingApprovals: 0,
+      spendTokens: 0,
     }
   )
 }
@@ -236,10 +271,41 @@ function commit(state, session, sessionId, now, extraFrames = []) {
 }
 
 /**
+ * 应用 `turn/end`。按 `reason.kind` 分流；识别不了的 reason 保守当作 completed。
+ */
+export function reduceTurnEnd(state, ev, now = 0) {
+  const reasonKind = typeof ev.data?.reason?.kind === 'string' ? ev.data.reason.kind : undefined
+  const mapped = TURN_END_STATE[reasonKind] ?? TURN_END_STATE.completed
+
+  const prev = sessionOf(state, ev.sessionId, now)
+  const session = { ...prev }
+  if (ev.title !== undefined) session.title = ev.title
+  session.state = mapped.state
+  session.unread = mapped.unread
+  session.since = now
+
+  const extraFrames = []
+  if (mapped.state === 'error') {
+    extraFrames.push({
+      type: 'notice',
+      notice: 'error',
+      sessionId: ev.sessionId,
+      message: String(ev.data?.reason?.error?.message ?? 'turn ended with error'),
+    })
+  } else if (mapped.state === 'done') {
+    extraFrames.push({ type: 'notice', notice: 'turn-completed', sessionId: ev.sessionId })
+  }
+  return commit(state, session, ev.sessionId, now, extraFrames)
+}
+
+/**
  * 应用一个会话事件。
  * @returns {{ state: object, frames: Array<object> }} 新状态 + 需要推送的帧
  */
 export function reducePetEvent(state, ev, now = 0) {
+  // turn/end 的落点取决于 reason.kind，交给专门的分支
+  if (ev.kind === 'turn/end') return reduceTurnEnd(state, ev, now)
+
   const target = EVENT_STATE[ev.kind]
   if (target === undefined) return { state, frames: [] }
 
@@ -248,6 +314,16 @@ export function reducePetEvent(state, ev, now = 0) {
   if (ev.title !== undefined) session.title = ev.title
 
   const extraFrames = []
+
+  // 花销累计：assistant/message 带 usage（官方 TokenUsage：inputTokens/outputTokens/totalTokens…）
+  if (ev.kind === 'assistant/message' && ev.data?.usage !== null && typeof ev.data?.usage === 'object') {
+    const usage = ev.data.usage
+    const total =
+      typeof usage.totalTokens === 'number'
+        ? usage.totalTokens
+        : Number(usage.inputTokens ?? 0) + Number(usage.outputTokens ?? 0)
+    if (Number.isFinite(total) && total > 0) session.spendTokens = (prev.spendTokens ?? 0) + total
+  }
 
   // 审批计数：A7 主动提醒的原料，也是 "+N 背板" 的来源之一
   if (ev.kind === 'approval/asked') {
@@ -362,6 +438,7 @@ export function snapshot(state) {
       state: s.state,
       unread: s.unread,
       pendingApprovals: s.pendingApprovals ?? 0,
+      spendTokens: s.spendTokens ?? 0,
       title: s.title,
       tail: s.tail,
     })),

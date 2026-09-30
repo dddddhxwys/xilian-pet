@@ -19,7 +19,23 @@
         # 路由前缀。刻意避开 /api —— /api 是 dsh-client-connection 的 prefix 路由，
         # 带自己的准入校验（未通过直接 401），exact 路由挂在它下面会被前缀规则吞掉。
         pathPrefix: '/xilian-pet'
-        # 保留最近多少条原始事件的“形状样本”，用于在真实运行中确认事件载荷结构
+        # 保留最近多少条原始事件的“形状样本”（**按 channel 分别计数** —— 全局环形
+        # 会被高频的 agent/assistant-stream 刷爆，导致其他事件的样本全被挤掉）
         captureRawShapes: 20
         # 状态切换最短保持时间（毫秒），防事件突发导致闪烁
         minHoldMs: 500
+        # ── A7 主动提醒（整块可省略，省略即用代码默认值）────────────
+        reminders:
+          enabled: true
+          # 免打扰时段，支持跨午夜；空数组 = 不设
+          quietHours: ['22:30', '08:00']
+          approvalBacklog:
+            # 同一批积压多久之后可以再提醒一次；**积压清空会重置冷却**
+            repeatAfterMs: 180000
+          sedentary:
+            afterMs: 5400000 # 连续活跃累计 90 分钟才提醒
+            idleResetMs: 600000 # 空闲 10 分钟即认为工作段结束
+            cooldownMs: 3600000 # 两次久坐提醒的最小间隔
+            probability: 0.35 # 概率门：到点了也只有这个概率真的提醒
+          spend:
+            everyTokens: 200000 # 每个会话每累计这么多 token 提一次

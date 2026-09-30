@@ -17,6 +17,7 @@
 
 import {
   createPetState,
+  hasActivity,
   normalizeAgentError,
   normalizeAgentStatus,
   normalizeSessionEvent,
@@ -28,7 +29,15 @@ import {
   reduceStreamChunk,
   releaseHeld,
   snapshot,
+  spendBySession,
 } from './reducer.js'
+import {
+  createReminderState,
+  decideReminders,
+  isQuiet,
+  mergeReminderConfig,
+  parseQuietHours,
+} from './reminders.js'
 
 export const name = 'xilian-pet'
 
@@ -43,7 +52,7 @@ const HEARTBEAT_MS = 15_000
  * 目的：`/health` 会带上它，于是"插件到底有没有热重载"一眼可判：
  *   uptimeMs 归零 + code 变大 = 热重载成功；两者都没变 = 没重载（需要重启 DSH）。
  */
-const CODE_REVISION = 3
+const CODE_REVISION = 4
 
 function sseData(payload) {
   return `data: ${JSON.stringify(payload)}\n\n`
@@ -84,6 +93,12 @@ export function apply(ctx, config = {}) {
       : '/xilian-pet'
   const minHoldMs = Number.isFinite(config.minHoldMs) ? config.minHoldMs : 500
   const captureRawShapes = Number.isFinite(config.captureRawShapes) ? config.captureRawShapes : 20
+
+  // A7 主动提醒
+  const reminderConfig = mergeReminderConfig(config.reminders)
+  let reminderState = createReminderState()
+  /** 迟到的提醒：窗口没连时发出的提醒不能丢，等它连上补发 */
+  const pendingNotices = []
 
   let state = createPetState({ minHoldMs })
   const connections = new Set()
@@ -311,6 +326,10 @@ export function apply(ctx, config = {}) {
       res.write(': connected\n\n')
       res.write(sseData({ type: 'hello', protocol: PROTOCOL_VERSION, pid: process.pid, startedAt }))
       res.write(sseData({ type: 'snapshot', ...snapshot(state) }))
+      // 补发迟到的提醒（窗口没连时发出的那些），最多 5 条
+      if (pendingNotices.length > 0) {
+        res.write(sseData({ type: 'notices', notices: pendingNotices.slice(-5) }))
+      }
       connections.add(res)
       res.on('close', () => connections.delete(res))
     },
@@ -417,6 +436,52 @@ export function apply(ctx, config = {}) {
     (req, res) =>
       sendJson(res, 501, { error: 'not-implemented', message: 'Phase 0 未实现会话聚焦' }),
     `xilian-pet: POST ${pathPrefix}/focus`,
+  )
+
+  // ── A7：主动提醒的定时评估 ────────────────────────────────────────
+  // 久坐这类提醒不依赖任何事件到达，必须有定时器才能触发。
+  // 30 秒一次：足够及时，又不会让纯函数引擎的调用成为负担。
+  const REMINDER_TICK_MS = 30_000
+  disposers.push(
+    ctx.effect(() => {
+      const timer = setInterval(() => {
+        try {
+          const result = decideReminders({
+            state: reminderState,
+            now: Date.now(),
+            pendingApprovals: pendingApprovalCount(state),
+            hasActivity: hasActivity(state),
+            spendBySession: spendBySession(state),
+            config: reminderConfig,
+          })
+          reminderState = result.state
+          for (const frame of result.fires) {
+            pendingNotices.push(frame)
+            if (pendingNotices.length > 20) pendingNotices.shift()
+            publish(frame)
+          }
+        } catch (error) {
+          warn(`提醒引擎失败：${error?.message ?? error}`)
+        }
+      }, REMINDER_TICK_MS)
+      if (typeof timer.unref === 'function') timer.unref()
+      return () => clearInterval(timer)
+    }, 'xilian-pet: reminders'),
+  )
+
+  // 诊断端点：一眼看出提醒引擎的配置、免打扰判定与已发记录
+  register(
+    'GET',
+    `${pathPrefix}/debug/reminders`,
+    (req, res) =>
+      sendJson(res, 200, {
+        config: reminderConfig,
+        quietNow: isQuiet(Date.now(), parseQuietHours(reminderConfig.quietHours)),
+        tickMs: REMINDER_TICK_MS,
+        pendingNotices: pendingNotices.length,
+        state: reminderState,
+      }),
+    `xilian-pet: GET ${pathPrefix}/debug/reminders`,
   )
 
   // 心跳也放进 ctx.effect —— 官方契约要求资源都经由 ctx.effect/ctx.on 注册，
