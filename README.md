@@ -265,18 +265,26 @@ profile patch 里加了这一行（保留着，现在是惰性配置、无害）
 - ✅ **窗口实机启动成功**：`260x300` 透明无边框置顶窗，点击穿透已开启，干净退出
 - ✅ **alpha 掩码命中测试机制可用**：渲染端日志 `alpha 掩码就绪 256×256`，窗口 95.5% 像素全透明
 
-**已写好代码 + 测试、等一次重启生效**（Electron 侧冻结中）：
+**插件侧验证结果（2026-09-30，重启后实测）**：
 
-- 🟡 **A4 状态收尾**：接上 `agent/status`（权威 `idle`/`running`），治掉"状态卡在 running"；`idle` 刻意不冲掉 `done`/`error` 的未读语义
-- 🟡 **A5 逐字气泡**：按 `frame.chunk.text` + `chunkType === 'text-delta'` 取正文
-- 🟡 **A6 派活/打断**：按官方调用点构造 `createUserMessage({ content, source: { kind: 'user' } })`，`cancel({ kind: 'user' })`
-- 🟡 **A7 原料就位**：`approval/asked` / `approval/decided` 计数 + `notice` 帧（**纯通知事件，不碰 waterfall**）；提醒策略与免打扰时段未做
+- ✅ **A1 插件被 profile 加载**：`/health` 返回 `{"ok":true,"code":4,...}`
+- ✅ **A5 逐字流**：`/state` 的 `tail` 持续含真实正文（取自 `frame.chunk.text`）
+- ✅ **A7 主动提醒（插件侧端到端）**：第一次 30s tick 即触发花销提醒 →
+  `pendingNotices=1` → 重连时经 **`notices` 帧补发**（用 `tools/tap-events.mjs` 验证）
+- ✅ **花销累计**：`spendTokens` 随 `assistant/message` 的 `usage` 真实增长
+- ✅ **形状捕获按 channel 限量生效**：`session/event 20` / `assistant-stream 20`（限流）/ `agent/status 1`
+  —— 高频流式帧不再挤掉低频通道的样本
+- 🟡 **A4 状态收尾**：`agent/status` 订阅**已确认在收事件**；但"降回 idle"无法在回合内自证
+  （我一执行命令，agent 就已经是 running 了），需下次会话切换时观察
+- 🟡 **A6 派活/打断**：代码与测试就绪，未在真实会话上从 UI 触发过（Electron 冻结中）
+
+> 代码修订号现为 **5**（只含"形状预览支持循环引用"这个诊断改进），运行中的是 **4**。
+> 不值得为它单独重启 —— 下次为别的事重启时一起生效。
 
 **尚未验证 / 待接线**：
 
-- ⏳ **插件尚未真正装进 profile**（沙箱写边界 + 没有 `plugin_manager` 工具）→ **A1/A2 未验证**。两条路：GUI 插件管理页填 `packages/pet-plugin` 的绝对路径；或在你自己的终端跑 `& $NODE tools\install-plugin.mjs --write`
 - ⏳ **A9「透明区不挡 DSH 界面点击」需人工在桌面上确认** —— 机制已验证，但"点在透明处真的穿过去"只能肉眼+手动试
-- ⏳ **事件载荷的真实形状未知**：`session/event` 的字段归一化是**推测**。插件已内置 `GET /xilian-pet/debug/shapes` 记录真实载荷样本，装好后先看它再定案，别照猜测继续加功能
+- ⏳ **A10 素材缺失降级**、**Live2D 接入**、**A2 验收项重定义** —— 都在 Electron 侧，等你给模型后一起大改
 - ⏳ `agent.followup()` / `agent.cancel()` 的确切方法名待真实运行确认（代码已做多候选探测与 503 降级）
 
 ### 靠"自我截图"抓到的两个真 bug（留作教训）
