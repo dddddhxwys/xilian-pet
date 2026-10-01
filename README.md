@@ -358,16 +358,19 @@ README.md                           本文（环境事实 / 边界 / 怎么跑�
 package.json · pnpm-workspace.yaml  工作区与 pnpm 配置（storeDir、hoisted、npmmirror）
 packages/pet-plugin/                DSH Host 插件（零依赖、零构建）
 packages/pet-shell/                 Electron 透明置顶窗
-docs/screenshots/                   实机自检截图（窗口渲染证据）
+docs/
+  screenshots/                      实机自检截图（窗口渲染证据）
+  Live2D约稿单.md                    可直接转发给画师/绑定师的委托说明（拆件清单、补绘清单、导出规格）
 tools/
-  check-plugin.mjs                  插件自测（28 项断言，不需要 DSH）
+  check-plugin.mjs                  插件自测（62 项断言，不需要 DSH）
+  tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）
   probe-mirrors.mjs                 Electron 镜像速度实测
-  make-placeholder.mjs             程序化生成占位素材
+  make-placeholder.mjs              程序化生成占位素材
   inspect-png.mjs                   校验素材透明通道
 chajian/
-  环境体检报告.md                    2026-09-29 环境隐患实测报告（13 项 + 证据）
+  环境体检报告.md                    2026-09-29 环境隐患实测报告（18 项 + 证据）
   dsh-desktop-pet-选型对比.md        独立原生透明置顶窗路线选型
   dsh-vibe-coding-插件清单.md        开发循环插件清单
   backup/                           DSH profile 配置备份（cordis.patch.yml 等）
