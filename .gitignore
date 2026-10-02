@@ -33,3 +33,7 @@ desktop.ini
 /Cyrene.zip
 /Cyrene/
 /3597924035_*.wpk
+
+# Live2D 模型工作目录（第三方模型，作者要求署名+不得收费；文件不入库）
+# 修复逻辑在 tools/fix-live2d-model.mjs，可对任意副本重放
+/assets/live2d/
