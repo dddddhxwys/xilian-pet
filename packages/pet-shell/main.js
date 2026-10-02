@@ -10,7 +10,7 @@
  *     而不是 Electron 默认的 userData（在 AppData，会被拒）
  */
 
-import { app, BrowserWindow, globalShortcut, ipcMain, protocol } from 'electron'
+import { app, BrowserWindow, globalShortcut, ipcMain, protocol, screen } from 'electron'
 import http from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -266,6 +266,89 @@ function postControl(action, payload) {
   })
 }
 
+// ── 点击穿透的命中测试（主进程轮询光标）────────────────────────────
+//
+// ⚠️ 为什么不用 `setIgnoreMouseEvents(true, { forward: true })` + 渲染端 mousemove：
+//    那是 Electron 在 Windows 上的**已知 bug**，而且正好是我们这个版本：
+//      · electron/electron#30808（2021-09 起，至今 open）
+//        「Mouse event forwarding is buggy」—— 事件要么闪烁要么完全不转发
+//      · electron/electron#49982 —— 「mouseenter/mouseleave 振荡 + click-through 卡住」
+//      · PR #53026（target 44-x-y，即本机版本）追加的 UIPI 说明：
+//        **"Mouse forwarding will stop working temporarily if a window with
+//          higher privileges (integrity level) is the foreground window"**
+//      · PR #52633「refactor: mouse forwarding on Windows」声明 Fixes #30808，
+//        但**至今仍是 open**，没进任何发行版。
+//    症状就是用户报的："只要桌面上有其它窗口就拖不动桌宠" ——
+//    别的窗口一进前台，转发就停 → 渲染端收不到 mousemove → 永远不会切到可交互 →
+//    窗口一直点击穿透 → 拖不动。
+//
+//    所以改成**主进程自己轮询光标位置**：screen.getCursorScreenPoint() 不依赖任何
+//    窗口消息转发，然后用渲染端送来的 alpha 掩码判断光标是否落在角色上。
+//    这样一来 forward 那套 buggy 路径完全不参与。
+const HIT_TEST_MS = 16 // ≈60Hz，足够跟手
+const HIT_ALPHA_THRESHOLD = 24
+/** 渲染端送来的 alpha 掩码（已降采样，够用又省 IPC） */
+let alphaMask = null
+/** 拖拽中必须一直保持可交互：否则鼠标快速移出角色时窗口会"甩掉"拖拽 */
+let draggingNow = false
+let lastIgnore = null
+let ignoreLogs = 0
+
+function applyIgnore(win, ignore) {
+  if (ignore === lastIgnore) return
+  const first = lastIgnore === null
+  lastIgnore = ignore
+  win.setIgnoreMouseEvents(ignore)
+  // 前几次切换打出来，便于确认命中测试真的在动（之后静默，避免刷屏）
+  if (first || ignoreLogs < 6) {
+    ignoreLogs++
+    log(`点击穿透 → ${ignore ? '开（鼠标穿过去）' : '关（窗口接管鼠标）'}`)
+  }
+}
+
+function startHitTestLoop(win) {
+  const debug = process.env.PET_HIT_DEBUG === '1'
+  let lastDebugAt = 0
+  const timer = setInterval(() => {
+    if (win.isDestroyed()) return
+    if (draggingNow) {
+      applyIgnore(win, false)
+      return
+    }
+    if (!alphaMask) {
+      applyIgnore(win, true)
+      return
+    }
+    const p = screen.getCursorScreenPoint()
+    const b = win.getBounds()
+    const x = p.x - b.x
+    const y = p.y - b.y
+    let opaque = false
+    let u = -1
+    let v = -1
+    let sampled = -1
+    if (x >= 0 && y >= 0 && x < b.width && y < b.height) {
+      u = Math.floor((x / b.width) * alphaMask.width)
+      v = Math.floor((y / b.height) * alphaMask.height)
+      if (u >= 0 && v >= 0 && u < alphaMask.width && v < alphaMask.height) {
+        sampled = alphaMask.data[v * alphaMask.width + u]
+        opaque = sampled > HIT_ALPHA_THRESHOLD
+      }
+    }
+    // PET_HIT_DEBUG=1 时每秒打一行，肉眼可核对坐标换算对不对
+    if (debug && Date.now() - lastDebugAt > 1000) {
+      lastDebugAt = Date.now()
+      log(
+        `[命中] 光标(${p.x},${p.y}) 窗口(${b.x},${b.y} ${b.width}×${b.height}) ` +
+          `局部(${x},${y}) 掩码(${u},${v}) alpha=${sampled} → ${opaque ? '可交互' : '穿透'}`,
+      )
+    }
+    applyIgnore(win, !opaque)
+  }, HIT_TEST_MS)
+  timer.unref?.()
+  return timer
+}
+
 // ── 自检截图（只截我们自己的透明窗，不碰用户桌面）──────────────────
 // 用法：PET_SNAPSHOT=<png路径> [PET_SNAPSHOT_EXIT=1] [PET_SNAPSHOT_DELAY_MS=2500]
 //       PET_SNAPSHOT_AT_MOTION_MS=<ms>  ← 从**动作开始**算起的精确时刻截图
@@ -351,12 +434,13 @@ function createWindow() {
     log(`[render-process-gone] ${JSON.stringify(details)}`)
   })
 
-  // 默认点击穿透 + 转发鼠标移动，让渲染端能做 alpha 掩码命中测试
-  win.setIgnoreMouseEvents(true, { forward: true })
+  // 默认点击穿透。命中测试由主进程轮询光标完成（见 startHitTestLoop 上方注释），
+  // 刻意**不用** forward:true —— 那是已知 bug 路径。
+  win.setIgnoreMouseEvents(true)
 
   win.once('ready-to-show', () => {
     win.showInactive()
-    log(`窗口就绪 ${win.getSize().join('x')}，点击穿透已开启（悬停不透明像素才接管鼠标）`)
+    log(`窗口就绪 ${win.getSize().join('x')}，点击穿透已开启（命中测试由主进程轮询光标完成）`)
     maybeSnapshot(win)
   })
 
@@ -389,8 +473,17 @@ app.whenReady().then(async () => {
   const win = createWindow()
   startSse(win)
 
-  ipcMain.on('pet:set-interactive', (_event, interactive) => {
-    if (!win.isDestroyed()) win.setIgnoreMouseEvents(!interactive, { forward: true })
+  // 点击穿透的命中测试：主进程轮询光标 + 渲染端送来的 alpha 掩码
+  startHitTestLoop(win)
+  ipcMain.on('pet:mask', (_event, mask) => {
+    // 只做基本校验，避免坏数据让轮询崩掉
+    if (mask && mask.width > 0 && mask.height > 0 && mask.data?.length === mask.width * mask.height) {
+      if (!alphaMask) log(`收到 alpha 掩码 ${mask.width}×${mask.height}，命中测试交给主进程轮询光标`)
+      alphaMask = mask
+    }
+  })
+  ipcMain.on('pet:dragging', (_event, value) => {
+    draggingNow = Boolean(value)
   })
   ipcMain.on('pet:move-by', (_event, dx, dy) => {
     if (win.isDestroyed()) return

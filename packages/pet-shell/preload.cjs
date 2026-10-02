@@ -10,8 +10,14 @@ contextBridge.exposeInMainWorld('xilianPet', {
   onFrame: (callback) => ipcRenderer.on('pet:frame', (_event, frame) => callback(frame)),
   /** 连接状态变化 */
   onLink: (callback) => ipcRenderer.on('pet:link', (_event, link) => callback(link)),
-  /** 命中测试结果：是否让窗口接管鼠标（false = 继续穿透） */
-  setInteractive: (interactive) => ipcRenderer.send('pet:set-interactive', Boolean(interactive)),
+  /**
+   * 把 alpha 掩码交给主进程做命中测试。
+   * 为什么不在渲染端判断：见 main.js 顶部关于 Electron Windows 鼠标转发 bug 的说明。
+   * 掩码请先降采样（主进程按比例取样，不需要全分辨率）。
+   */
+  sendMask: (width, height, data) => ipcRenderer.send('pet:mask', { width, height, data }),
+  /** 拖拽中：主进程会一直保持可交互，避免鼠标快速移出角色时把拖拽甩掉 */
+  setDragging: (value) => ipcRenderer.send('pet:dragging', Boolean(value)),
   /** 拖拽：按屏幕坐标增量移动窗口 */
   moveBy: (dx, dy) => ipcRenderer.send('pet:move-by', Math.round(dx), Math.round(dy)),
   /** 反向操控：prompt / interrupt / focus */

@@ -58,6 +58,41 @@ function maskSource() {
   return live2dActive ? canvas : img
 }
 
+/**
+ * 把掩码降采样后交给主进程做命中测试。
+ *
+ * 为什么要降采样：主进程每 16ms 查一次，掩码只需"够用"。
+ * 520×600 全量送是 31 万字节 × 每秒 4 次 ≈ 1.2MB/s，降 4 倍后只剩 ~78KB/s。
+ * 取块内**最大值**而不是平均值 —— 宁可判成不透明，也不能漏掉细小的可点区域
+ * （比如发梢、绳子的细线）。
+ */
+function publishMask() {
+  if (!alphaMap || !mapW || !mapH) return
+  const step = Math.max(1, Math.ceil(Math.max(mapW, mapH) / 160))
+  const w = Math.floor(mapW / step)
+  const h = Math.floor(mapH / step)
+  if (w < 1 || h < 1) return
+  const out = new Uint8Array(w * h)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let max = 0
+      for (let dy = 0; dy < step; dy++) {
+        const sy = y * step + dy
+        if (sy >= mapH) break
+        const row = sy * mapW
+        for (let dx = 0; dx < step; dx++) {
+          const sx = x * step + dx
+          if (sx >= mapW) break
+          const a = alphaMap[row + sx]
+          if (a > max) max = a
+        }
+      }
+      out[y * w + x] = max
+    }
+  }
+  api.sendMask(w, h, out)
+}
+
 async function buildAlphaMap() {
   if (live2dActive) {
     const shot = live2d?.readAlpha?.()
@@ -65,6 +100,7 @@ async function buildAlphaMap() {
     mapW = shot.width
     mapH = shot.height
     alphaMap = shot.alpha
+    publishMask()
     return
   }
 
@@ -85,6 +121,7 @@ async function buildAlphaMap() {
   mapH = h
   alphaMap = new Uint8Array(mapW * mapH)
   for (let i = 0; i < alphaMap.length; i++) alphaMap[i] = data[i * 4 + 3]
+  publishMask()
 }
 
 function overOpaquePixel(clientX, clientY) {
@@ -109,10 +146,16 @@ function shouldBeInteractive(clientX, clientY) {
   return insideRect(composer, clientX, clientY) || insideRect(bubble, clientX, clientY)
 }
 
-function updateInteractive(next) {
+/**
+ * 只负责光标样式。
+ *
+ * ⚠️ **不再**通过 IPC 切换点击穿透 —— 那件事已交给主进程轮询光标。
+ * 原因见 main.js 顶部：Electron 在 Windows 上的鼠标转发（forward:true）是已知 bug，
+ * 一旦有别的窗口进前台，转发就会停 → 渲染端收不到 mousemove → 窗口永远卡在穿透状态。
+ */
+function updateCursor(next) {
   if (next === interactive) return
   interactive = next
-  api.setInteractive(next)
   document.body.style.cursor = next ? 'grab' : 'default'
 }
 
@@ -128,7 +171,7 @@ window.addEventListener(
       if (dx !== 0 || dy !== 0) api.moveBy(dx, dy)
       return
     }
-    updateInteractive(shouldBeInteractive(event.clientX, event.clientY))
+    updateCursor(shouldBeInteractive(event.clientX, event.clientY))
   },
   { passive: true },
 )
@@ -137,6 +180,9 @@ window.addEventListener('mousedown', (event) => {
   if (!shouldBeInteractive(event.clientX, event.clientY)) return
   if (insideRect(composer, event.clientX, event.clientY)) return
   dragging = true
+  // 告诉主进程进入拖拽态：拖拽期间它会让窗口一直保持可交互，
+  // 否则鼠标快速移出角色（超出不透明区域）的那一瞬间窗口就会变回穿透，拖拽被"甩掉"。
+  api.setDragging(true)
   dragX = event.screenX
   dragY = event.screenY
   if (!live2dActive) img.classList.add('squish')
@@ -150,6 +196,7 @@ window.addEventListener('mouseup', (event) => {
     return
   }
   dragging = false
+  api.setDragging(false)
   if (!live2dActive) img.classList.remove('squish')
   document.body.style.cursor = 'grab'
 })
@@ -318,9 +365,10 @@ async function startLive2D() {
     await buildAlphaMap()
     api.log(`alpha 掩码就绪 ${mapW}×${mapH}（来源：${live2dActive ? 'Live2D 画布' : '占位图'}）`)
   } catch (error) {
-    api.log(`alpha 掩码构建失败：${error.message}`)
-    // 掩码失败时退化为「整窗可交互」，避免完全点不到
-    updateInteractive(true)
+    api.log(`alpha 掩码构建失败：${error.message} → 退化为整窗可交互`)
+    // 送一张全不透明的掩码给主进程，等价于"整窗可交互"，避免完全点不到
+    const side = 8
+    api.sendMask(side, side, new Uint8Array(side * side).fill(255))
   }
 
   // Live2D 模型会形变，掩码要跟着刷新（250ms 一次，开销可忽略）
@@ -330,7 +378,7 @@ async function startLive2D() {
     }, 250)
   }
 
-  updateInteractive(false)
+  updateCursor(false)
   status.dataset.link = 'down'
   api.log(`渲染端已加载（live2d=${live2dActive}）`)
   // 握手：handler 都注册好了，请主进程补发最近的连接状态与快照。
