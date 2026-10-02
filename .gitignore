@@ -11,9 +11,10 @@ build/
 packages/*/.state/
 .state/
 
-# 本地环境探针（诊断脚本请勿入库）
+# 本地环境探针 / 一次性抓取脚本（诊断用，请勿入库）
 _env_*.mjs
 tools/_probe-*.mjs
+tools/_crawl-*.mjs
 
 # 编辑器/系统
 .vscode/
