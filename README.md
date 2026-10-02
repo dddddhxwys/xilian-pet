@@ -1,7 +1,19 @@
 # 昔涟桌宠（xilian pet）
 
-DSH 桌面透明置顶窗桌宠。当前阶段：**Phase 0 技术验证原型（spike）**。
-方向与验收标准见 [`PLAN.md`](PLAN.md)；环境实测数据见 [`chajian/环境体检报告.md`](chajian/环境体检报告.md)。
+桌面透明置顶窗桌宠：昔涟的 Live2D 模型待在桌面上，跟着 DSH agent 的状态切换动作，
+可拖拽、点击穿透、双击派活、审批积压主动提醒。
+
+| | |
+|---|---|
+| 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑，但多项验收未在真实桌面上确认 |
+| 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
+| 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
+| 规模 | 插件 1041 行 / 外壳 1885 行 / 工具 1881 行，40+ 提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **62 项全绿** |
+
+> 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
+> 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
+> 方向与验收标准见 [`PLAN.md`](PLAN.md)；环境实测数据见 [`chajian/环境体检报告.md`](chajian/环境体检报告.md)。
 
 ---
 
@@ -9,11 +21,12 @@ DSH 桌面透明置顶窗桌宠。当前阶段：**Phase 0 技术验证原型（
 
 | 项 | 值 |
 |---|---|
-| DSH | `@deepseek-ai/dsh-desktop` **0.1.7-rc.1.20260924.1**（build `55f35f51`，channel `nightly`，Electron 外壳 44.0.0） |
+| DSH | `@deepseek-ai/dsh-desktop` **0.1.7-rc.1.20260924.1**（build `55f35f51`，channel `nightly`，DSH 自身 Electron 外壳 44.0.0） |
 | DSH_HOME | `C:\Users\怒C大伟出奇迹\.dsh` |
 | profile | `desktop` → `C:\Users\怒C大伟出奇迹\.dsh\profiles\desktop` |
 | GUI | `http://127.0.0.1:19387`（未鉴权 401 = 已挂载，属正常） |
 | 工作区 | `C:\Users\怒C大伟出奇迹\dsh-projects\xilian pet` |
+| 桌宠自己的 Electron | **44.5.1**（与 DSH 自带的 44.0.0 无关，独立装在 `node_modules/electron/`） |
 | 旧路径 | `F:\dsh\project\*` —— **已弃用，无沙箱授权，勿搬回** |
 
 > 版本以 `F:\dsh\resources\app.asar` 内的 `asar/dsh/package.json` 为准。**不要**再从记忆或旧文档里引用 `dsh-v0.1.0-rc.8`（那是错的，本机 `rc.8` 出现 0 次）。
@@ -52,10 +65,12 @@ $PNPM = "$env:DSH_HOME\dsh-runtimes\dsh-primary-runtime\dependencies\pnpm\bin\pn
 
 ### 3.2 TLS：agent shell 内 Schannel 全挂，只有 Node 系能联网
 
-`curl` / PowerShell `Invoke-WebRequest` / `git` 默认后端都报 `schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS (0x8009030e)`（系统加密服务正常，是该 shell 的受限令牌所致）。
+`curl` / PowerShell `Invoke-WebRequest` / `git` 默认后端做 **HTTPS** 时报
+`schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS (0x8009030e)`
+（系统加密服务正常，是该 shell 的受限令牌所致）。**纯 HTTP 不受影响**（例如探 `/health` 是可以的）。
 
 ```powershell
-# ❌ 会失败
+# ❌ 会失败（HTTPS）
 curl.exe https://registry.npmjs.org/-/ping
 Invoke-WebRequest https://registry.npmjs.org/-/ping
 git ls-remote https://gitee.com/...
@@ -63,8 +78,11 @@ git ls-remote https://gitee.com/...
 # ✅ 可用
 npm ping
 git -c http.sslBackend=openssl ls-remote https://gitee.com/...
-# 网页抓取用 harness 的 web_fetch，不要用 Invoke-WebRequest
+& $NODE -e "fetch('https://api.github.com/repos/electron/electron').then(r=>console.log(r.status))"
 ```
+
+> **Node 的 `fetch` 是最可靠的联网方式**，实测 10/10 个外部站点可达（含 `electronjs.org`、`api.github.com`）。
+> harness 的 `web_fetch` 工具多数站点会被"非公网 IP"过滤挡掉，抓网页优先用 Node fetch。
 
 ### 3.3 网络可达性（实测）
 
@@ -75,80 +93,110 @@ git -c http.sslBackend=openssl ls-remote https://gitee.com/...
 ### 3.4 其他能力缺口
 
 - `Get-CimInstance` / `Get-Volume` **拒绝访问**（WMI 受限）→ 用 `cmd /c vol`、`fsutil fsinfo drivetype`、`Get-PSDrive`
-- `ffmpeg` **未安装**（只有走 WebM 素材链时才需要）
-- 工作区路径含**空格**（`xilian pet`）、用户名**非 ASCII**（`怒C大伟出奇迹`）；`LongPathsEnabled=1` 已开。脚本路径一律加引号 + `path.resolve`，构建异常时优先怀疑路径。
+- `ffmpeg` **未安装**
+- 工作区路径含**空格**（`xilian pet`）、用户名**非 ASCII**（`怒C大伟出奇迹`）；`LongPathsEnabled=1` 已开。
+  脚本路径一律加引号 + `path.resolve`，构建异常时优先怀疑路径。
+
+### 3.5 ⚠️ Electron 无法在 agent shell 里启动（重要）
+
+Chromium 的 Mojo IPC 在 Windows 上用**命名管道**，受限沙箱禁止创建：
+
+```
+FATAL:mojo\public\cpp\platform\platform_channel.cc:108] Check failed: 拒绝访问。 (0x5)
+```
+
+即使加 `--no-sandbox` 也一样（默认沙箱下更早就以 `0x80000003` STATUS_BREAKPOINT 崩掉）。
+
+- **agent 里跑不起来宠物窗口** → 实机验证必须对该条命令提权（`danger-full-access`，已实测可行）
+- **用户自己终端里没有这个限制** → 日常使用让用户双击 `start-pet.cmd`
+- 启动脚本内置探测：Chromium 沙箱初始化失败时自动追加 `--no-sandbox --disable-gpu` 并打印原因
 
 ---
 
-## 四、开发循环现状（重要）
+## 四、快速上手
 
-- HMR **传输**随包提供（`@deepseek-ai/dsh-client-hmr`），HMR 用的系统通道是 `GET /plugins/events`。
-- ⚠️ **缺的不是 Host，而是"重建 + 盖戳"那一步。** 官方 `dsh-client-hmr` README 原文：
-  > *Run `pnpm run dev:web`, which starts the host and the rebuild watchers together (`--no-serve` attaches only the watchers to a host started elsewhere, **as does any watch process using the shared Client tsdown preset**). The preset stamps `lib/client.js` after all package-local chunks are written…*
-  >
-  > *The Host half watches each package's stamped entry artifact and serves `/plugins/events`.*（`pollIntervalMs` 默认 500ms）
+### 前置条件
 
-  即：**正在跑的桌面版本身就是 Host**，它会 stat-poll **已安装插件**的 `lib/client.js`（比 mtime/ctime/size，不哈希内容）。只要把重建并盖过戳的产物写到插件安装位置，浏览器就会自动热换（**无需刷新、无需重启**）。本机缺的只有两件：① `dev:web` 脚本与"共享 Client tsdown 预设"都在源码仓库里，本机只有 `app.asar`；② 插件安装目录在沙箱写边界之外。
-- 另注（原文）：*"Web transport only — Electron installation and backend restart handling do not use this SSE path."*
-- ⚠️ **`GET /plugins/events` 推的是插件图变化与重建通知（`graph` / `rebuilt` 帧），不是 agent 状态**，拿不到"思考中/工具调用/余额"。要拿 agent 状态必须按 `PLAN.md` 第三节自建 Host 插件：监听 `session/event` + `agent/assistant-stream`，再以自己的同源 SSE 路由推给桌宠壳。
-- 本机已验证**存在**的扩展点：`shell.overlay`、`settings.section`、`session/event`、`agent/assistant-stream`、`agent/pre-step`、`agent/turn-stopping`、`tools/pre-execute`、`tools/post-execute`、`dsh.bundle.patch`。
+| 依赖 | 怎么补 |
+|---|---|
+| DSH 在跑，插件已挂载 | `/health` 应返回 `{"ok":true,...}` |
+| Electron 二进制 | `& $NODE tools\fetch-electron.mjs` |
+| 渲染端 vendor（pixi + Cubism Core） | `& $NODE tools\prepare-renderer-vendor.mjs` |
+| Live2D 模型 | 手动放到 `assets\live2d\Cyrene\`（**不入库，clone 后没有**） |
+
+> `node_modules/electron/`、`renderer/vendor/`、`assets/live2d/` 都在 `.gitignore` 里。
+> **换机器 clone 后必须补上面后两项**，否则只剩占位形象（会走 A10 降级，不会崩）。
+
+### 跑起来
+
+```powershell
+# 双击仓库根的 start-pet.cmd，或者：
+cd "C:\Users\怒C大伟出奇迹\dsh-projects\xilian pet"
+.\start-pet.cmd
+
+# 只自检不开窗
+.\start-pet.cmd --check
+```
+
+**退出：`Ctrl + Shift + Q`**（启动脚本注册的全局快捷键）
+> ⚠️ 窗口没有边框、不在任务栏里，**没有关闭按钮**。关掉控制台窗口也能退，但比较粗暴。
+
+### 操作
+
+| 操作 | 效果 |
+|---|---|
+| 悬停在角色不透明处 | 窗口接管鼠标（透明区域鼠标**穿过去**，不挡下层） |
+| 按住角色拖动 | 移动位置，位置自动记住 |
+| 双击角色 | 唤出派活输入条 |
+| 单击角色 | 清未读标记 |
 
 ---
 
-## 五、安全红线
+## 五、架构与目录
 
-- **装第三方插件 = 授予宿主进程执行权**。DSH 的插件 vm 沙箱**不是安全边界**（Discussion #1441，PoC 已验证：一次批准 = 完整 RCE；#451 沙箱逃逸 + `/api` RPC 仅靠 Host 头围栏；#250 沙箱内可经 approval 回环自批准 `danger-full-access`）。三帖至今 open。
-- 已知 CVE 与本机关系（2026-09-29 复核）：**CVE-2026-82533**（本地控制 API 鉴权绕过，9.6 CRITICAL）修于 `0.1.2-alpha.1`；**CVE-2026-101102**（Code Mode Sandbox，6.3 MEDIUM）影响 `0.1.0-rc.0 … 0.1.0-rc.7` —— **本机 0.1.7-rc.1 两条都不命中**。
-- `cordis.patch.yml` 允许 `!!js` 表达式（= 配置期代码执行）→ **改 patch 前先备份，且拒绝 `!!js`**。备份见 [`chajian/backup/`](chajian/backup/)。
-- 装前扫描：`@shaoshi/dshscan`（静态+语义双通道）+ socket.dev（注意本 shell 抓 socket.dev 会 403，用 `web_search`）。
+```
+DSH 宿主
+  │  事件（session/event, agent/assistant-stream, agent/status, agent/error）
+  ▼
+packages/pet-plugin/          ← Cordis Host 插件（零依赖、零构建）
+  index.js                    路由 + 4 个监听器 + 提醒 tick
+  reducer.js                  纯函数状态机（会话 → 桌宠状态）
+  reminders.js                主动提醒策略引擎（纯函数）
+  cordis.patch.yml            挂载层（bundle 方式 / 免安装直挂方式）
+  │  SSE  /xilian-pet/events
+  ▼
+packages/pet-shell/           ← Electron 透明置顶窗
+  main.js                     透明置顶 + SSE 订阅 + pet:// 协议 + 光标轮询命中测试
+                              + 窗口位置/构图缓存持久化 + 自检截图
+  preload.cjs                 最小 IPC 桥（只暴露桌宠需要的几件事）
+  renderer/
+    index.html                CSP + vendor 脚本加载顺序
+    pet.css                   透明窗口样式（z-index 分层是踩过坑的）
+    pet.js                    命中、拖拽、气泡、派活条（普通脚本）
+    live2d.js                 Live2D 渲染层（**ES 模块**，动态 import）
+    vendor/                   pixi + unsafe-eval + Cubism Core + cubism4（gitignore）
+  scripts/launch.mjs          启动脚本（处理 ELECTRON_RUN_AS_NODE 等本机坑）
+  .state/                     窗口位置 / 构图缓存（gitignore）
+```
+
+### 为什么是这个架构
+
+| 决定 | 原因 |
+|---|---|
+| **插件 + 独立窗**，不做 GUI 内嵌 | 内嵌需要 client 插件 bundle（构建链 + 版本耦合）；独立窗零依赖、可独立迭代 |
+| **SSE 放主进程** | 渲染端 origin 是自定义协议，EventSource 会撞 CORS；主进程订阅没这问题，重连也好管 |
+| **`pet://` 自定义协议**（页面 + 模型同源） | Cubism 要把 `.moc3` 读成 ArrayBuffer（走 XHR），而 Chromium 禁止跨源。同源后 CORS 问题消失，CSP 也能收紧回 `'self'` |
+| **CSP 保留 `'wasm-unsafe-eval'`、拒绝 `'unsafe-eval'`** | Cubism Core 是 wasm；PixiJS 需要 eval，用官方 `@pixi/unsafe-eval` 替代（不放宽 CSP） |
+| **`live2d.js` 是 ES 模块** | 两个普通 `<script>` 共享全局作用域，撞过两次（见 §十一）。用**动态 import** 是为了保留"失败仍能降级到占位图" |
+| **窗口位置/缓存存包内 `.state/`** | Electron 默认 userData 在 AppData，agent shell 沙箱写不进去 |
 
 ---
 
-## 六、素材管理：要不要把美术素材提交进仓库
+## 六、Live2D 渲染层
 
-**先给结论**：合规上两条路都行，**判据是工程**。而且**你选了 A 档 Live2D，这件事实际上已经自己回答了** —— A 档的核心资产是分层 PSD，那个量级不可能进 git。
+### 模型
 
-### 三个层次要分开看
-
-**1. 合规层 —— 不是判据**
-
-指引要求的是"发布内容同步放置法律声明"。仓库里有素材 → 声明须覆盖素材；仓库里没素材、但截图/演示里有角色 → 声明同样须覆盖截图。`NOTICE.md` 两种情况都已备好，所以**入库与否都不影响合规**。
-
-**2. 工程层 —— 真正的判据**
-
-- **git 对二进制不做增量压缩**：每次替换素材都会存一整份新 blob，历史永久保留 → 仓库只涨不缩
-- **素材还要大改**：A 档接下来产出的是**分层 PSD**（单个可能几十到几百 MB）、`.moc3`、纹理图集 —— **这些一律不入库**，无论选哪个方案
-- **现有导出包里 74% 是不需要的中间产物**：
-
-| 分类 | 内容 | 体积 | 需要吗 |
-|---|---|---|---|
-| `01_originals` | 5 张原画参考（含背景） | 2.6 MB | ✅ 拆件参考 |
-| `02_sprites` | 6 张成品 sprite（透明底） | 6.7 MB | ✅ 当前唯一在用 |
-| `03_greenscreen` | 6 张绿幕底 | 9.1 MB | ❌ 抠像中间件 |
-| `04_history` | 10 张历史修订版 | 13.4 MB | ❌ 早期备份 |
-| `preview_*` | 4 张预览拼图 | 4.6 MB | ❌ 展示用，可随时重生成 |
-| **合计** | 35 条目 | **36.2 MB** | **必需仅 9.3 MB（26%）** |
-
-**3. 可复现层 —— 反方论据（诚实给出）**
-
-素材不入库 → 别人 clone 下来**跑不起来**。这是真缺点，但我们**已经有解法**：`tools/make-placeholder.mjs` 能程序化生成占位形象，缺素材时加载失败自动降级（这正是验收项 **A10**），README 写明素材该放哪即可。
-
-### 三个方案
-
-| 方案 | 做法 | 仓库增量 | clone 后能跑吗 |
-|---|---|---|---|
-| **A** 不入库 | 素材留本地，`.gitignore` 排除，README 写路径约定 | **0 MB** | ✅ 能跑，看到占位形象 |
-| **B** 入库（只入必需） | 只提交 5 张原画 + 6 张成品，剔除绿幕/历史/预览 | ~9.3 MB（且随迭代只涨） | ✅ 能跑，能看真角色 |
-| **C** 独立素材包（**推荐**） | 仓库不放素材；素材仍以 `xilian_art_assets_export.zip` 这种独立包分发 | **0 MB** | ✅ 下载素材包即可，**声明随包走** |
-
-**推荐 C 的理由**：你已经有一个形态完整的导出包（带 `catalog.csv` / 预览图 / README / SHA256），它本身就是一个**可分发单元**。这样代码仓库保持轻量、素材独立版本化、法律声明跟素材一起走最自然。
-
-> 素材本地路径：`E:\xilian_desktop_pet\art_assets_export\`
-> 原始项目（Python + PySide6 旧桌宠）：`E:\xilian_desktop_pet\`，交接说明见 `昔涟桌宠项目交接说明.md`
-
-### 已定：Live2D 模型（2026-10-02 接入）
-
-角色形象改用 **B站 @是依七哒** 制作的「秋千版」昔涟 Live2D 模型。
+角色形象用 **B站 @是依七哒** 制作的「秋千版」昔涟。
 
 | 项 | 内容 |
 |---|---|
@@ -158,7 +206,20 @@ git -c http.sslBackend=openssl ls-remote https://gitee.com/...
 | 位置 | `assets/live2d/Cyrene/`（整个 `assets/live2d/` 已 gitignore） |
 | 体积 | 纹理降采样后 **1.38 MB**（原 8.86 MB） |
 
-**接入时必须做的三处修复**（原始模型有问题，见 `tools/fix-live2d-model.mjs`）：
+### 技术栈（版本钉死，别随手升）
+
+```
+Electron 44.5.1
+└─ pixi.js@7.4.3
+   └─ pixi-live2d-display@0.5.0-beta     ← 必须 beta
+      └─ 官方 Cubism Core 5.1.0（含 MocVersion_50）
+```
+
+> ⚠️ `pixi-live2d-display` 的 npm `latest` 是 **0.4.0（2022 年，PixiJS v6，不认 moc3 版本号）**，
+> 装它会得到"模型版本不支持"。0.5.0-beta 才认 Cubism 5。参考实现：
+> `Playa-Cyrene/Cyrene-Agent`（642★，MIT）用的是同一套组合。
+
+### 接入时必须做的三处修复（`tools/fix-live2d-model.mjs` 可重放）
 
 1. **补 `Motions` / `Expressions` 声明** —— 原 `model3.json` 只有 394 字节，没挂动作和表情，
    不改的话运行时 **4 个动作 + 13 个表情一个都不会加载**
@@ -171,6 +232,64 @@ git -c http.sslBackend=openssl ls-remote https://gitee.com/...
 
 > ⚠️ 模型**未声明 `HitAreas`**，不能用 `model.hitTest()`，点击命中需自行实现 alpha 掩码测试。
 
+### 四个动作（都叫 `SceneN`，内容是反推出来的）
+
+| 动作 | 时长 | 内容 | 独有参数 |
+|---|---|---|---|
+| `Scene[0]` | 3s | **比嘘手势**（半眯眼 wink，手指举到唇边） | `Param15 嘻嘻` `Param5 星星` `Param12 手指` |
+| `Scene[1]` | 4s | **叉腰 + 星光**（闭眼笑） | `Param7 闪耀` `Param17/18 叉腰1/2` |
+| `Scene[2]` | 3s | **招牌姿势 + 张嘴说话 + 甩头** | `Param10/11 招牌1/2` `嘴开闭` |
+| `Scene[3]` | 180s | **荡秋千**（长期待机用） | `Param13/14 秋千` `Param31/32` 腿鞋摇晃 |
+
+**反推方法**：`PET_SAMPLE_PARAMS=1` 采样各动作驱动的参数（比逐帧截图精确得多，且便宜）。
+
+### 状态 → 动作映射（`live2d.js` 的 `STATE_MAP`）
+
+| 状态 | 动作 | 表情 | 备注 |
+|---|---|---|---|
+| `idle` | Scene[3] 荡秋千 | reset | 180s 长循环 |
+| `running` | Scene[0] 比嘘 | reset | + `Param9 思考` |
+| `approval` | Scene[1] **只播一次** | surprise | `keepEffect: true`（特效留着，表达"还在等你"） |
+| `question` | Scene[2] | question | 循环，要一直等回答 |
+| `done` | Scene[1] **只播一次** | happy | 演完**特效也撤** |
+| `error` | Scene[3] | reset | ⚠️ 模型**没有**"困扰"参数，靠 `ERROR_FACE` 手工凑眉毛 |
+
+### 三条特殊规则（都是实测踩出来的）
+
+1. **开场手势**：启动先演一次 `Scene[0]` 比嘘，**0.6x 慢放**，演完落待机。
+   期间到达的状态**排队等它演完**（只有 `approval`/`error` 能打断）。
+   而**启动时读到的状态是"现状"不是"转变"** —— 一次性入场动画不为它重放
+   （否则上一轮 agent 干完留下的 `done`，会在开场手势后又演一次叉腰）。
+
+2. **眨眼**：库的自动眨眼条件是 `if (!motionUpdated) eyeBlink.updateParameters(...)` ——
+   **只有没有动作播放时才眨眼**。而待机用的 `Scene[3]` 又只在前 2.2 秒驱动眼睛，
+   两件事叠加 → 待机眼睛一直闭着。
+   所以：**只有"不驱动眼睛"的动作（目前只有 Scene[3]）需要我们自己兜底眨眼**；
+   Scene[0]/[1]/[2] 全程驱动眼睛，让它们自己演（Scene[0] 是个 wink，强行睁眼会毁掉表情）。
+
+3. **循环开关是双向的**：Scene[0] 既当开场手势（只播一次）又当 `running` 的动作（要循环），
+   所以 `setMotionLoop(index, loop)` 必须显式设 true/false，不能只关不开 ——
+   否则 `running` 时会只播一遍然后冻在最后一帧。
+
+### 构图适配
+
+按**实际渲染出来的不透明包围盒**适配（取多帧并集），不按模型画布 ——
+画布 4200×3500 里角色只占中间一块，按画布适配会显得很小。
+
+- **首次启动**现场测量（约 3 秒），期间**不显示窗口**（否则会出现"打开一会突然变大"）
+- 测完**缓存到 `.state/model-fit.json`**，二次启动直接套用、立即显示
+- 窗口尺寸变化时用缓存的包围盒重新排布
+
+### 点击穿透的命中测试
+
+⚠️ **不用** `setIgnoreMouseEvents(true, { forward: true })` —— 那是 Electron 在 Windows 上的
+**已知 bug**，且正好是我们这个版本（详见 §十一）。
+
+改为：**主进程每 16ms 轮询光标位置**（`screen.getCursorScreenPoint()`，不依赖任何窗口消息转发），
+配合渲染端送来的 alpha 掩码（降采样到 130×150，每 250ms 刷新）判断是否让窗口接管鼠标。
+
+拖拽期间主进程强制保持可交互，否则鼠标快速移出角色时窗口会"甩掉"拖拽。
+
 ### 相关工具
 
 | 工具 | 用途 |
@@ -178,132 +297,37 @@ git -c http.sslBackend=openssl ls-remote https://gitee.com/...
 | `tools/inspect-live2d-model.mjs` | 解析任意 Cubism 模型：参数/表情/动作/物理/清单完整性 |
 | `tools/fix-live2d-model.mjs` | 把"文件夹里有但清单没挂"的动作表情接上；补空分组 |
 | `tools/downsample-texture.py` | 纹理降采样（预乘 alpha 正确处理） |
+| `tools/prepare-renderer-vendor.mjs` | 生成 `renderer/vendor/`（换机器后必跑） |
 
-## 七、Phase 0 骨架：怎么跑
+---
+
+## 七、插件层
+
+### 路由
 
 ```
-packages/
-  pet-plugin/            DSH Host 插件（纯 ESM、零依赖、零构建）
-    index.js             路由 + SSE + 会话事件观测 + 反向操控
-    reducer.js           纯函数状态机（优先级聚合 + 最短保持时间）
-    cordis.patch.yml     挂载层（bundle 方式 / 免安装直挂方式）
-  pet-shell/             Electron 透明置顶窗
-    main.js              透明置顶 + 点击穿透 + 窗口状态持久化 + SSE 订阅
-    preload.cjs          最小 IPC 桥
-    renderer/            宠物页面（alpha 掩码命中、拖拽、气泡、派活输入条）
-    scripts/launch.mjs   启动脚本（处理 ELECTRON_RUN_AS_NODE 等本机坑）
-tools/
-  check-plugin.mjs       插件自测：mock ctx + 真 HTTP + 真 SSE 往返
-  make-placeholder.mjs   程序化生成占位素材
-  inspect-png.mjs        校验素材透明通道与关键像素
+/xilian-pet/health              插件状态（含 code 修订号、pid、uptimeMs）
+/xilian-pet/state               聚合状态 + 各会话 tail / spendTokens
+/xilian-pet/events              SSE 事件流
+/xilian-pet/debug/shapes        原始事件形状样本（按 channel 分别限量）
+/xilian-pet/debug/reminders     提醒引擎配置 / 免打扰判定 / 已发记录
+/xilian-pet/prompt              反向操控：派活
+/xilian-pet/interrupt           反向操控：打断
+/xilian-pet/focus               会话聚焦（Phase 0 未实现，返回 501）
 ```
 
-### 三条命令
+### 关键设计决定
 
-```powershell
-# 1. 插件自测（不需要 DSH、不需要安装）
-& $NODE tools\check-plugin.mjs
-
-# 2. 生成 / 重生成占位素材
-& $NODE tools\make-placeholder.mjs
-
-# 3. 桌面窗（启动时会先自检 Host 插件是否在线）
-& $NODE packages\pet-shell\scripts\launch.mjs --check   # 只自检，不开窗
-& $NODE packages\pet-shell\scripts\launch.mjs           # 开窗
-```
-
-（`$NODE` = 内置 node，见 §二。）
-
-### 依赖安装的三个本机坑（实测，换机器会复现）
-
-1. **`pnpm install` 必须走镜像源**：`pnpm-workspace.yaml` 里已配 `registry: https://registry.npmmirror.com`。走官方源时单请求要 14–30s，`@electron-internal/extract-zip` 这类包会直接超时失败。同时已配 `nodeLinker: hoisted` + `packageImportMethod: copy`，规避 `[ERR_PNPM_SYMLINK_FAILED] symlinkAllModules Maximum call stack size exceeded`。
-2. **Electron 二进制不会随 `pnpm install` 装好**：它自带的 `install.js` 把 zip 缓存写进 `%LOCALAPPDATA%\electron\Cache`（沙箱外 → 被拒），改用工作区缓存后在本机仍会**空转**（CPU 0、无连接、10 分钟无输出）。所以改用自己的下载器：
-
-```powershell
-& $NODE tools\fetch-electron.mjs        # = pnpm run deps:electron
-```
-
-   它是「镜像探测 + 8 路分段并行下载 + 纯 JS 解 zip」。实测：npmmirror ~85 KB/s（要半小时），**华为云 ~11 MB/s，150.9 MB 共 14 秒**。`tools/probe-mirrors.mjs` 可随时复测各镜像速度。
-3. **Electron 无法在 agent shell 的沙箱内启动**（重要）：Chromium 的 Mojo IPC 在 Windows 上用**命名管道**，受限沙箱禁止创建，直接 `FATAL ... platform_channel.cc: Check failed: 拒绝访问 (0x5)`；即使加 `--no-sandbox` 也一样（默认沙箱下更早就以 `0x80000003` STATUS_BREAKPOINT 崩掉）。所以：
-
-   - **我在这个 shell 里跑不起来宠物窗口**，只能靠提权验证过一次；
-   - **你自己终端里跑没有这个限制**：`& $NODE packages\pet-shell\scripts\launch.mjs`
-   - 启动脚本内置探测：如果 Chromium 沙箱初始化失败会自动追加 `--no-sandbox --disable-gpu` 并打印原因。
-
-### ⚠️ 挂载插件前必读：一次真实事故（2026-09-29）
-
-第一次挂载时，本会话**所有**工具调用立刻失效，报 harness 内部错误 `Cannot read properties of undefined (reading 'kind')`，重启 DSH 也不恢复。原因不是环境，**是插件自身的 bug**：
-
-`tools/pre-execute` 是 **waterfall** 事件，官方约定监听器必须 `return next()`：
-
-```js
-const gate = await ctx.waterfall(carrier, 'tools/pre-execute', exec, () => ({ kind: 'allow' }))
-const askResolution = gate.kind === 'ask' ? ... : ...   // ← gate 被冲成 undefined 就死在这
-```
-
-我原来写的是 `(payload) => { observe(); return undefined }` —— 漏了 `next()`，把链路值冲掉，于是**整个 profile 的每一次工具调用全废**。已修复，并补了 `runWaterfall()` 回归测试 + 负向对照（见 `tools/check-plugin.mjs`）。
-
-顺带修掉的另外两个错（同样靠读源码核实）：`session/event` 的真实签名是 `(session, event)` 两参数、`agent/assistant-stream` 是 `{ agent, frame }`；所有事件类型名也已从"我猜的"换成 asar 里普查出的真实字面量。
-
-**两条规矩**：
-
-1. 观测插件**只订阅通知型事件**（`session/event`、`agent/assistant-stream`）。要订阅 waterfall 事件必须 `return next()`，并且必须在真实宿主上验证过。
-2. **改 profile patch 前必备份**，回滚命令事先讲清楚：
-
-```powershell
-# 安装脚本会自动生成 .bak-<时间戳>，回滚就是拷回去再重启 DSH
-Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间戳>" `
-          "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml" -Force
-```
-
-### 挂载 Host 插件（两种方式，任选其一）
-
-- **方式 1｜bundle 安装**：把 `packages/pet-plugin` 作为 bundle 装进 `desktop` profile（走 GUI 插件管理页最稳）。包内 `cordis.patch.yml` 已写好 insert 行。
-- **方式 2｜免安装直挂**：把 `packages/pet-plugin/cordis.patch.yml` 里的 `name` 换成 `index.js` 的绝对路径或 file URL，粘进 profile 的 `cordis.patch.yml`（官方契约明确支持「包标识符 / 绝对文件系统路径 / file URL」）。
-
-装好后自检：`GET http://127.0.0.1:19387/xilian-pet/health` 应返回 `{"ok":true,...}`。
-（本机 shell 里 `curl` 走 Schannel 会失败 —— 见 §三，用 `node -e` 或窗口的启动自检代替。）
-
-### 插件源码热重载：**实测无效**，已放弃
-
-profile patch 里加了这一行（保留着，现在是惰性配置、无害）：
-
-```yaml
-- id: hmr
-  name: "@deepseek-ai/dsh-hmr"
-  disabled: false
-  config:
-    root:
-      - '<repo>\packages\pet-plugin'
-```
-
-**结论：它不生效。** 证据链：
-
-| 步骤 | 结果 |
+| 决定 | 原因 |
 |---|---|
-| 加完 config 后改插件源码 | ❌ `code` 不变 |
-| **重启 DSH 后**再改源码（只改一个常量，代码路径完全不变） | ❌ `code` 仍然不变 |
+| 路由前缀用 `/xilian-pet`，不用 `/api/xilian-pet` | `/api` 是 `dsh-client-connection` 的 prefix 路由，带自己的准入校验；exact 路由挂在它下面会被前缀规则吞掉 |
+| 全部注册成 `kind: 'exact'` | 精确匹配优先于前缀匹配，不会被前缀路由抢先 |
+| 反向操控拿不到 agent 时返回 **503** 而不是假装成功 | 能区分"插件在但 API 不对"和"插件根本没装" |
+| 会话聚焦返回 **501** | Phase 0 未实现，不做假成功 |
+| 每个 channel 分别限量样本 | 全局环形缓冲会被高频流式帧刷爆，低频通道（`agent/status`）样本全丢 |
+| 载荷预览做安全序列化 | `agent/status` 有循环引用，直接 JSON.stringify 会得到 `<unserializable>` |
 
-已排除：不是 patch 优先级问题（家目录级 patch 不存在，profile patch 是唯一且最后生效的用户 patch）；`root` 用法与官方 README 示例一致。
-
-未定论的三种可能（记录在 `chajian/环境体检报告.md`）：① 对 `hmr` 行的覆盖没被采纳；② 绝对路径（含空格 + 中文）在 chokidar 的 `cwd` 语义下未被正确解析；③ **模块 HMR 只对 profile 里正式安装的包生效，对"绝对路径直挂"的 insert 行不适用**（文档反复强调 "Package installation and removal run outside this queue"，我倾向这条）。
-
-> **不要再在这上面盲试**。开发循环按下面的方式走。
-
-### 开发循环（已定：改插件 → 重启 DSH）
-
-```
-改 packages/pet-plugin/*.js  →  把 CODE_REVISION +1  →  重启 DSH  →  看 /health
-```
-
-`/health` 里带 `code`（代码修订号）：
-
-| 观察 | 结论 |
-|---|---|
-| `code` 变大 **且** `uptimeMs` 归零 | ✅ 新代码已生效 |
-| `code` 没变 | ❌ 改的代码没被加载（确认是否真的重启了） |
-
-### A7 主动提醒（插件侧已完成，显示侧等 Electron）
+### A7 主动提醒（插件侧已完成）
 
 策略引擎在 `packages/pet-plugin/reminders.js`，**纯函数**、可完全脱离 DSH 单测：
 
@@ -314,91 +338,311 @@ profile patch 里加了这一行（保留着，现在是惰性配置、无害）
 | **花销** | 低 | 每会话每累计 `everyTokens` 提一次；跨过下一个阈值才再提 |
 
 - 提醒以 `notice` 帧经 SSE 推送；**窗口没连时发出的提醒会被暂存**（最多 20 条），连上后补发最近 5 条
-- 诊断端点：`GET /xilian-pet/debug/reminders`（配置 / 此刻是否免打扰 / 已发记录 / 暂存条数）
+- 诊断端点：`GET /xilian-pet/debug/reminders`
 - 配置项见 `packages/pet-plugin/cordis.patch.yml`，整块可省略（有代码默认值）
 
-### 关键设计决定（都写在代码注释里）
+> ⏳ **显示侧未做**：提醒到了窗口，但"冒泡 + 单击跳转到 DSH"的交互还没实现。
 
-| 决定 | 原因 |
+---
+
+## 八、开发循环
+
+### 插件源码热重载：**实测无效**，已放弃
+
+profile patch 里保留着 `hmr` 行（现在是惰性配置、无害），但**它不生效**。证据链：
+
+| 步骤 | 结果 |
 |---|---|
-| 路由前缀用 `/xilian-pet`，不用 `/api/xilian-pet` | `/api` 是 `dsh-client-connection` 的 prefix 路由，带自己的准入校验（不过直接 401）；exact 路由挂在它下面会被前缀规则吞掉 |
-| 全部注册成 `kind: 'exact'` | 精确匹配优先于前缀匹配，不会被任何前缀路由抢先 |
-| 反向操控拿不到 agent 时返回 **503** 而不是假装成功 | 能区分"插件在但 API 不对"和"插件根本没装" |
-| 会话聚焦返回 **501** | Phase 0 未实现，不做假成功 |
-| SSE 订阅放在 Electron **主进程** | 渲染端 origin 是 `null`（`file://`），EventSource 会撞 CORS；主进程订阅没这问题，重连也好管 |
-| 窗口位置存包内 `.state/` | Electron 默认 userData 在 AppData，agent shell 沙箱写不进去 |
-| 点击穿透默认开启 + `forward: true` | 透明区域不挡下层应用，同时仍收得到 `mousemove` 做 alpha 命中测试 |
-| 素材用程序化占位图 | 零版权风险，且 alpha 掩码命中测试现在就能验证 |
+| 加完 config 后改插件源码 | ❌ `code` 不变 |
+| **重启 DSH 后**再改源码（只改一个常量，代码路径完全不变） | ❌ `code` 仍然不变 |
 
-### 已验证 / 尚未验证（2026-09-30 更新）
+已排除：不是 patch 优先级问题；`root` 用法与官方 README 示例一致。
+未定论的三种可能记在 `chajian/环境体检报告.md`。**不要再在这上面盲试。**
 
-**已验证**（截图见 `docs/screenshots/`）：
+### 已定的开发循环
 
-- ✅ **插件自测 43/43 通过**：状态机（优先级聚合、最短保持、`agent/status` 降档、审批计数、错误档）、归一化（三种真实签名）、mock 契约、真 HTTP 往返、真 SSE 读取、**waterfall 回归 + 负向对照**、清理注销
-- ✅ **端到端实机跑通**（`phase0-live.png`）：插件热挂载 → SSE 连接 → 状态帧应用 → 绿色 `running` 光环 + 绿色连接点
-- ✅ **事件协议从"推测"升级为"事实"**：59 个真实事件类型名、`SessionEventMap`、`agent/status`/`agent/error` 载荷、`SessionAssistantStreamFrame` 与 `StreamChunk`（正文在 `frame.chunk.text`）全部取自 asar 类型清单
-- ✅ **窗口实机启动成功**：`260x300` 透明无边框置顶窗，点击穿透已开启，干净退出
-- ✅ **alpha 掩码命中测试机制可用**：渲染端日志 `alpha 掩码就绪 256×256`，窗口 95.5% 像素全透明
+```
+改 packages/pet-plugin/*.js  →  把 CODE_REVISION +1  →  重启 DSH  →  看 /health
+```
 
-**插件侧验证结果（2026-09-30，重启后实测）**：
+| 观察 | 结论 |
+|---|---|
+| `code` 变大 **且** `uptimeMs` 归零 | ✅ 新代码已生效 |
+| `code` 没变 | ❌ 改的代码没被加载（确认是否真的重启了） |
 
-- ✅ **A1 插件被 profile 加载**：`/health` 返回 `{"ok":true,"code":4,...}`
-- ✅ **A5 逐字流**：`/state` 的 `tail` 持续含真实正文（取自 `frame.chunk.text`）
-- ✅ **A7 主动提醒（插件侧端到端）**：第一次 30s tick 即触发花销提醒 →
-  `pendingNotices=1` → 重连时经 **`notices` 帧补发**（用 `tools/tap-events.mjs` 验证）
-- ✅ **花销累计**：`spendTokens` 随 `assistant/message` 的 `usage` 真实增长
-- ✅ **形状捕获按 channel 限量生效**：`session/event 20` / `assistant-stream 20`（限流）/ `agent/status 1`
-  —— 高频流式帧不再挤掉低频通道的样本
-- 🟡 **A4 状态收尾**：`agent/status` 订阅**已确认在收事件**；但"降回 idle"无法在回合内自证
-  （我一执行命令，agent 就已经是 running 了），需下次会话切换时观察
-- 🟡 **A6 派活/打断**：代码与测试就绪，未在真实会话上从 UI 触发过（Electron 冻结中）
+> 渲染端（`pet-shell/renderer/*`）改完**不需要重启**，但**需要关掉宠物重开**（`Ctrl+Shift+Q` 再启动）。
 
-> 代码修订号现为 **5**（只含"形状预览支持循环引用"这个诊断改进），运行中的是 **4**。
-> 不值得为它单独重启 —— 下次为别的事重启时一起生效。
+### ⚠️ 挂载插件前必读：一次真实事故（2026-09-29）
 
-**尚未验证 / 待接线**：
+第一次挂载时，本会话**所有**工具调用立刻失效，报 harness 内部错误
+`Cannot read properties of undefined (reading 'kind')`，重启 DSH 也不恢复。
+原因不是环境，**是插件自身的 bug**：
 
-- ⏳ **A9「透明区不挡 DSH 界面点击」需人工在桌面上确认** —— 机制已验证，但"点在透明处真的穿过去"只能肉眼+手动试
-- ⏳ **A10 素材缺失降级**、**Live2D 接入**、**A2 验收项重定义** —— 都在 Electron 侧，等你给模型后一起大改
-- ⏳ `agent.followup()` / `agent.cancel()` 的确切方法名待真实运行确认（代码已做多候选探测与 503 降级）
+`tools/pre-execute` 是 **waterfall** 事件，官方约定监听器必须 `return next()`：
 
-### 靠"自我截图"抓到的两个真 bug（留作教训）
+```js
+const gate = await ctx.waterfall(carrier, 'tools/pre-execute', exec, () => ({ kind: 'allow' }))
+const askResolution = gate.kind === 'ask' ? ... : ...   // ← gate 被冲成 undefined 就死在这
+```
 
-窗口看不到屏幕时，`PET_SNAPSHOT=<png>` 让 Electron 截自己的窗口（只截我们的透明窗，不碰用户桌面），再加 `console-message` 诊断，一次就抓到两类问题：
+我原来写的是 `(payload) => { observe(); return undefined }` —— 漏了 `next()`，把链路值冲掉，
+于是**整个 profile 的每一次工具调用全废**。已修复，并补了 `runWaterfall()` 回归测试 + 负向对照。
 
-1. **渲染端 JS 从未执行**：`<img id="pet">` 会自动创建 `window.pet`，与 preload 的 `exposeInMainWorld('pet', …)` 撞名 →
-   `Uncaught SyntaxError: Identifier 'pet' has already been declared`。**整页 JS 静默失效**，而 CSS 正常，肉眼看截图只以为"样式没生效"。已改名：桥接对象 `window.xilianPet`、元素 `#petSprite`。
-2. **默认隐藏的输入条其实显示了**：HTML 的 `hidden` 靠 UA 样式表的 `display:none`，被作者样式里的 `display:flex` 覆盖。已加 `[hidden] { display: none !important }` 兜底。
+**两条规矩**：
 
-> 教训：**这个环境里不要用 pwsh 的 `-replace` 改含中文的源码** —— 一次重写把注释写成了乱码，还吞掉一个换行。改源码一律用 edit/write 工具。
+1. 观测插件**只订阅通知型事件**（`session/event`、`agent/assistant-stream`）。
+   要订阅 waterfall 事件必须 `return next()`，并且必须在真实宿主上验证过。
+2. **改 profile patch 前必备份**：
+
+```powershell
+# 安装脚本会自动生成 .bak-<时间戳>，回滚就是拷回去再重启 DSH
+Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间戳>" `
+          "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml" -Force
+```
+
+### 挂载 Host 插件（两种方式，任选其一）
+
+- **方式 1｜bundle 安装**：把 `packages/pet-plugin` 作为 bundle 装进 `desktop` profile（走 GUI 插件管理页最稳）
+- **方式 2｜免安装直挂**：把 `cordis.patch.yml` 里的 `name` 换成 `index.js` 的绝对路径或 file URL，
+  粘进 profile 的 `cordis.patch.yml`（官方契约明确支持「包标识符 / 绝对文件系统路径 / file URL」）
+
+装好后自检：`GET http://127.0.0.1:19387/xilian-pet/health` 应返回 `{"ok":true,...}`。
+
+### 依赖安装的三个本机坑（实测，换机器会复现）
+
+1. **`pnpm install` 必须走镜像源**：`pnpm-workspace.yaml` 里已配 `registry: https://registry.npmmirror.com`。
+   走官方源时单请求要 14–30s，`@electron-internal/extract-zip` 这类包会直接超时。
+   同时已配 `nodeLinker: hoisted` + `packageImportMethod: copy`，规避
+   `[ERR_PNPM_SYMLINK_FAILED] symlinkAllModules Maximum call stack size exceeded`。
+
+2. **Electron 二进制不会随 `pnpm install` 装好**：它自带的 `install.js` 把 zip 缓存写进
+   `%LOCALAPPDATA%\electron\Cache`（沙箱外 → 被拒）。所以改用自研下载器：
+
+```powershell
+& $NODE tools\fetch-electron.mjs        # = pnpm run deps:electron
+```
+
+   它是「镜像探测 + 8 路分段并行下载 + 纯 JS 解 zip」。实测：npmmirror ~85 KB/s（要半小时），
+   **华为云 ~11 MB/s，150.9 MB 共 14 秒**。`tools/probe-mirrors.mjs` 可随时复测。
+
+3. **Electron 无法在 agent shell 内启动** —— 见 §3.5。
 
 ---
 
-## 八、待人工处理的项（沙箱外才能做）
+## 九、安全红线
 
-1. `~/.dsh/storages/workspace.json` 仍注册着 `F:\dsh\project\chajian`、`C:\Users\project`、`default-workspace` 三个历史工作区 → 可清理。
-2. `F:\dsh\project\chajian` 仍有同内容副本 + 上一轮遗留的 `.write-probe` → 可删除（**保留 C: 这一份为唯一权威**）。
+- **装第三方插件 = 授予宿主进程执行权**。DSH 的插件 vm 沙箱**不是安全边界**
+  （Discussion #1441，PoC 已验证：一次批准 = 完整 RCE；#451 沙箱逃逸 + `/api` RPC 仅靠 Host 头围栏；
+  #250 沙箱内可经 approval 回环自批准 `danger-full-access`）。三帖至今 open。
+- 已知 CVE 与本机关系（2026-09-29 复核）：**CVE-2026-82533**（本地控制 API 鉴权绕过，9.6 CRITICAL）
+  修于 `0.1.2-alpha.1`；**CVE-2026-101102**（Code Mode Sandbox，6.3 MEDIUM）
+  影响 `0.1.0-rc.0 … 0.1.0-rc.7` —— **本机 0.1.7-rc.1 两条都不命中**。
+- `cordis.patch.yml` 允许 `!!js` 表达式（= 配置期代码执行）→ **改 patch 前先备份，且拒绝 `!!js`**。
+- 装前扫描：`@shaoshi/dshscan`（静态+语义双通道）+ socket.dev（注意本 shell 抓 socket.dev 会 403）。
+
+### 素材与版权约束（**改代码时别删署名**）
+
+1. **模型授权**：B站 @是依七哒，**注明用途 + 不得收费**。署名在 `NOTICE.md` 第四节。
+2. **角色版权**：《崩坏：星穹铁道》昔涟，米哈游。依同人指引 V3.0 三、Q1 A1，
+   **非商业个人使用可以制作并发布**，但须：① 同步放法律声明 ② 严格非商业
+   ③ 不暗示官方关联 ④ 不用未公开素材 ⑤ 须为二次独创。
+3. **不入库**（`.gitignore` 已覆盖）：`assets/live2d/`、`renderer/vendor/`、
+   `docs/screenshots/*`（含第三方角色截图，白名单只有占位时代两张）、
+   `*.wpk` `*.lpk` `*.moc3` `*.motion3.json` `*.exp3.json` `*.lnk`
+4. **Cubism SDK 许可**：Core 受 Live2D 的 SDK Release License 约束（个人非商用属免费档）。
+
+> 历史说明：早期曾规划过「A 档 Live2D 约稿」并整理过一套 36.2 MB 的 2D 素材导出包
+> （`E:\xilian_desktop_pet\art_assets_export\`），**该方向已放弃**（改用现成授权模型）。
+> 约稿单保留在 [`docs/Live2D约稿单.md`](docs/Live2D约稿单.md)，将来想换自研形象可直接启用。
+
+---
+
+## 十、验证状态（诚实版）
+
+> **每个"已修复"都要有可复现的证据**（截图、参数采样区间、逐条日志）。
+> 拿不到证据就老实写"未验证"。请继续按这个标准维护本节。
+
+### ✅ 有截图/日志证据
+
+| 项 | 证据 |
+|---|---|
+| 插件被加载 | `/health` → `{"ok":true,"code":5,...}` |
+| 插件自测 62 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / **waterfall 回归 + 负向对照** / 清理注销 |
+| 版本兼容性 | Cubism Core `05.01.0000`，`MsvGetLatestMocVersion=5`，模型 moc3 版本号 5 |
+| 事件协议取自事实 | 59 个真实事件类型名、`SessionEventMap`、`StreamChunk`（正文在 `frame.chunk.text`）均来自 asar 类型清单 |
+| Live2D 模型渲染 | 4200×3500 加载成功，截图见 `docs/screenshots/` |
+| 4 个动作内容识别 | 参数采样 + 高光截图（见 §六 动作表） |
+| 状态→动作映射 | `question` 档出现粉色问号特效，与其他档视觉可区分 |
+| 构图适配 + 缓存 | `构图：内容 233×206 CSS px`；二次启动 `找到构图缓存` → 立即显示 |
+| 主进程命中测试 | 日志逐条核对坐标换算：窗口外→穿透、角色上→可交互 |
+| 开场手势 | 截图确认是**单眼 wink** 的比嘘表情 |
+| 眨眼兜底 | `ParamEyeLOpen 活动 0.05~13.00s`（13 秒窗口全程） |
+| 慢放倍率 | 参数活动区间比值 1.67x ≈ 1/0.6 |
+| A5 逐字流（插件侧） | `/state` 的 `tail` 持续含真实正文 |
+| A7 提醒（插件侧） | 30s tick 触发 → `pendingNotices=1` → 重连经 `notices` 帧补发 |
+| 花销累计 | `spendTokens` 随 `assistant/message` 的 `usage` 真实增长 |
+| A10 降级 | Live2D 失败时自动回退占位图，无白屏 |
+
+### 🟡 用户报过、已修，但**还没被用户重启确认**
+
+| # | 修复内容 |
+|---|---|
+| 1 | 待机时眼睛一直闭着 → 自己接管眨眼 |
+| 2 | 有其它窗口时拖不动 → 主进程轮询光标（绕开 Electron 已知 bug） |
+| 3 | 打开一会突然变大 → 构图缓存 + 测量完成前不显示窗口 |
+| 4 | 开场动作 → 比嘘手势（0.6x 慢放） |
+| 5 | 比嘘后接一次叉腰 → 启动时不重放一次性入场动画 |
+| 6 | 比嘘时眼睛没动作 → 眨眼接管条件写反了，已反过来 |
+
+### ❌ 从来没验证过
+
+| 项 | 为什么没验证 |
+|---|---|
+| **A6 双击派活 / 打断** | 需要真实点击 UI，agent 点不了自己的桌面 —— **最大功能缺口** |
+| **A4 的"降回 idle"** | 一执行命令 agent 就是 running，回合内自证不了 |
+| **A5 气泡渲染端** | 插件侧 tail 有真实文本，但窗口里的气泡显示没从 UI 看过 |
+| **A7 显示侧**（冒泡 + 跳转） | 通知帧已推送，跳转逻辑未做 |
+| **A9「透明区不挡下层点击」** | 机制已重做并逐条核对，但"真的穿过去"只能肉眼确认 |
+| 长时间稳定性 | 没跑过几小时 |
+| 多显示器 / DPI 缩放 | 没测过 |
+
+### 验收项 A1–A10 逐项
+
+| # | 验收项 | 状态 |
+|---|---|---|
+| A1 | 插件能被 profile 加载 | ✅ |
+| A2 | 设置页出现「桌宠配置」 | ❌ **不适用**（不做 GUI 内嵌），需重定义或砍掉 |
+| A3 | overlay 里出现宠物并待机动画 | ⚠️ **需重定义**（"overlay"指 GUI 内嵌；独立窗里出现宠物已验证） |
+| A4 | 真实会话事件驱动状态 | 🟡 四档切换已验证；降回 idle 未观察到 |
+| A5 | 逐字流进气泡 | 🟡 插件侧 ✅；渲染端未确认 |
+| A6 | 双击气泡派活 | ❌ 从未测过 |
+| A7 | 审批积压主动提醒 | 🟡 插件侧 ✅；显示与跳转未做 |
+| A8 | Electron 透明置顶窗 | ✅ 可拖动、透明无边框 |
+| A9 | 点击穿透 | 🟡 待人工确认 |
+| A10 | 模型缺失时降级 | ✅ |
+
+**Phase 0 明确不做**：养成数值、语音、多开碰撞、多宠物注册表、打包发布、素材生成链。
+
+---
+
+## 十一、踩坑记录
+
+### 环境类
+
+| 坑 | 症状 | 解法 |
+|---|---|---|
+| Electron 二进制没装 | `require('electron')` 卡在 "Downloading..." | `tools/fetch-electron.mjs`（华为云镜像，15 秒） |
+| agent 沙箱里 Electron 起不来 | `Mojo platform_channel.cc:108 拒绝访问 0x5` | 提权；日常让用户自己跑 |
+| `cubism4.min.js` 引用 `process` | `ReferenceError: process is not defined` → **整包不执行** | 加载 `vendor/process-shim.js` |
+| PixiJS 需要 eval | `Current environment does not allow unsafe-eval` | 加载 `@pixi/unsafe-eval` |
+| `web_fetch` 工具被域名过滤 | 几乎全站 `resolves to a non-public IP` | **用 Node 的 `fetch`** |
+| 模型渲染成一片绿 | `#halo` 画在了 canvas 上面 | 显式 z-index 分层 |
+| `file://` 页面 XHR 被拒 | `Access to XMLHttpRequest ... blocked by CORS` | 改用 `pet://` 同源协议 |
+
+### 代码类
+
+| 坑 | 症状 | 根因 |
+|---|---|---|
+| **两个 `<script>` 撞名** | 一次 `SyntaxError` 整页静默失效；一次 `function` 静默互相覆盖 | 共享全局作用域 → 改 ES 模块 |
+| **模板字符串括号顺序笔误** | `SyntaxError: Missing } in template expression`，**肉眼看不出来** | 写成 `` `Scene[${x]}` `` 而非 `` `Scene[${x}]}` ``。**逐字符 hexdump 才定位到** |
+| **`setIgnoreMouseEvents(forward:true)`** | **桌面上有别的窗口就拖不动** | Electron 在 Windows 上的已知 bug，见下 |
+| **动作播放时库不自动眨眼** | 待机眼睛一直闭 | 条件 `if (!motionUpdated) eyeBlink...`；自己兜底 |
+| **眨眼接管条件写反** | 比嘘的 wink 变成两只眼睁着 | 判据应是"哪些动作持续驱动 `ParamEyeLOpen`"（数据），不是"哪个动作闭眼"（零散现象） |
+| **`motionGroups` 懒加载** | 刚调 `motion()` 时取不到 motion 对象 | 50ms × 20 次重试 |
+| **全局环形缓冲被高频通道刷爆** | `/debug/shapes` 80 条样本全是流式帧 | 按 channel 分别限量 |
+| **循环引用载荷预览不可读** | `agent/status` 样本 `<unserializable>` | 安全序列化（循环处标 `[circular]`） |
+| **绝不能用 pwsh 改含中文的源码** | 注释变乱码、吞换行 | 一律用 edit/write 工具 |
+
+### 关于 `setIgnoreMouseEvents` 那个 bug（值得单独记）
+
+我们没有绕过去，是**换掉了整个机制**。查证过程：
+
+| 证据 | 内容 |
+|---|---|
+| PR **#53026**（target 44-x-y，即本机版本） | **"Mouse forwarding will stop working temporarily if a window with higher privileges (integrity level) is the foreground window"** |
+| Issue **#30808**（2021 至今 open） | 「Mouse event forwarding is buggy」事件要么闪烁要么完全不转发 |
+| Issue **#49982** | 「mouseenter/mouseleave 振荡 + **click-through 卡住**」 |
+| PR **#52633** | 「refactor: mouse forwarding on Windows」声明 `Fixes #30808`，**但至今 open，没进任何发行版** |
+
+症状完全吻合：别的窗口一进前台 → 转发停 → 渲染端收不到 `mousemove` → 永远切不到可交互 → 拖不动。
+
+### 测试方法类（这两条差点让我把 bug 当修好）
+
+| 坑 | 症状 |
+|---|---|
+| **测试开关和产品行为耦合** | `deferShow` 绑在 `PET_SNAPSHOT` 上 → 快照测试永远走"立即显示"分支，**真实路径从没被验证** |
+| **真实状态干扰测试** | `PET_FORCE_STATE` 之外还发了真实快照 → 真实状态先到、消费掉"首次状态"标记，**测不出真实场景** |
+
+> 教训：**测试开关一旦和真实数据/产品行为混在一起，就很容易测到假象。**
+
+### 靠"自我截图"抓到的两个真 bug
+
+窗口看不到屏幕时，`PET_SNAPSHOT=<png>` 让 Electron 截自己的窗口（只截我们的透明窗，不碰用户桌面），
+再加 `console-message` 诊断，一次就抓到两类问题：
+
+1. **渲染端 JS 从未执行**：`<img id="pet">` 会自动创建 `window.pet`，与 preload 的
+   `exposeInMainWorld('pet', …)` 撞名 → `Uncaught SyntaxError: Identifier 'pet' has already been declared`。
+   **整页 JS 静默失效**，而 CSS 正常，肉眼看截图只以为"样式没生效"。
+   已改名：桥接对象 `window.xilianPet`、元素 `#petSprite`。
+2. **默认隐藏的输入条其实显示了**：HTML 的 `hidden` 靠 UA 样式表的 `display:none`，
+   被作者样式里的 `display:flex` 覆盖。已加 `[hidden] { display: none !important }` 兜底。
+
+---
+
+## 十二、调试开关
+
+| 变量 | 作用 |
+|---|---|
+| `PET_SNAPSHOT=<png>` | **自检截图**（只截自己的透明窗）+ `PET_SNAPSHOT_EXIT=1` 截完退出 |
+| `PET_SNAPSHOT_AT_MOTION_MS=<ms>` | 从**动作开始**（不是窗口 ready）精确计时截图 |
+| `PET_SNAPSHOT_DELAY_MS=<ms>` | 从 ready-to-show 起算的截图延迟 |
+| `PET_FORCE_STATE=<state>` | 强制推一个状态（**不发真实快照**，避免干扰） |
+| `PET_FORCE_MOTION=Scene:<i>` | 指定播放哪个动作 |
+| `PET_SAMPLE_PARAMS=1` + `PET_SAMPLE_MS` | **参数采样**：反推动作内容 / 验证时序 |
+| `PET_HIT_DEBUG=1` | 每秒打印命中判定（坐标换算逐项可见） |
+| `PET_DEFER_SHOW=0` | 关掉"构图就绪前不显示窗口" |
+| `PET_WIDTH` / `PET_HEIGHT` | 窗口尺寸（默认 260×300） |
+| `PET_MODEL_DIR` | 模型目录覆盖 |
+
+---
+
+## 十三、待人工处理的项（沙箱外才能做）
+
+1. `~/.dsh/storages/workspace.json` 仍注册着 `F:\dsh\project\chajian`、`C:\Users\project`、
+   `default-workspace` 三个历史工作区 → 可清理。
+2. `F:\dsh\project\chajian` 仍有同内容副本 + 上一轮遗留的 `.write-probe` → 可删除
+   （**保留 C: 这一份为唯一权威**）。
 3. 可选：在你自己终端执行 `git config --global http.sslBackend openssl`，省掉每条 git 命令加参数。
-4. 决策项：**是否需要一份 DSH 源码 checkout**（决定能否用 `dev:web` 的 HMR 重建链）。
+4. 仓库根有两个误建的 `start-pet.cmd - 快捷方式*.lnk`（已 gitignore，可删）；
+   想放桌面用「发送到 → 桌面快捷方式」。
+5. `Cyrene.zip`（8.2 MB 原始模型包）和 `3597924035_*.wpk`（9.57 MB，加密不可用）
+   仍在工作区 → 可移出仓库或删除（`.gitignore` 已排除，不影响仓库干净度）。
 
 ---
 
-## 九、目录
+## 十四、目录
 
 ```
 PLAN.md                             调研结论与技术验证计划（含验收标准 A1–A10）
-README.md                           本文（环境事实 / 边界 / 怎么跑）
+README.md                           本文（环境事实 / 边界 / 架构 / 怎么跑）
+NOTICE.md                           版权与署名声明（**必读，改动时别删**）
+start-pet.cmd                       一键启动入口（双击即可，锁捆绑 node 路径）
 package.json · pnpm-workspace.yaml  工作区与 pnpm 配置（storeDir、hoisted、npmmirror）
 packages/pet-plugin/                DSH Host 插件（零依赖、零构建）
-packages/pet-shell/                 Electron 透明置顶窗
+packages/pet-shell/                 Electron 透明置顶窗 + Live2D 渲染层
 docs/
-  screenshots/                      实机自检截图（窗口渲染证据）
-  Live2D约稿单.md                    可直接转发给画师/绑定师的委托说明（拆件清单、补绘清单、导出规格）
+  交接说明.md                        给下一个对话窗口的完整交接（**接手先读这份**）
+  Live2D约稿单.md                    委托说明（已暂缓，将来换自研形象可启用）
+  screenshots/                      实机自检截图（含第三方角色，默认 gitignore）
 tools/
   check-plugin.mjs                  插件自测（62 项断言，不需要 DSH）
   tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）
+  prepare-renderer-vendor.mjs       生成 renderer/vendor/（pixi + Cubism Core）
+  inspect-live2d-model.mjs          解析任意 Cubism 模型
+  fix-live2d-model.mjs              接上未挂进清单的动作/表情
+  downsample-texture.py             纹理降采样（预乘 alpha）
   probe-mirrors.mjs                 Electron 镜像速度实测
   make-placeholder.mjs              程序化生成占位素材
   inspect-png.mjs                   校验素材透明通道
