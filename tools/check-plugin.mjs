@@ -679,10 +679,15 @@ await checkAsync('POST /interrupt 命中 agent → cancel({ kind: "user" })', as
   assert.deepEqual(calls.at(-1), ['cancel', { kind: 'user' }])
 })
 
-await checkAsync('取不到 UserMessage 工厂时 /prompt 降级为 503（而不是让插件加载失败）', async () => {
-  // 说明：本测试依赖"自测环境里解析不到 @deepseek-ai/dsh-llm"这一事实 ——
-  // 那正是生产环境里唯一可能失败的地方，所以这条测的是真实的降级路径。
-  const m = createMockCtx({ agents: mockAgentGetter })
+await checkAsync('拿不到官方 createUserMessage → 用内置等价实现派活（不再 503）', async () => {
+  // 这条测的就是**生产环境实际走的路径**：插件按路径挂载，裸包名解析不到宿主的 app.asar，
+  // 于是走内置兜底。曾经这里返回 503 no-message-factory，导致「双击派活」永远失败。
+  const localCalls = []
+  const localAgent = {
+    followup: async (message) => localCalls.push(['followup', message]),
+    cancel: async (cause) => localCalls.push(['cancel', cause]),
+  }
+  const m = createMockCtx({ agents: (id) => (id === 'known' ? localAgent : undefined) })
   const teardown = apply(m.ctx, { pathPrefix: '/xilian-pet', minHoldMs: 0 }) // 刻意不注入工厂
   const srv = http.createServer((req, res) => {
     const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
@@ -694,14 +699,37 @@ await checkAsync('取不到 UserMessage 工厂时 /prompt 降级为 503（而不
     route.handler(req, res)
   })
   await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  const port = srv.address().port
   try {
-    const res = await fetch(`http://127.0.0.1:${srv.address().port}/xilian-pet/prompt`, {
+    const res = await fetch(`http://127.0.0.1:${port}/xilian-pet/prompt`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sessionId: 'known', text: 'hi' }),
+      body: JSON.stringify({ sessionId: 'known', text: '去写个 README' }),
     })
-    assert.equal(res.status, 503)
-    assert.equal((await res.json()).error, 'no-message-factory')
+    assert.equal(res.status, 200, '内置兜底下派活必须成功（旧行为是 503）')
+
+    const [action, message] = localCalls.at(-1)
+    assert.equal(action, 'followup', 'followup 必须收到消息对象')
+    // 与官方 createUserMessage 的产物逐字段一致：字段不多不少
+    assert.deepEqual(Object.keys(message).sort(), ['content', 'id', 'role', 'source'])
+    assert.equal(message.role, 'user')
+    assert.deepEqual(message.content, [{ type: 'text', text: '去写个 README' }])
+    assert.deepEqual(message.source, { kind: 'user' })
+    assert.match(
+      message.id,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      'id 必须是标准 v4 UUID（官方用 randomUUID）',
+    )
+    // 官方 createMessage 会 deepFreeze，内置实现必须同样冻结
+    assert.ok(Object.isFrozen(message), '消息顶层必须冻结')
+    assert.ok(Object.isFrozen(message.content), 'content 数组也要冻结')
+    assert.ok(Object.isFrozen(message.content[0]), 'content 元素也要冻结')
+
+    // /health 必须能看出用的是哪条路（诊断用）
+    const health = await (await fetch(`http://127.0.0.1:${port}/xilian-pet/health`)).json()
+    assert.equal(health.messageFactory, 'builtin', '自测环境里解析不到官方包，应报告 builtin')
+    assert.ok(Array.isArray(health.messageFactoryAttempts) && health.messageFactoryAttempts.length > 0,
+      '必须留下候选失败原因，便于真机诊断')
   } finally {
     await new Promise((resolve) => srv.close(resolve))
     teardown()

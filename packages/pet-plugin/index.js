@@ -15,6 +15,10 @@
  * 不影响 agent 行为。
  */
 
+import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
 import {
   createPetState,
   hasActivity,
@@ -70,7 +74,42 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 6
+const CODE_REVISION = 7
+
+/**
+ * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
+ */
+function deepFreeze(value) {
+  const seen = new WeakSet()
+  const stack = [value]
+  while (stack.length > 0) {
+    const node = stack.pop()
+    if (node === null || typeof node !== 'object' || seen.has(node)) continue
+    seen.add(node)
+    Object.freeze(node)
+    for (const key of Object.getOwnPropertyNames(node)) stack.push(node[key])
+  }
+  return value
+}
+
+/**
+ * 内置的 UserMessage 构造 —— 与官方 `createUserMessage` **逐字等价**。
+ *
+ * 为什么敢自己造（下面每条都从 `app.asar` 里读出来核实过，不是推测）：
+ *   · `createUserMessage(input)` = `createMessage({ ...input, role: 'user' })`
+ *   · `createMessage(input)`     = `deepFreeze(structuredClone({ ...input, id: brandString(randomUUID()) }))`
+ *   · `brandString(v)` 的实现就是 `return v` —— `@deepseek-ai/dsh-brand` 自述
+ *     "Duplicate-install-safe … keeps no runtime identity or mutable state, so
+ *      independently installed copies produce interchangeable values"，
+ *     即它只是**编译期**标记，运行时恒等。
+ *   · `randomUUID()` 是标准 v4 UUID（`crypto.getRandomValues` 生成）。
+ *
+ * 所以官方产物 == `{ ...input, role: 'user', id: <v4 uuid> }` 的深拷贝 + 深冻结。
+ * 字段与官方**完全一致（不多不少）**，`followup()` 收到的对象形状不变。
+ */
+function makeUserMessage(input) {
+  return deepFreeze(structuredClone({ ...input, role: 'user', id: randomUUID() }))
+}
 
 /**
  * 安全预览：载荷里常有循环引用（例如 agent.ctx）。
@@ -320,6 +359,9 @@ export function apply(ctx, config = {}) {
         subscribers: connections.size,
         pendingApprovals: pendingApprovalCount(state),
         state: state.current,
+        // 派活用的 UserMessage 工厂来源：config / module:<路径> / builtin（内置等价实现）
+        messageFactory: factorySource,
+        messageFactoryAttempts: factoryAttempts,
       }),
     `xilian-pet: GET ${pathPrefix}/health`,
   )
@@ -394,21 +436,63 @@ export function apply(ctx, config = {}) {
    *
    * 取值顺序：
    *   1. `config.createUserMessage` —— **测试注入点**（YAML 里给不了函数，但自测直接调 apply 可以）
-   *   2. 动态 import `@deepseek-ai/dsh-llm`（宿主会安装 profile 运行时解析，能解析到）
+   *   2. 官方工厂：裸包名 `@deepseek-ai/dsh-llm` → 宿主 `app.asar` 内的绝对路径
    *
-   * 刻意用**动态 import + 缓存**而不是顶层静态 import：一旦解析失败，只让 /prompt 返回 503，
+   * ⚠️ 这里踩过一个真坑（A6「双击派活」报 503 `no-message-factory`）：
+   * 插件是**从仓库目录按路径挂载**的，而 `@deepseek-ai/dsh-llm` 只存在于**宿主自己的应用包内**
+   * （`app.asar/dsh/node_modules/@deepseek-ai/dsh-llm`）。所以从插件所在目录做
+   * `import('@deepseek-ai/dsh-llm')` 必然 `ERR_MODULE_NOT_FOUND` —— 派活永远失败。
+   *
+   * 两层解法：
+   *   1. 尽力拿**官方工厂**：config 注入 → 裸包名 → 宿主应用包内绝对路径
+   *      （用 `process.resourcesPath` 定位；Electron 主进程可直接 import asar 内文件）。
+   *   2. 全都拿不到时用 **`makeUserMessage` 内置兜底** —— 它是对官方实现的逐字复刻
+   *      （等价性证据见该函数注释），**不再降级成 503**。
+   *
+   * 刻意用**动态 import + 缓存**而不是顶层静态 import：解析失败只影响这一条路径，
    * 而不是让整个插件加载失败。
    */
   let userMessageFactory = typeof config.createUserMessage === 'function' ? config.createUserMessage : undefined
+  let factorySource = userMessageFactory === undefined ? null : 'config'
+  /** 各候选的失败原因，供 `/health` 诊断（整条链路只在首次 /prompt 时走一次） */
+  let factoryAttempts = []
+
+  async function loadOfficialFactory() {
+    const attempts = []
+    const candidates = ['@deepseek-ai/dsh-llm']
+    const { resourcesPath } = process
+    if (typeof resourcesPath === 'string' && resourcesPath !== '') {
+      const rel = 'dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js'
+      candidates.push(pathToFileURL(join(resourcesPath, 'app.asar', rel)).href)
+      candidates.push(pathToFileURL(join(resourcesPath, 'app.asar.unpacked', rel)).href)
+    }
+    for (const specifier of candidates) {
+      try {
+        const mod = await import(specifier)
+        if (typeof mod.createUserMessage === 'function') {
+          return { factory: mod.createUserMessage, source: `module:${specifier}`, attempts }
+        }
+        attempts.push(`${specifier} → 模块内无 createUserMessage 导出`)
+      } catch (error) {
+        attempts.push(`${specifier} → ${error?.code ?? 'ERR'} ${error?.message ?? error}`)
+      }
+    }
+    return { factory: null, source: null, attempts }
+  }
+
   async function getUserMessageFactory() {
     if (userMessageFactory !== undefined) return userMessageFactory
-    try {
-      const mod = await import('@deepseek-ai/dsh-llm')
-      userMessageFactory = typeof mod.createUserMessage === 'function' ? mod.createUserMessage : null
-      warn(`createUserMessage 解析${userMessageFactory === null ? '失败（无该导出）' : '成功'}`)
-    } catch (error) {
-      userMessageFactory = null
-      warn(`import @deepseek-ai/dsh-llm 失败：${error?.message ?? error}`)
+    const { factory, source, attempts } = await loadOfficialFactory()
+    factoryAttempts = attempts
+    if (factory !== null) {
+      userMessageFactory = factory
+      factorySource = source
+      warn(`UserMessage 用官方 createUserMessage：${source}`)
+    } else {
+      // 绝不返回 503 —— 内置实现与官方等价，派活必须能用
+      userMessageFactory = makeUserMessage
+      factorySource = 'builtin'
+      warn(`拿不到官方 createUserMessage（${attempts.length} 个候选均失败），改用内置等价实现`)
     }
     return userMessageFactory
   }
@@ -427,13 +511,8 @@ export function apply(ctx, config = {}) {
           message: 'ctx.agents.get(sessionId) 不可用或 sessionId 缺失',
         })
       }
+      // 一定会拿到工厂：官方解析不到就用内置等价实现（见 getUserMessageFactory），不再 503
       const createUserMessage = await getUserMessageFactory()
-      if (createUserMessage === null) {
-        return sendJson(res, 503, {
-          error: 'no-message-factory',
-          message: '取不到 @deepseek-ai/dsh-llm 的 createUserMessage，无法构造 UserMessage',
-        })
-      }
       const followup = agent.followup ?? agent.steer
       if (typeof followup !== 'function') {
         return sendJson(res, 503, { error: 'no-followup', message: 'agent 未暴露 followup/steer' })

@@ -8,7 +8,7 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1269 行 / 外壳 8 文件 2363 行 / 工具 14 文件 2335 行，49 个提交 |
+| 规模 | 插件 5 文件 1348 行 / 外壳 8 文件 2363 行 / 工具 14 文件 2363 行，50 个提交 |
 | 自测 | `& $NODE tools\check-plugin.mjs` → **65 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
@@ -502,7 +502,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 
 | 项 | 为什么 |
 |---|---|
-| **A6 双击派活 / 打断（复测）** | 首测即报 `派活失败 (500)：cannot get property "agents" without inject` → 已修（`inject` 补 `agents`，修订号 5 → 6）。**需重启 DSH 后复测**；「打断」按钮同样待复测 |
+| **A6 双击派活 / 打断（复测）** | 真机连撞两个 bug，都已修，但**都要重启 DSH 才生效**：① 报 500 `cannot get property "agents" without inject`（`inject` 少了 `agents`）；② 修完报 503 `no-message-factory`（插件从仓库挂载，裸包名 `@deepseek-ai/dsh-llm` 解析不到宿主 `app.asar` 内的包）。现改为"尽力取官方工厂 + **内置等价实现兜底**"，修订号 → **7** |
 | **A4 的"降回 idle"** | 一执行命令 agent 就是 running，回合内自证不了 |
 | **A5 气泡渲染端** | 插件侧 tail 有真实文本，但窗口里的气泡显示没从 UI 看过 |
 | **A7 显示侧**（冒泡 + 跳转） | 通知帧已推送，跳转逻辑未做 |
@@ -518,7 +518,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | A3 | **独立窗里出现宠物并待机动画**（已重定义） | ✅ 截图 + 参数采样（`Scene[3]` 待机在播） |
 | A4 | 真实会话事件驱动状态 | 🟡 四档切换已验证；降回 idle 未观察到 |
 | A5 | 逐字流进气泡 | 🟡 插件侧 ✅；渲染端未确认 |
-| A6 | 双击气泡派活 | 🟡 首测即报 500（缺 `inject: 'agents'`）→ **已修**，待重启复测 |
+| A6 | 双击气泡派活 | 🟡 两处真机 bug 已修（`inject` 缺 `agents` → 500；官方 `createUserMessage` 解析不到 → 503），**待重启复测** |
 | A7 | 审批积压主动提醒 | 🟡 插件侧 ✅；显示与跳转未做 |
 | A8 | Electron 透明置顶窗 | ✅ 可拖动、透明无边框 |
 | A9 | 点击穿透 | ✅ 用户实机确认（2026-10-02） |
@@ -557,6 +557,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **动作播放时库不自动眨眼** | 待机眼睛一直闭 | 条件 `if (!motionUpdated) eyeBlink...`；自己兜底 |
 | **眨眼接管条件写反** | 比嘘的 wink 变成两只眼睁着 | 判据应是"哪些动作持续驱动 `ParamEyeLOpen`"（数据），不是"哪个动作闭眼"（零散现象） |
 | **`motionGroups` 懒加载** | 刚调 `motion()` 时取不到 motion 对象 | 50ms × 20 次重试 |
+| **外部挂载的插件 import 不到宿主的包** | 派活报 503 `no-message-factory`；`import('@deepseek-ai/dsh-llm')` 必然 `ERR_MODULE_NOT_FOUND` | 裸包名只从插件**自己所在目录**往上找，而该包在宿主 `app.asar/dsh/node_modules/` 里 → 改成"尽力取官方 + 内置等价兜底"。**任何要从宿主包里拿东西的插件都会踩** |
 | **全局环形缓冲被高频通道刷爆** | `/debug/shapes` 80 条样本全是流式帧 | 按 channel 分别限量 |
 | **循环引用载荷预览不可读** | `agent/status` 样本 `<unserializable>` | 安全序列化（循环处标 `[circular]`） |
 | **绝不能用 pwsh 改含中文的源码** | 注释变乱码、吞换行 | 一律用 edit/write 工具 |
@@ -581,6 +582,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **测试开关和产品行为耦合** | `deferShow` 绑在 `PET_SNAPSHOT` 上 → 快照测试永远走"立即显示"分支，**真实路径从没被验证** |
 | **真实状态干扰测试** | `PET_FORCE_STATE` 之外还发了真实快照 → 真实状态先到、消费掉"首次状态"标记，**测不出真实场景** |
 | **mock 比真实宿主宽松** | mock ctx 把服务当普通属性发、不复现 Cordis 的 **inject 校验** → 自测 62 项全绿，真机「双击派活」却报 `cannot get property "agents" without inject`。**mock 必须复现真实宿主的契约，否则测的是假象** |
+| **把缺陷写成了预期** | 旧自测里有一条「取不到 UserMessage 工厂时 /prompt 降级为 503」，等于把"派活永久失败"当成**正确行为**断言下来 → 全绿反而巩固了 bug。**写降级路径的测试时，要先问一句"这个降级本身可接受吗"** |
 
 > 教训：**测试开关一旦和真实数据/产品行为混在一起，就很容易测到假象。**
 
