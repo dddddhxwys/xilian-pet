@@ -18,6 +18,15 @@ contextBridge.exposeInMainWorld('xilianPet', {
   sendMask: (width, height, data) => ipcRenderer.send('pet:mask', { width, height, data }),
   /** 拖拽中：主进程会一直保持可交互，避免鼠标快速移出角色时把拖拽甩掉 */
   setDragging: (value) => ipcRenderer.send('pet:dragging', Boolean(value)),
+  /** 构图缓存读写（按模型 URL 分开存） */
+  fitCacheGet: (modelKey) => ipcRenderer.invoke('pet:fit-cache-get', modelKey),
+  fitCacheSet: (modelKey, box) => ipcRenderer.invoke('pet:fit-cache-set', modelKey, box),
+  /**
+   * 通知主进程"构图已就绪"。
+   * 主进程会等到这个信号才显示窗口 —— 否则会先按保底尺寸显示，
+   * 约 3 秒后测量完成再跳一下（用户实测报的"打开一会突然变大"）。
+   */
+  fitReady: () => ipcRenderer.send('pet:fit-ready'),
   /** 拖拽：按屏幕坐标增量移动窗口 */
   moveBy: (dx, dy) => ipcRenderer.send('pet:move-by', Math.round(dx), Math.round(dy)),
   /** 反向操控：prompt / interrupt / focus */

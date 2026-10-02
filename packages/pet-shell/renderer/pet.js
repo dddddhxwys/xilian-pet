@@ -311,6 +311,20 @@ api.onFrame((frame) => {
 })
 
 // ── 启动 ────────────────────────────────────────────────────────────
+/**
+ * 告诉主进程"可以显示窗口了"。
+ *
+ * 主进程会一直等到这个信号 —— 否则会先按保底尺寸显示，约 3 秒后构图测完再跳一下
+ * （用户实测报的"打开一会突然变大"）。所以这里必须保证**任何路径都会发**，
+ * 包括 Live2D 失败降级成占位图的情况。
+ */
+let fitReadySent = false
+function signalFitReady() {
+  if (fitReadySent) return
+  fitReadySent = true
+  api.fitReady()
+}
+
 /** 尝试用 Live2D 接管；任何一步失败都返回 false → 保持占位图（验收项 A10 降级） */
 async function startLive2D() {
   if (!live2d) {
@@ -323,12 +337,25 @@ async function startLive2D() {
     api.log('模型文件不存在 → 使用占位形象（A10 降级）')
     return false
   }
+
+  // 构图缓存（按模型分开存）：有就直接套用，省掉现场测量
+  const cachedFit = await api.fitCacheGet(info.url).catch(() => null)
+  if (cachedFit) api.log(`找到构图缓存 ${Math.round(cachedFit.w)}×${Math.round(cachedFit.h)}`)
+
   await live2d.init({
     canvas,
     modelUrl: info.url,
     log: (message) => api.log(`[live2d] ${message}`),
     forceMotion: info.forceMotion,
     sampleMs: info.sampleMs,
+    cachedFit,
+    onFitReady: (box, fromCache) => {
+      if (!fromCache && box) {
+        api.fitCacheSet(info.url, box).catch(() => {})
+        api.log(`构图测量完成，已缓存 ${Math.round(box.w)}×${Math.round(box.h)}`)
+      }
+      signalFitReady()
+    },
   })
 
   // 精确捕捉动作关键帧：从**动作开始**（= init 返回）算起，
@@ -357,6 +384,12 @@ async function startLive2D() {
     api.log(`Live2D 初始化失败：${error.message} → 回退占位形象`)
     live2dActive = false
   }
+
+  // 兜底：无论成功失败，8 秒内一定要放行窗口显示，
+  // 免得构图回调因为任何意外没触发，窗口永远不出现。
+  setTimeout(signalFitReady, 8000)
+  // 降级路径没有构图回调，直接放行
+  if (!live2dActive) signalFitReady()
 
   // 成功才隐藏占位图；失败时 canvas 保持空白，视觉上等价于没接管
   if (live2dActive) img.hidden = true

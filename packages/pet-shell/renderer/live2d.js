@@ -275,6 +275,8 @@ function applyContentFit(shots) {
       `w=${contentLocal.w.toFixed(0)} h=${contentLocal.h.toFixed(0)}（${shots.length} 帧并集）`,
   )
   layoutFromContent()
+  // 通知外部"构图已就绪"：主进程据此显示窗口，并把结果写进缓存
+  state.onFitReady?.(contentLocal, false)
 }
 
 /** 用缓存的包围盒重新排布（窗口尺寸变化时也走这里） */
@@ -440,7 +442,7 @@ function applyState() {
 }
 
 /** 初始化：创建 PIXI 应用并加载模型 */
-export async function init({ canvas, modelUrl, log, forceMotion, sampleMs }) {
+export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cachedFit, onFitReady }) {
   state.canvas = canvas
   state.log = log ?? (() => {})
   if (!window.PIXI?.live2d?.Live2DModel) {
@@ -484,7 +486,19 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs }) {
   const motions = Object.entries(model.internalModel?.settings?.motions ?? {})
   for (const [g, arr] of motions) state.log(`  动作组 ${g}: ${arr.length} 个`)
 
+  // 构图：优先套用缓存（立即可用，不会出现"打开一会突然变大"）；
+  // 没有缓存才现场测量（约 3 秒，期间主进程不显示窗口）。
+  state.onFitReady = onFitReady
   fit()
+  if (cachedFit && cachedFit.w > 0 && cachedFit.h > 0) {
+    contentLocal = cachedFit
+    layoutFromContent()
+    state.log(`构图：套用缓存（模型局部 ${cachedFit.w.toFixed(0)}×${cachedFit.h.toFixed(0)}）`)
+    onFitReady?.(cachedFit, true)
+  } else {
+    state.log('构图：无缓存，开始现场测量（主进程会等测量完成后才显示窗口）')
+    setTimeout(measureAndFitContent, 400)
+  }
 
   // 状态参数 +（可选）参数采样，都挂在每帧的最后一个时机
   model.internalModel.on('beforeModelUpdate', () => {
@@ -522,9 +536,6 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs }) {
     state.log(`开始参数采样 ${sampleMs}ms（动作 Scene[${startedMotion}]）`)
     setTimeout(samplerFinish, sampleMs)
   }
-
-  // 构图测量要等模型真的动起来（刚加载时可能还没渲染出有效帧）
-  setTimeout(measureAndFitContent, 400)
 
   state.ready = true
   return model

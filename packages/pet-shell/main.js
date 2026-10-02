@@ -108,6 +108,39 @@ function registerModelProtocol() {
 mkdirSync(STATE_DIR, { recursive: true })
 const statePath = join(STATE_DIR, 'window.json')
 
+// 构图缓存：第一次启动要现场测量（约 3 秒），把结果存下来，
+// 之后启动直接套用 → 既不用等，也不会出现"打开一会突然变大"。
+// 键是模型清单的 URL（换模型各存一份）。
+const fitCachePath = join(STATE_DIR, 'model-fit.json')
+// 默认延迟到"构图就绪"再显示窗口；PET_DEFER_SHOW=0 可关掉（调试用）。
+// 刻意不与 PET_SNAPSHOT 绑定 —— 绑过一次，结果快照测试永远走"立即显示"分支，
+// 真实路径反而没被验证到。
+const deferShow = process.env.PET_DEFER_SHOW !== '0'
+let showFallbackTimer = null
+
+function loadFitCache() {
+  try {
+    return JSON.parse(readFileSync(fitCachePath, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+function saveFitCache(all) {
+  try {
+    writeFileSync(fitCachePath, JSON.stringify(all, null, 2))
+  } catch (error) {
+    log('构图缓存写入失败:', error.message)
+  }
+}
+
+function showWindow(win) {
+  if (win.isDestroyed() || win.isVisible()) return
+  clearTimeout(showFallbackTimer)
+  win.showInactive()
+  log('窗口已显示')
+}
+
 const log = (...args) => console.log('[pet]', ...args)
 
 function loadWindowState() {
@@ -439,8 +472,21 @@ function createWindow() {
   win.setIgnoreMouseEvents(true)
 
   win.once('ready-to-show', () => {
-    win.showInactive()
-    log(`窗口就绪 ${win.getSize().join('x')}，点击穿透已开启（命中测试由主进程轮询光标完成）`)
+    // ⚠️ 刻意**不立刻显示**：
+    //   渲染端要先把内容构图测量出来（约 3 秒，取多帧包围盒并集）。
+    //   如果先显示，用户会看到桌宠出现 3 秒后**突然放大一次**
+    //   （实测就是这个现象：按画布保底 scale=0.0619 → 测完变 0.0694，+12%）。
+    //   所以等渲染端算好构图（'pet:fit-ready'）再显示；同时留兜底，避免异常时窗口永不出现。
+    //   快照模式不延迟 —— 那是我自己跑验证用的，保持原有行为。
+    log(`窗口已就绪 ${win.getSize().join('x')}（${deferShow ? '等构图测量完成后再显示' : '立即显示'}）`)
+    if (deferShow) {
+      showFallbackTimer = setTimeout(() => {
+        log('构图就绪信号超时（15s），直接显示窗口')
+        showWindow(win)
+      }, 15_000)
+    } else {
+      showWindow(win)
+    }
     maybeSnapshot(win)
   })
 
@@ -484,6 +530,23 @@ app.whenReady().then(async () => {
   })
   ipcMain.on('pet:dragging', (_event, value) => {
     draggingNow = Boolean(value)
+  })
+  // 构图缓存：省掉每次启动的 3 秒测量，也避免"打开一会突然变大"
+  ipcMain.handle('pet:fit-cache-get', (_event, modelKey) => {
+    const all = loadFitCache()
+    return all[modelKey] ?? null
+  })
+  ipcMain.handle('pet:fit-cache-set', (_event, modelKey, box) => {
+    if (!modelKey || !box) return false
+    const all = loadFitCache()
+    all[modelKey] = box
+    saveFitCache(all)
+    log(`构图已缓存：${box.w?.toFixed(0)}×${box.h?.toFixed(0)}`)
+    return true
+  })
+  // 渲染端说"构图算好了，可以显示了"
+  ipcMain.on('pet:fit-ready', () => {
+    if (!win.isDestroyed()) showWindow(win)
   })
   ipcMain.on('pet:move-by', (_event, dx, dy) => {
     if (win.isDestroyed()) return
