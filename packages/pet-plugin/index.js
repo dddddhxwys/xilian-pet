@@ -67,8 +67,12 @@ export const name = 'xilian-pet'
  * `sessionController` 是派活链路里第二个必需服务：`ctx.agents.get()` 只找**活着的** agent，
  * 会话不活跃时必然拿不到；要靠 `ctx.sessionController.agents.resolveAgent()` 解析/恢复
  * （也是 GUI 提交消息走的那条路）。详见 `resolveAgentTarget`。
+ *
+ * `sessions` 是第三个：插件"知道哪些会话"不能只靠自己观测到的事件 ——
+ * **DSH 刚重启时插件还没观测到任何会话**，那个空窗期里派活必然失败。
+ * `ctx.sessions.list()`（官方："All live sessions, in creation order"）用来兜掉这个盲区。
  */
-export const inject = ['webServer', 'agents', 'sessionController']
+export const inject = ['webServer', 'agents', 'sessions', 'sessionController']
 
 const PROTOCOL_VERSION = 1
 const HEARTBEAT_MS = 15_000
@@ -79,7 +83,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 9
+const CODE_REVISION = 10
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -443,23 +447,61 @@ export function apply(ctx, config = {}) {
    *     （`lookups.configure('agent', … resolveAgent …)`，见 sessionController 的构造函数）。
    *     所以"派活给一个不活跃的会话"本来就该走这里，而不是 `agents.get()`。
    *
-   * 另外，渲染端可能根本没给 id（窗口先连上、会话后出现），所以候选里始终带上
-   * `primarySessionId(state)` —— 会话清单只有插件知道。
+   * 另外渲染端可能根本没给 id，所以候选里始终带上 `primarySessionId(state)`。
+   *
+   * ⚠️ 但**只靠自己观测到的事件是不够的**（A6 第五次真机失败）：
+   * 插件"知道有哪些会话"完全来自它观测到的事件，而 **DSH 刚重启时它一个会话都还没观测到** ——
+   * 那个空窗期里候选为空，直接 503 `no-session-known`（用户在重启后立刻点了派活）。
+   * 所以再兜一层**直接问宿主**：`ctx.sessions.list()`（官方注释 "All live sessions,
+   * in creation order"）与 `ctx.agents.list()`（活着的 agent = 正在干活的会话，优先）。
    */
+  function hostSessionIds() {
+    const ids = []
+    const push = (id) => {
+      if (typeof id === 'string' && id !== '' && id !== 'unknown' && !ids.includes(id)) ids.push(id)
+    }
+    // ① 活着的 agent —— 正在干活的会话，最可能就是你要派活的那个
+    try {
+      for (const agent of ctx.agents?.list?.() ?? []) push(agent?.id ?? agent?.session?.id)
+    } catch {
+      /* 服务不可用就算了，继续用下面的 */
+    }
+    // ② 宿主的活会话清单（创建顺序）→ 最近创建的排在前面
+    try {
+      const sessions = ctx.sessions?.list?.() ?? []
+      for (const s of [...sessions].reverse()) push(s?.id)
+    } catch {
+      /* 同上 */
+    }
+    return ids
+  }
+
   async function resolveAgentTarget(sessionId) {
     const known = Object.values(state.sessions).map((s) => s.sessionId)
-    const candidates = []
-    for (const c of [sessionId, primarySessionId(state)]) {
-      if (typeof c === 'string' && c !== '' && !candidates.includes(c)) candidates.push(c)
-    }
     const requested = sessionId ?? null
+    // 候选顺序：渲染端给的 → 插件观测到的主会话 → 宿主知道的会话（兜盲区）
+    const candidates = []
+    const push = (c) => {
+      if (typeof c === 'string' && c !== '' && c !== 'unknown' && !candidates.includes(c) && candidates.length < 5) {
+        candidates.push(c)
+      }
+    }
+    push(sessionId)
+    push(primarySessionId(state))
+    for (const id of hostSessionIds()) push(id)
+
     if (candidates.length === 0) {
       return { agent: undefined, requested, tried: [], knownSessions: known, reason: 'no-session-known' }
     }
 
-    // ① 活着的 agent（快路径）
+    // ① 活着的 agent（快路径，无副作用）
     for (const id of candidates) {
-      const live = ctx.agents?.get?.(id)
+      let live
+      try {
+        live = ctx.agents?.get?.(id)
+      } catch {
+        continue
+      }
       if (live !== undefined) {
         return { agent: live, sessionId: id, requested, via: 'live', fallbackUsed: id !== sessionId }
       }
@@ -488,6 +530,7 @@ export function apply(ctx, config = {}) {
       requested,
       tried: candidates,
       knownSessions: known,
+      hostSessions: hostSessionIds(),
       resolveErrors: errors,
       reason: 'not-resolvable',
     }
