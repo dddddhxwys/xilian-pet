@@ -107,12 +107,20 @@ const INTRO_INTERRUPT = new Set(['approval', 'error'])
 let stateWaitingIntro = null
 
 /**
- * 眼神由**动作本身**负责演的动作下标，我们的眨眼要让位。
+ * 需要**我们自己接管**眨眼的动作 —— 其余动作自己会演眼睛。
  *
- * Scene[1]（4s，happy/惊喜）就是"闭眼笑"的表演，眼睛眯起来是它的内容；
- * 如果我们还在那儿输出 ParamEyeLOpen=1，这个表情就毁了。
+ * 为什么只有 Scene[3]：它是 180 秒的荡秋千长循环，但**只在前 2.2 秒驱动眼睛**
+ * （参数采样实测 `ParamEyeLOpen 活动 0.04~2.21s`），之后冻结在闭眼值；
+ * 而库的自动眨眼条件是 `if (!motionUpdated)`（有动作在播就不跑），
+ * 两件事叠加 → 待机时眼睛一直闭着。所以这个动作需要我们接管。
+ *
+ * 反过来，Scene[0]/[1]/[2] **全程**都在驱动眼睛（`活动 0.0x~4.5s`），
+ * 让它们自己演才对。我们插进去会把动作设计的眼神盖掉 ——
+ * 用户反馈的"比嘘的时候眼睛没动作"就是这个：
+ * Scene[0] 本来是个**半眯眼的保密表情**，被我们强行写成睁眼 + 自己的眨眼节拍。
+ * （第一版把这个集合写反了：只排除 Scene[1]，其余全接管 —— 那是错的。）
  */
-const EYE_OWNED_MOTIONS = new Set([1])
+const EYE_IDLE_MOTIONS = new Set([3])
 
 // ── 眨眼 ────────────────────────────────────────────────────────────
 // ⚠️ 为什么必须自己实现（这是实测踩出来的 bug）：
@@ -130,10 +138,10 @@ const BLINK_GAP_MAX_MS = 6200
 let blinkStartAt = 0 // 本次眨眼开始时刻；0 = 当前没在眨
 let nextBlinkAt = 0
 
-/** 每帧输出眼睛开合（1 = 睁，0 = 闭） */
+/** 每帧输出眼睛开合（1 = 睁，0 = 闭）。仅用于"自己不驱动眼睛"的动作 */
 function applyBlink(now) {
-  // 动作自己在演眼神时让位
-  if (EYE_OWNED_MOTIONS.has(currentMotion)) return
+  // 动作自己在演眼睛时让位（见 EYE_IDLE_MOTIONS 注释）
+  if (!EYE_IDLE_MOTIONS.has(currentMotion)) return
 
   if (blinkStartAt === 0 && now >= nextBlinkAt) {
     blinkStartAt = now
