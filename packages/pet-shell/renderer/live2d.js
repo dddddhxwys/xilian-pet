@@ -89,7 +89,13 @@ const BASE_MOTION = 3
  * （见 setMotionLoop 的注释）。
  */
 const INTRO_MOTION = 0
-/** 启动手势是否还在演（演完/被打断后置 false） */
+/**
+ * 开场手势的播放速度。用户反馈"比嘘的手放得太快"——
+ * 原速 3 秒里手势只维持约 1.5 秒、放下只用 0.85 秒，太赶。
+ * 放慢到 0.6 倍后：抬起约 1.05s、维持约 2.5s、放下约 1.4s，从容得多。
+ */
+const INTRO_SPEED = 0.6
+/** 开场手势是否还在演（演完/被打断后置 false） */
 let introPending = true
 /**
  * 这些状态是"立刻要你注意"的，可以**打断**开场手势；
@@ -519,6 +525,12 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cache
     setTimeout(measureAndFitContent, 400)
   }
 
+  // 包一层动作时钟，用来给开场手势减速（详见 setMotionTimeScale 注释）。
+  // 只包 motionManager —— 表情/眨眼/物理仍走真实时间，不受影响。
+  const mm = model.internalModel.motionManager
+  const originalMotionUpdate = mm.update.bind(mm)
+  mm.update = (coreModel, now) => originalMotionUpdate(coreModel, motionClock(now))
+
   // 状态参数 +（可选）参数采样，都挂在每帧的最后一个时机
   model.internalModel.on('beforeModelUpdate', () => {
     applyState()
@@ -552,16 +564,24 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cache
       state.log(`启动调试动作失败 ${g}[${idx}]：${error.message}`)
     }
   } else {
-    // 启动先演一次"比嘘"手势，演完自动落到待机（荡秋千）
-    state.log(`启动手势 Scene[${INTRO_MOTION}]（只演一次），之后落到待机 Scene[${BASE_MOTION}]`)
+    // 启动先演一次"比嘘"手势，演完自动落到待机（荡秋千）。
+    // 放慢到 INTRO_SPEED 倍 —— 原速下手放得太快（用户反馈）。
+    setMotionTimeScale(INTRO_SPEED)
+    state.log(
+      `开场手势 Scene[${INTRO_MOTION}]（只演一次，${INTRO_SPEED}x 慢放），之后落到待机 Scene[${BASE_MOTION}]`,
+    )
     startMotion(INTRO_MOTION, false)
-    // 兜底：万一循环没关掉（motionFinish 不触发），按时长强制结束开场手势
-    setTimeout(() => {
-      if (introPending) {
-        state.log('开场手势未收到 motionFinish，按时长兜底结束')
-        finishIntro()
-      }
-    }, 3600)
+    // 兜底：万一循环没关掉（motionFinish 不触发），按时长强制结束。
+    // 时长要按慢放后的实际用时算。
+    setTimeout(
+      () => {
+        if (introPending) {
+          state.log('开场手势未收到 motionFinish，按时长兜底结束')
+          finishIntro()
+        }
+      },
+      Math.round(3600 / INTRO_SPEED),
+    )
   }
 
   if (sampleMs > 0) {
@@ -609,6 +629,37 @@ function startMotion(index, loop) {
  * 前一次的延迟重试不能把后一次的设置覆盖掉。
  */
 let loopSetToken = 0
+
+// ── 动作时钟缩放（库没有调速 API，见 setMotionTimeScale 注释）──────────
+let motionTimeScale = 1
+let scaleRealBase = null
+let scaleVirtualBase = null
+
+/**
+ * 把"真实时间"换成"动作时钟"。速度倍率不等于 1 时，动作时钟走得更慢。
+ *
+ * ⚠️ 绝对时间**不能**直接乘系数：动作队列内部记的是 startTime，
+ *    若时间轴整体缩放，已记录的 startTime 会与新时间对不上（动作会跳或直接结束）。
+ *    所以用"重新基准"的方式：记录变速那一刻的真实/虚拟两个原点，之后线性外推。
+ */
+function motionClock(nowSeconds) {
+  if (motionTimeScale === 1) return nowSeconds
+  const realMs = nowSeconds * 1000
+  if (scaleRealBase === null) {
+    scaleRealBase = realMs
+    scaleVirtualBase = realMs
+  }
+  return (scaleVirtualBase + (realMs - scaleRealBase) * motionTimeScale) / 1000
+}
+
+function setMotionTimeScale(next) {
+  if (next === motionTimeScale) return
+  // 清掉基准 → 下次调用时以当前位置重新锚定，变速瞬间不会跳
+  scaleRealBase = null
+  scaleVirtualBase = null
+  motionTimeScale = next
+  state.log(`动作速度 → ${next}x`)
+}
 
 function setMotionLoop(index, loop) {
   const token = ++loopSetToken
@@ -677,19 +728,34 @@ function scheduleLinger() {
 function finishIntro() {
   if (!introPending) return
   introPending = false
+  setMotionTimeScale(1) // 手势演完恢复常速，别把后续动作也拖慢
   const next = stateWaitingIntro
+  const animate = stateWaitingIntroAnimate
   stateWaitingIntro = null
+  stateWaitingIntroAnimate = true
   if (next) {
-    state.log(`启动手势结束 → 应用等待中的状态 ${next}`)
-    playStateMotion(next)
+    state.log(`开场手势结束 → 应用等待中的状态 ${next}`)
+    playStateMotion(next, animate)
   } else {
-    state.log('启动手势结束 → 落到待机')
+    state.log('开场手势结束 → 落到待机')
     returnToBaseMotion()
   }
 }
 
+/**
+ * 启动后第一次拿到的状态是**"现状"**（主进程补发的 snapshot），不是一次状态转变。
+ * 一次性入场动画（done 的叉腰 + 笑眼）不该为它重放 ——
+ * 用户实测报的"比嘘手势后会接一次叉腰"，根源就是上一轮 agent 干完留下的 done 状态：
+ * 桌宠刚启动就把一件旧事当成新完成来庆祝。
+ * 非一次性状态（running/question…）不受影响，照常切换，
+ * 否则启动时显示不出"正在干活"。
+ */
+let firstStatePending = true
+/** 排队等开场手势的那个状态，是否要播入场动画 */
+let stateWaitingIntroAnimate = true
+
 /** 按状态切换动作 */
-function playStateMotion(next) {
+function playStateMotion(next, animate = true) {
   // 开场手势优先演完（这是用户明确要的开场动作）
   if (introPending) {
     if (INTRO_INTERRUPT.has(next)) {
@@ -697,14 +763,26 @@ function playStateMotion(next) {
       state.log(`启动手势被紧急状态 ${next} 打断`)
     } else {
       stateWaitingIntro = next
+      stateWaitingIntroAnimate = animate
       state.log(`状态 ${next} 在启动手势期间到达，等手势演完再应用`)
       return
     }
   }
+  applyStateMotion(next, animate)
+}
 
+/** 真正切动作。animate=false 表示"只是读到了现状"，不播入场动画 */
+function applyStateMotion(next, animate) {
   const mapped = STATE_MAP[next] ?? STATE_MAP.idle
   clearTimeout(oneShotTimer)
   clearTimeout(lingerTimer) // 切状态时取消上一条待撤的特效
+
+  if (!animate) {
+    state.log(`启动时状态已是 ${next}：不重放一次性入场动画，停在基础动作`)
+    startMotion(BASE_MOTION, true)
+    return
+  }
+
   startMotion(mapped.motion, !mapped.once)
   if (mapped.once) {
     // 兜底：即使 setLoop(false) 没生效，也按已知时长切回，避免一直循环。
@@ -721,10 +799,18 @@ export function setState(next) {
   if (next === state.currentState) return
   state.currentState = next
   const mapped = STATE_MAP[next] ?? STATE_MAP.idle
+
+  // 启动后第一次 + 这是一次性状态 → 只读现状，不播入场动画。
+  // 特效也一并撤掉（除非该状态本来就要求留着，如 approval 的 keepEffect）。
+  const animate = !(firstStatePending && mapped.once)
+  firstStatePending = false
+
   const onceLabel = mapped.once ? '，只播一次' : ''
-  state.log(`状态 → ${next}（动作 Scene[${mapped.motion}]${onceLabel}，表情 ${mapped.expression}）`)
-  playStateMotion(next)
-  setExpression(mapped.expression)
+  const effect = animate || mapped.keepEffect ? mapped.expression : 'reset'
+  state.log(`状态 → ${next}（动作 Scene[${mapped.motion}]${onceLabel}，表情 ${effect}）`)
+
+  playStateMotion(next, animate)
+  setExpression(effect)
   if (mapped.params && Object.keys(mapped.params).length) setParams(mapped.params)
 }
 

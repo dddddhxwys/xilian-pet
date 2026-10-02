@@ -578,19 +578,24 @@ app.whenReady().then(async () => {
   ipcMain.on('pet:ready', () => {
     if (win.isDestroyed()) return
     win.webContents.send('pet:link', lastLink)
-    if (lastSnapshot !== undefined) win.webContents.send('pet:frame', lastSnapshot)
-    log(`渲染端就绪，补发 lastLink=${JSON.stringify(lastLink)} snapshot=${lastSnapshot !== undefined}`)
-    // 调试用：PET_FORCE_STATE=question 强制推一个状态，
-    // 便于在无人操作时逐档截图核对模型表现（agent 看不到屏幕，只能靠截图）。
+
+    // 调试用 PET_FORCE_STATE=<state>：**不发真实快照**，只推这个状态。
+    // 否则插件报的真实状态会先到、把"启动后第一次状态"这个标记消费掉，
+    // 于是强制状态被当成一次真实转变 —— 测不出真实场景（实测踩过）。
+    // 另外要在开场手势演完之前送达，才能覆盖"状态排队等手势"那条路径。
     if (process.env.PET_FORCE_STATE) {
       const forced = { type: 'state', state: process.env.PET_FORCE_STATE, unread: 0 }
       setTimeout(() => {
         if (!win.isDestroyed()) {
           win.webContents.send('pet:frame', forced)
-          log(`已强制推送状态：${forced.state}`)
+          log(`已强制推送状态：${forced.state}（未发真实快照）`)
         }
-      }, 1200)
+      }, 600)
+      return
     }
+
+    if (lastSnapshot !== undefined) win.webContents.send('pet:frame', lastSnapshot)
+    log(`渲染端就绪，补发 lastLink=${JSON.stringify(lastLink)} snapshot=${lastSnapshot !== undefined}`)
   })
   ipcMain.on('pet:quit', () => app.quit())
 
