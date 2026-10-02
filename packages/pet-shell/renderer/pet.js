@@ -16,6 +16,7 @@
 
 const api = window.xilianPet
 const stage = document.getElementById('stage')
+const canvas = document.getElementById('live2dCanvas')
 const img = document.getElementById('petSprite')
 const halo = document.getElementById('halo')
 const badge = document.getElementById('badge')
@@ -40,25 +41,41 @@ let bubbleTimer = null
 let latestSessionId = undefined
 let unread = 0
 
+// Live2D 是否成功接管。失败时保持 false → 用占位图 + 占位图的 alpha 掩码（验收项 A10 降级）
+let live2dActive = false
+let maskTimer = null
+
 // ── alpha 掩码 ──────────────────────────────────────────────────────
+// Live2D 接管时从 WebGL 画布取样（模型会形变，不能用原始纹理当掩码）；
+// 降级时用占位 <img>。两者共用同一套掩码结构。
+function maskSource() {
+  return live2dActive ? canvas : img
+}
+
 async function buildAlphaMap() {
-  const canvas = document.createElement('canvas')
-  const context = canvas.getContext('2d', { willReadFrequently: true })
-  await img.decode()
-  canvas.width = img.naturalWidth
-  canvas.height = img.naturalHeight
-  context.drawImage(img, 0, 0)
-  const { data } = context.getImageData(0, 0, canvas.width, canvas.height)
-  mapW = canvas.width
-  mapH = canvas.height
+  const source = maskSource()
+  if (!live2dActive) await img.decode()
+  const w = live2dActive ? canvas.width : img.naturalWidth
+  const h = live2dActive ? canvas.height : img.naturalHeight
+  if (!w || !h) return
+
+  const scratch = document.createElement('canvas')
+  scratch.width = w
+  scratch.height = h
+  const context = scratch.getContext('2d', { willReadFrequently: true })
+  context.clearRect(0, 0, w, h)
+  context.drawImage(source, 0, 0)
+
+  const { data } = context.getImageData(0, 0, w, h)
+  mapW = w
+  mapH = h
   alphaMap = new Uint8Array(mapW * mapH)
   for (let i = 0; i < alphaMap.length; i++) alphaMap[i] = data[i * 4 + 3]
-  api.log(`alpha 掩码就绪 ${mapW}×${mapH}`)
 }
 
 function overOpaquePixel(clientX, clientY) {
   if (alphaMap === null) return false
-  const rect = img.getBoundingClientRect()
+  const rect = maskSource().getBoundingClientRect()
   if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return false
   const u = Math.floor(((clientX - rect.left) / rect.width) * mapW)
   const v = Math.floor(((clientY - rect.top) / rect.height) * mapH)
@@ -108,7 +125,7 @@ window.addEventListener('mousedown', (event) => {
   dragging = true
   dragX = event.screenX
   dragY = event.screenY
-  img.classList.add('squish')
+  if (!live2dActive) img.classList.add('squish')
   document.body.style.cursor = 'grabbing'
 })
 
@@ -119,7 +136,7 @@ window.addEventListener('mouseup', (event) => {
     return
   }
   dragging = false
-  img.classList.remove('squish')
+  if (!live2dActive) img.classList.remove('squish')
   document.body.style.cursor = 'grab'
 })
 
@@ -135,6 +152,12 @@ window.addEventListener('dblclick', (event) => {
 // ── UI 状态 ─────────────────────────────────────────────────────────
 function setState(state) {
   halo.dataset.state = state
+  // 转发给 Live2D。内部做了去重，同一状态重复推送不会重复触发。
+  try {
+    window.xilianLive2D?.setState(state)
+  } catch (error) {
+    api.log(`Live2D 状态切换失败：${error.message}`)
+  }
 }
 
 function setBadge(count) {
@@ -226,16 +249,58 @@ api.onFrame((frame) => {
 })
 
 // ── 启动 ────────────────────────────────────────────────────────────
-buildAlphaMap().catch((error) => {
-  api.log(`alpha 掩码构建失败：${error.message}`)
-  // 掩码失败时退化为「整窗可交互」，避免完全点不到
-  updateInteractive(true)
-})
+/** 尝试用 Live2D 接管；任何一步失败都返回 false → 保持占位图（验收项 A10 降级） */
+async function startLive2D() {
+  if (!window.xilianLive2D) {
+    api.log('未找到 window.xilianLive2D → 使用占位形象')
+    return false
+  }
+  const info = await api.modelInfo()
+  api.log(`模型信息 ${JSON.stringify(info)}`)
+  if (!info?.exists || !info.url) {
+    api.log('模型文件不存在 → 使用占位形象（A10 降级）')
+    return false
+  }
+  await window.xilianLive2D.init({
+    canvas,
+    modelUrl: info.url,
+    log: (message) => api.log(`[live2d] ${message}`),
+  })
+  return true
+}
 
-updateInteractive(false)
-status.dataset.link = 'down'
-api.log(`渲染端已加载（href=${location.href.slice(-40)}）`)
-// 握手：handler 都注册好了，请主进程补发最近的连接状态与快照。
-// 不做这一步，主进程在页面加载完成前发出的 'pet:link' 会被直接丢掉，
-// 表现就是"日志说 SSE 已连接，状态点却是红的"（实测踩过）。
-api.ready()
+;(async () => {
+  try {
+    live2dActive = await startLive2D()
+  } catch (error) {
+    api.log(`Live2D 初始化失败：${error.message} → 回退占位形象`)
+    live2dActive = false
+  }
+
+  // 成功才隐藏占位图；失败时 canvas 保持空白，视觉上等价于没接管
+  if (live2dActive) img.hidden = true
+
+  try {
+    await buildAlphaMap()
+    api.log(`alpha 掩码就绪 ${mapW}×${mapH}（来源：${live2dActive ? 'Live2D 画布' : '占位图'}）`)
+  } catch (error) {
+    api.log(`alpha 掩码构建失败：${error.message}`)
+    // 掩码失败时退化为「整窗可交互」，避免完全点不到
+    updateInteractive(true)
+  }
+
+  // Live2D 模型会形变，掩码要跟着刷新（250ms 一次，开销可忽略）
+  if (live2dActive) {
+    maskTimer = setInterval(() => {
+      buildAlphaMap().catch(() => {})
+    }, 250)
+  }
+
+  updateInteractive(false)
+  status.dataset.link = 'down'
+  api.log(`渲染端已加载（live2d=${live2dActive}）`)
+  // 握手：handler 都注册好了，请主进程补发最近的连接状态与快照。
+  // 不做这一步，主进程在页面加载完成前发出的 'pet:link' 会被直接丢掉，
+  // 表现就是"日志说 SSE 已连接，状态点却是红的"（实测踩过）。
+  api.ready()
+})()

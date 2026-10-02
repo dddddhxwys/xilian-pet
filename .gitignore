@@ -37,3 +37,12 @@ desktop.ini
 # Live2D 模型工作目录（第三方模型，作者要求署名+不得收费；文件不入库）
 # 修复逻辑在 tools/fix-live2d-model.mjs，可对任意副本重放
 /assets/live2d/
+
+# 渲染端 vendor（第三方第三方库构建 + 官方 Cubism Core，由
+# tools/prepare-renderer-vendor.mjs 生成，不入库）
+/packages/pet-shell/renderer/vendor/
+
+# 含第三方 Live2D 角色的自检截图（作者要求注明用途+不得收费；
+# 截图可随时重跑生成，不入库以免被当作再分发）
+docs/screenshots/live2d-*.png
+docs/screenshots/state-*.png

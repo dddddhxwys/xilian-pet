@@ -2,15 +2,29 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'none'" />
+    <!--
+      CSP 说明（改动前务必读）：
+        · script-src 必须含 'wasm-unsafe-eval' —— Cubism Core 是 WebAssembly 构建，
+          没有它 WebAssembly.instantiate 会被 CSP 拦掉，模型直接加载失败。
+        · 页面与模型都走 pet://app（同一个 host）→ 都是 'self'，
+          所以不需要额外列 pet:，这比显式放行整个 scheme 更严。
+        · connect-src 'self' —— 渲染端只 XHR 同源的模型文件；SSE 在主进程里连。
+        · 刻意不给 'unsafe-eval'：PixiJS 需要它生成着色器，改用官方 @pixi/unsafe-eval 替代。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:"
+    />
     <title>昔涟</title>
     <link rel="stylesheet" href="pet.css" />
   </head>
   <body>
     <!-- 宠物本体：透明区域必须让鼠标穿透，所以整窗默认穿透，由 alpha 掩码决定何时接管 -->
     <div id="stage">
-      <div id="halo" data-state="idle"></div>
+      <!-- Live2D 渲染面。模型加载失败时保持隐藏，改用下面的占位图（验收项 A10 降级） -->
+      <canvas id="live2dCanvas"></canvas>
       <img id="petSprite" src="assets/placeholder.png" alt="昔涟" draggable="false" />
+      <div id="halo" data-state="idle"></div>
       <div id="badge" hidden></div>
 
       <div id="bubble" hidden>
@@ -25,6 +39,22 @@
 
       <div id="status" title="SSE 连接状态"></div>
     </div>
+
+    <!--
+      加载顺序不能变：
+        0. process-shim.js          → 补 window.process（cubism4 的 UMD 引用了 process.env.NODE_ENV）
+        1. pixi.min.js              → window.PIXI
+        2. unsafe-eval.min.js       → 让 PixiJS 在禁 eval 的 CSP 下也能生成着色器（必须在 pixi 之后）
+        3. live2dcubismcore.min.js  → window.Live2DCubismCore（官方 Core，含 MocVersion_50）
+        4. cubism4.min.js           → window.PIXI.live2d（依赖前面四个）
+      这五个都在 renderer/vendor/，由 tools/prepare-renderer-vendor.mjs 生成，不入库。
+    -->
+    <script src="vendor/process-shim.js"></script>
+    <script src="vendor/pixi.min.js"></script>
+    <script src="vendor/unsafe-eval.min.js"></script>
+    <script src="vendor/live2dcubismcore.min.js"></script>
+    <script src="vendor/cubism4.min.js"></script>
+    <script src="live2d.js"></script>
     <script src="pet.js"></script>
   </body>
 </html>

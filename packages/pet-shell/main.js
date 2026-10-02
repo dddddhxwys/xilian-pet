@@ -10,10 +10,11 @@
  *     而不是 Electron 默认的 userData（在 AppData，会被拒）
  */
 
-import { app, BrowserWindow, globalShortcut, ipcMain } from 'electron'
+import { app, BrowserWindow, globalShortcut, ipcMain, protocol } from 'electron'
 import http from 'node:http'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { dirname, extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -23,6 +24,86 @@ const ROUTE_PREFIX = (process.env.PET_ROUTE_PREFIX ?? '/xilian-pet').replace(/\/
 const STATE_DIR = process.env.PET_STATE_DIR ?? join(here, '.state')
 const WIDTH = Number(process.env.PET_WIDTH ?? 260)
 const HEIGHT = Number(process.env.PET_HEIGHT ?? 300)
+
+// ── Live2D 模型目录 ─────────────────────────────────────────────────
+// 默认在仓库内的 assets/live2d/Cyrene（该目录已 gitignore，模型不入库）。
+// 模型是第三方作品（B站 @是依七哒），授权要求"注明用途 + 不得收费"，署名见 NOTICE.md。
+const MODEL_DIR = process.env.PET_MODEL_DIR ?? join(here, '..', '..', 'assets', 'live2d', 'Cyrene')
+const RENDERER_DIR = join(here, 'renderer')
+
+// ⚠️ 为什么整页都走自定义协议（而不是 loadFile + 相对路径）：
+//   Cubism Core 要把 .moc3 读成 ArrayBuffer，走 XHR/fetch。
+//   而 Chromium 里 **file:// 页面不能 XHR pet:// 或 file://** —— 实测报
+//     "Access to XMLHttpRequest at 'pet://…' from origin 'file://' has been blocked by CORS policy"
+//   （file:// 是不透明源，不在跨源白名单里）。
+//   所以把 **页面本身和模型文件放在同一个协议的同一个 host 下** → 同源，CORS 问题直接消失，
+//   而且 CSP 也能收紧回 'self'（比之前显式列 pet: 更严）。
+//   必须在 app ready 之前注册，否则 renderer 里 fetch 不认这个 scheme。
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'pet',
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true },
+  },
+])
+
+const MIME = {
+  '.json': 'application/json',
+  '.moc3': 'application/octet-stream',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.jpg': 'image/jpeg',
+  '.css': 'text/css',
+  '.js': 'text/javascript',
+  '.html': 'text/html',
+}
+
+/** 找到模型清单文件名（*.model3.json） */
+function findModelSettings() {
+  try {
+    return readdirSync(MODEL_DIR).find((f) => f.endsWith('.model3.json')) ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * pet://app/…            → packages/pet-shell/renderer/…   （页面与静态资源）
+ * pet://app/model/…      → assets/live2d/Cyrene/…          （Live2D 模型）
+ * 两者同源（都是 pet://app），所以渲染端 XHR 模型文件不会被 CORS 拦。
+ */
+function registerModelProtocol() {
+  protocol.handle('pet', async (request) => {
+    try {
+      const url = new URL(request.url)
+      if (url.hostname !== 'app') {
+        return new Response(`unknown host: ${url.hostname}`, { status: 404 })
+      }
+      const rel = decodeURIComponent(url.pathname).replace(/^\/+/, '')
+      const isModel = rel.startsWith('model/')
+      const root = normalize(isModel ? MODEL_DIR : RENDERER_DIR)
+      const sub = isModel ? rel.slice('model/'.length) : rel
+      const full = normalize(join(root, sub || 'index.html'))
+
+      // 目录穿越防护：解析后必须仍在对应根目录之内
+      const sep = process.platform === 'win32' ? '\\' : '/'
+      if (full !== root && !full.startsWith(root + sep)) {
+        log(`协议拒绝了越界请求：${rel}`)
+        return new Response('forbidden', { status: 403 })
+      }
+
+      const data = await readFile(full)
+      return new Response(data, {
+        headers: { 'content-type': MIME[extname(full).toLowerCase()] ?? 'application/octet-stream' },
+      })
+    } catch (error) {
+      log(`协议读取失败 ${request.url}：${error.message}`)
+      return new Response(`file error: ${error.message}`, { status: 404 })
+    }
+  })
+  log(`页面协议 pet://app/       → ${RENDERER_DIR}`)
+  log(`模型协议 pet://app/model/ → ${MODEL_DIR}`)
+}
+
 
 mkdirSync(STATE_DIR, { recursive: true })
 const statePath = join(STATE_DIR, 'window.json')
@@ -271,12 +352,20 @@ function createWindow() {
   win.on('moved', () => saveWindowState(win))
   win.on('closed', () => saveWindowState(win))
 
-  win.loadFile(join(here, 'renderer', 'index.html'))
+  win.loadURL('pet://app/index.html')
   return win
 }
 
 app.whenReady().then(async () => {
   log(`DSH=${DSH_URL} prefix=${ROUTE_PREFIX} state=${statePath}`)
+
+  registerModelProtocol()
+  const settings = findModelSettings()
+  if (settings) {
+    log(`Live2D 模型：${join(MODEL_DIR, settings)}`)
+  } else {
+    log(`Live2D 模型缺失（${MODEL_DIR} 下没有 *.model3.json）→ 渲染端会降级为占位形象`)
+  }
 
   const health = await probeHealth()
   if (health.status === 200 && health.body?.ok) {
@@ -298,6 +387,15 @@ app.whenReady().then(async () => {
     win.setPosition(x + dx, y + dy)
   })
   ipcMain.handle('pet:control', (_event, action, payload) => postControl(action, payload))
+  ipcMain.handle('pet:model-info', () => {
+    const file = findModelSettings()
+    return {
+      dir: MODEL_DIR,
+      exists: file !== null,
+      // 与页面同源（都是 pet://app），所以渲染端 XHR 不会被 CORS 拦
+      url: file === null ? null : `pet://app/model/${encodeURIComponent(file)}`,
+    }
+  })
   ipcMain.on('pet:log', (_event, message) => log('[renderer]', message))
   // 渲染端注册好 handler 之后握手一次，补发最近的连接状态与快照帧
   ipcMain.on('pet:ready', () => {
@@ -305,6 +403,17 @@ app.whenReady().then(async () => {
     win.webContents.send('pet:link', lastLink)
     if (lastSnapshot !== undefined) win.webContents.send('pet:frame', lastSnapshot)
     log(`渲染端就绪，补发 lastLink=${JSON.stringify(lastLink)} snapshot=${lastSnapshot !== undefined}`)
+    // 调试用：PET_FORCE_STATE=question 强制推一个状态，
+    // 便于在无人操作时逐档截图核对模型表现（agent 看不到屏幕，只能靠截图）。
+    if (process.env.PET_FORCE_STATE) {
+      const forced = { type: 'state', state: process.env.PET_FORCE_STATE, unread: 0 }
+      setTimeout(() => {
+        if (!win.isDestroyed()) {
+          win.webContents.send('pet:frame', forced)
+          log(`已强制推送状态：${forced.state}`)
+        }
+      }, 1200)
+    }
   })
   ipcMain.on('pet:quit', () => app.quit())
 

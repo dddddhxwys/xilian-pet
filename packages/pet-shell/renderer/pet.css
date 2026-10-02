@@ -34,7 +34,25 @@ body {
   justify-content: center;
 }
 
+/* Live2D 渲染面：铺满整窗、透明底。
+   注意 pointer-events:none —— 命中测试由 alpha 掩码自己做，不靠 DOM 事件；
+   而且整窗默认点击穿透，DOM 事件本来也收不到（只收鼠标移动的转发）。
+   z-index 必须显式抬高：光环排在 DOM 后面，不给层级它会画在模型**上面**
+   —— 实测就是"整个模型泛绿"（running 态的光环是青绿色）。 */
+#live2dCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  z-index: 1;
+  /* 模型自己带边缘，不要额外的投影，否则会露出方形阴影 */
+}
+
 #petSprite {
+  position: relative;
+  z-index: 1;
   width: 168px;
   height: 168px;
   margin-bottom: 8px;
@@ -48,7 +66,8 @@ body {
   transform: scale(0.94, 0.9);
 }
 
-/* 状态光环：素材后置期用它表达状态，换成 Live2D 后可改挂到动画上 */
+/* 状态光环：放在**模型背后**（z-index 0），只做氛围光晕。
+   注意别再让它盖住模型 —— 那会让整个角色染上状态色（实测）。 */
 #halo {
   position: absolute;
   bottom: 22px;
@@ -59,6 +78,15 @@ body {
   filter: blur(10px);
   transition: background 200ms ease-out, opacity 200ms ease-out;
   pointer-events: none;
+  z-index: 0;
+}
+
+/* UI 控件必须在模型之上 */
+#badge,
+#bubble,
+#composer,
+#status {
+  z-index: 2;
 }
 
 #halo[data-state="idle"] {

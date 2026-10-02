@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('xilianPet', {
   moveBy: (dx, dy) => ipcRenderer.send('pet:move-by', Math.round(dx), Math.round(dy)),
   /** 反向操控：prompt / interrupt / focus */
   control: (action, payload) => ipcRenderer.invoke('pet:control', action, payload),
+  /** Live2D 模型信息：{ dir, exists, url } —— url 走 pet:// 协议，避开 file:// 的 fetch 限制 */
+  modelInfo: () => ipcRenderer.invoke('pet:model-info'),
   /** 通知主进程：渲染端 handler 已注册完毕，可以补发最近状态了 */
   ready: () => ipcRenderer.send('pet:ready'),
   log: (message) => ipcRenderer.send('pet:log', String(message)),
