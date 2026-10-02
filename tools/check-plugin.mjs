@@ -453,7 +453,7 @@ check('commit 会打 lastActivityAt 时间戳（primarySessionId 的依据）', 
 console.log('\n[2] 插件契约（mock ctx）')
 
 /** 真实宿主里可注入的服务名（读 ctx.<名字> 受 inject 校验管辖） */
-const MOCK_SERVICES = new Set(['webServer', 'agents'])
+const MOCK_SERVICES = new Set(['webServer', 'agents', 'sessionController'])
 
 /**
  * 模拟 Cordis 的 ctx。
@@ -467,14 +467,27 @@ const MOCK_SERVICES = new Set(['webServer', 'agents'])
  * 又是"mock 比真实宿主宽松 → 测出假象"这一类坑（与 waterfall 那次同源）。
  * 现在按真实语义收紧：服务属性只有在 `inject` 声明过才给。
  *
+ * ⚠️ **`agents.get` 与 `sessionController.agents.resolveAgent` 的差别也必须模拟**：
+ * 前者只找**活着的** agent（真实实现 `store.get(id)?.agent`，store 只放 entered 条目），
+ * 后者**解析或恢复**会话（`Resolve or resume one ordinary Session`）。
+ * 少了这一层，就测不出"会话不活跃时派活失败"这个真机 bug。
+ *
  * @param {object}  opts
- * @param {Function} [opts.agents]         sessionId → agent 的取用函数
+ * @param {Function} [opts.agents]         sessionId → 活着的 agent（模拟 ctx.agents.get）
+ * @param {Function} [opts.resume]         async sessionId → { agent } | { error }（模拟 resolveAgent）
  * @param {string[]} [opts.declaredInject] 覆盖 inject 声明（仅用于负向对照）
  */
-function createMockCtx({ agents, declaredInject = pluginInject } = {}) {
+function createMockCtx({ agents, resume, declaredInject = pluginInject } = {}) {
   const routes = new Map()
   const listeners = new Map()
   const warnings = []
+  // 默认的 resolveAgent：只能在 agent 活着时解析成功（即"不能 resume"的最保守行为）
+  const resolveAgent =
+    resume ??
+    (async (sessionId) => {
+      const agent = agents === undefined ? undefined : agents(sessionId)
+      return agent === undefined ? { error: { message: 'session/not-found' } } : { agent }
+    })
   const services = {
     webServer: {
       register(route) {
@@ -484,6 +497,7 @@ function createMockCtx({ agents, declaredInject = pluginInject } = {}) {
       },
     },
     agents: agents === undefined ? undefined : { get: agents },
+    sessionController: { agents: { resolveAgent } },
   }
   const ctx = new Proxy(
     {
@@ -859,6 +873,97 @@ await checkAsync('彻底没有会话时，503 必须带诊断信息（不再是�
     assert.equal(body.reason, 'no-session-known')
     assert.deepEqual(body.knownSessions, [])
     assert.deepEqual(body.triedSessionIds, [])
+  } finally {
+    await new Promise((resolve) => srv.close(resolve))
+    teardown()
+  }
+})
+
+await checkAsync('会话不活跃（没有活 agent）→ 先 resolveAgent 恢复再派活【复现真机失败】', async () => {
+  // 真机证据：/state 里 sessionId 完全正确，但 ctx.agents.get() 返回 undefined ——
+  // 因为注册表 store 只放「entered（活着）」的 agent。全靠 sessionController 的
+  // resolveAgent 把不活跃的会话恢复起来（GUI 提交消息走的就是同一条路）。
+  const localCalls = []
+  const resumedAgent = { followup: async (m) => localCalls.push(['followup', m]) }
+  let resumeCalls = 0
+  const m = createMockCtx({
+    agents: () => undefined, // 一个活着的 agent 都没有
+    resume: async (sessionId) => {
+      resumeCalls += 1
+      return sessionId === 'sess-idle'
+        ? { agent: resumedAgent }
+        : { error: { message: 'session/not-found' } }
+    },
+  })
+  const teardown = apply(m.ctx, {
+    pathPrefix: '/xilian-pet',
+    minHoldMs: 0,
+    createUserMessage: stubCreateUserMessage,
+  })
+  for (const fn of m.listeners.get('session/event') ?? []) fn({ id: 'sess-idle' }, { type: 'turn/start', seq: 1 })
+
+  const srv = http.createServer((req, res) => {
+    const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
+    if (route === undefined) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    route.handler(req, res)
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  const local = `http://127.0.0.1:${srv.address().port}`
+  try {
+    const res = await fetch(`${local}/xilian-pet/prompt`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'sess-idle', text: '干个活' }),
+    })
+    assert.equal(res.status, 200, '不活跃的会话也必须能派活（旧代码在这里 503 no-agent）')
+    const body = await res.json()
+    assert.equal(body.via, 'resume', '要报告是走恢复拿到的 agent')
+    assert.equal(body.sessionId, 'sess-idle')
+    assert.equal(resumeCalls, 1, 'resolveAgent 应被调用')
+    assert.equal(localCalls.length, 1, '恢复后必须真的 followup')
+  } finally {
+    await new Promise((resolve) => srv.close(resolve))
+    teardown()
+  }
+})
+
+await checkAsync('活 agent 与恢复都失败时 → 503 必须带 reason / resolveErrors', async () => {
+  const m = createMockCtx({
+    agents: () => undefined,
+    resume: async () => ({ error: { message: 'session/not-found' } }),
+  })
+  const teardown = apply(m.ctx, {
+    pathPrefix: '/xilian-pet',
+    minHoldMs: 0,
+    createUserMessage: stubCreateUserMessage,
+  })
+  for (const fn of m.listeners.get('session/event') ?? []) fn({ id: 'sess-gone' }, { type: 'turn/start', seq: 1 })
+  const srv = http.createServer((req, res) => {
+    const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
+    if (route === undefined) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    route.handler(req, res)
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  try {
+    const res = await fetch(`http://127.0.0.1:${srv.address().port}/xilian-pet/prompt`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'sess-gone', text: '干个活' }),
+    })
+    assert.equal(res.status, 503)
+    const body = await res.json()
+    assert.equal(body.reason, 'not-resolvable')
+    assert.deepEqual(body.triedSessionIds, ['sess-gone'])
+    assert.ok(body.resolveErrors.length > 0, '必须带上恢复失败的原因')
+    assert.match(body.message, /not-resolvable/)
   } finally {
     await new Promise((resolve) => srv.close(resolve))
     teardown()

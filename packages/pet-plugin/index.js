@@ -63,8 +63,12 @@ export const name = 'xilian-pet'
  * 它还解释了"自测 62 项全绿、真机却失败"：mock ctx 把 `agents` 当普通属性发，
  * 没复现 inject 校验。mock 已按真实语义收紧（见 `tools/check-plugin.mjs`），
  * 并补了静态扫描 + 负向对照，防止再犯。
+ *
+ * `sessionController` 是派活链路里第二个必需服务：`ctx.agents.get()` 只找**活着的** agent，
+ * 会话不活跃时必然拿不到；要靠 `ctx.sessionController.agents.resolveAgent()` 解析/恢复
+ * （也是 GUI 提交消息走的那条路）。详见 `resolveAgentTarget`。
  */
-export const inject = ['webServer', 'agents']
+export const inject = ['webServer', 'agents', 'sessionController']
 
 const PROTOCOL_VERSION = 1
 const HEARTBEAT_MS = 15_000
@@ -75,7 +79,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 8
+const CODE_REVISION = 9
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -423,39 +427,69 @@ export function apply(ctx, config = {}) {
 
   // ── 3. 反向操控 ────────────────────────────────────────────────────
   /**
-   * ⚠️ `ctx.agents` 能成立，**前提是顶部 `inject` 里声明了 `'agents'`**。
-   * 少了声明不会拿到 undefined，而是当场抛 `cannot get property "agents" without inject`。
+   * 解析派活/打断的目标 agent。**两级，缺一不可**：
    *
-   * 注册表**以 sessionId 为键**（已从 asar 核实：typert 的 agent lookup 用
-   * `wireTypeSymbol: dsh-session/types#SessionId`、`resolve: (sessionId) => this.get(sessionId)`）。
+   *  1. `ctx.agents.get(id)` —— **只找"活着的" agent**。
+   *     注册表实现是 `get(id) { return this.store.get(id)?.agent }`，
+   *     而 store 里只放 **entered**（活着）的条目，被 detach 就删掉。
+   *     所以**会话不活跃时这里必然返回 undefined** —— 这正是 A6 第三、四次真机失败的原因：
+   *     我们手上那个 sessionId 完全正确（`/state` 里就是它），但那一刻没有活着的 agent。
    *
-   * 拿不到目标时的兜底（A6 第二次真机失败的原因）：
-   * 渲染端只在 SSE `snapshot` 里学到 sessionId，而 **DSH 刚重启时 /state 是空的** ——
-   * 窗口先连上、后才有会话，于是它手上的 sessionId 一直是 undefined，派活必 503。
-   * 会话清单本来就只有插件知道，所以这里由插件兜底：默认 id 不行就退到
-   * `primarySessionId(state)`（最近活跃的会话）。
+   *  2. `ctx.sessionController.agents.resolveAgent(id)` —— **解析"或恢复"** 会话的 agent。
+   *     官方注释：`Owns every operation that may create, resume, or configure a Web Agent`、
+   *     `Resolve or resume one ordinary Session, deduplicating concurrent resumes`。
+   *     返回 `{ agent }` 或 `{ error }`。
+   *     **这也是 GUI 提交消息走的同一条路** —— 宿主把 typert 的 'agent' lookup 换成了它
+   *     （`lookups.configure('agent', … resolveAgent …)`，见 sessionController 的构造函数）。
+   *     所以"派活给一个不活跃的会话"本来就该走这里，而不是 `agents.get()`。
+   *
+   * 另外，渲染端可能根本没给 id（窗口先连上、会话后出现），所以候选里始终带上
+   * `primarySessionId(state)` —— 会话清单只有插件知道。
    */
-  function resolveAgentTarget(sessionId) {
-    const agents = ctx.agents
-    if (agents === undefined || typeof agents.get !== 'function') {
-      return { agent: undefined, requested: sessionId ?? null, reason: 'service-missing' }
+  async function resolveAgentTarget(sessionId) {
+    const known = Object.values(state.sessions).map((s) => s.sessionId)
+    const candidates = []
+    for (const c of [sessionId, primarySessionId(state)]) {
+      if (typeof c === 'string' && c !== '' && !candidates.includes(c)) candidates.push(c)
     }
-    const fallbackId = primarySessionId(state)
-    const tried = []
-    for (const candidate of [sessionId, fallbackId]) {
-      if (typeof candidate !== 'string' || candidate === '' || tried.includes(candidate)) continue
-      tried.push(candidate)
-      const agent = agents.get(candidate)
-      if (agent !== undefined) {
-        return { agent, sessionId: candidate, requested: sessionId ?? null, fallbackUsed: candidate !== sessionId }
+    const requested = sessionId ?? null
+    if (candidates.length === 0) {
+      return { agent: undefined, requested, tried: [], knownSessions: known, reason: 'no-session-known' }
+    }
+
+    // ① 活着的 agent（快路径）
+    for (const id of candidates) {
+      const live = ctx.agents?.get?.(id)
+      if (live !== undefined) {
+        return { agent: live, sessionId: id, requested, via: 'live', fallbackUsed: id !== sessionId }
       }
+    }
+
+    // ② 请 sessionController 解析/恢复（不活跃的会话靠这一步拉起来）
+    const resume = ctx.sessionController?.agents?.resolveAgent
+    const errors = []
+    if (typeof resume === 'function') {
+      for (const id of candidates) {
+        try {
+          const found = await resume.call(ctx.sessionController.agents, id)
+          if (found !== null && typeof found === 'object' && found.agent !== undefined) {
+            return { agent: found.agent, sessionId: id, requested, via: 'resume', fallbackUsed: id !== sessionId }
+          }
+          errors.push(`${id} → ${found?.error?.message ?? 'resolveAgent 未返回 agent'}`)
+        } catch (error) {
+          errors.push(`${id} → ${error?.message ?? error}`)
+        }
+      }
+    } else {
+      errors.push('ctx.sessionController.agents.resolveAgent 不可用')
     }
     return {
       agent: undefined,
-      requested: sessionId ?? null,
-      tried,
-      knownSessions: Object.values(state.sessions).map((s) => s.sessionId),
-      reason: tried.length === 0 ? 'no-session-known' : 'not-found',
+      requested,
+      tried: candidates,
+      knownSessions: known,
+      resolveErrors: errors,
+      reason: 'not-resolvable',
     }
   }
 
@@ -537,14 +571,15 @@ export function apply(ctx, config = {}) {
       const body = await readJsonBody(req)
       const text = typeof body.text === 'string' ? body.text.trim() : ''
       if (text === '') return sendJson(res, 400, { error: 'empty-text' })
-      const target = resolveAgentTarget(body.sessionId)
+      const target = await resolveAgentTarget(body.sessionId)
       if (target.agent === undefined) {
         return sendJson(res, 503, {
           error: 'no-agent',
-          message: '没有可派活的 agent（渲染端未给 sessionId，且插件也没有已知会话）',
+          message: `没有可派活的 agent（${target.reason}）`,
           requestedSessionId: target.requested,
           triedSessionIds: target.tried ?? [],
           knownSessions: target.knownSessions ?? [],
+          resolveErrors: target.resolveErrors ?? [],
           reason: target.reason,
         })
       }
@@ -563,6 +598,7 @@ export function apply(ctx, config = {}) {
         ok: true,
         messageId: message?.id,
         sessionId: target.sessionId,
+        via: target.via,
         fallbackUsed: target.fallbackUsed === true,
       })
     },
@@ -574,14 +610,15 @@ export function apply(ctx, config = {}) {
     `${pathPrefix}/interrupt`,
     async (req, res) => {
       const body = await readJsonBody(req)
-      const target = resolveAgentTarget(body.sessionId)
+      const target = await resolveAgentTarget(body.sessionId)
       if (target.agent === undefined) {
         return sendJson(res, 503, {
           error: 'no-agent',
-          message: '没有可打断的 agent（渲染端未给 sessionId，且插件也没有已知会话）',
+          message: `没有可打断的 agent（${target.reason}）`,
           requestedSessionId: target.requested,
           triedSessionIds: target.tried ?? [],
           knownSessions: target.knownSessions ?? [],
+          resolveErrors: target.resolveErrors ?? [],
           reason: target.reason,
         })
       }
@@ -594,7 +631,7 @@ export function apply(ctx, config = {}) {
       // AgentCancelCause = { kind: 'user' } | { kind: 'parent' } | { kind: 'hook'; reason } | { kind: 'disposed' }
       await cancel.call(agent, { kind: 'user' })
       publish({ type: 'control', action: 'interrupt', sessionId: target.sessionId, ok: true })
-      return sendJson(res, 200, { ok: true, sessionId: target.sessionId, fallbackUsed: target.fallbackUsed === true })
+      return sendJson(res, 200, { ok: true, sessionId: target.sessionId, via: target.via, fallbackUsed: target.fallbackUsed === true })
     },
     `xilian-pet: POST ${pathPrefix}/interrupt`,
   )

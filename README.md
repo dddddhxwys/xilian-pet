@@ -8,8 +8,8 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1427 行 / 外壳 8 文件 2367 行 / 工具 14 文件 2492 行，51 个提交 |
-| 自测 | `& $NODE tools\check-plugin.mjs` → **69 项全绿** |
+| 规模 | 插件 5 文件 1464 行 / 外壳 8 文件 2367 行 / 工具 14 文件 2597 行，52 个提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **71 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
 > 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
@@ -466,8 +466,8 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 
 | 项 | 证据 |
 |---|---|
-| 插件被加载 | `/health` → `{"ok":true,"code":7,...}`（A6 三处修复把修订号从 5 推到 **8**，待重启确认） |
-| 插件自测 69 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / **waterfall 回归 + 负向对照** / **inject 静态扫描 + 负向对照** / **派活兜底 + 主会话挑选** / 清理注销 |
+| 插件被加载 | `/health` → `{"ok":true,"code":8,...}`（A6 四处修复把修订号从 5 推到 **9**，待重启确认） |
+| 插件自测 71 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / **waterfall 回归 + 负向对照** / **inject 静态扫描 + 负向对照** / **派活兜底 + 主会话挑选 + resolveAgent 恢复** / 清理注销 |
 | 版本兼容性 | Cubism Core `05.01.0000`，`MsvGetLatestMocVersion=5`，模型 moc3 版本号 5 |
 | 事件协议取自事实 | 59 个真实事件类型名、`SessionEventMap`、`StreamChunk`（正文在 `frame.chunk.text`）均来自 asar 类型清单 |
 | Live2D 模型渲染 | 4200×3500 加载成功，截图见 `docs/screenshots/` |
@@ -502,7 +502,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 
 | 项 | 为什么 |
 |---|---|
-| **A6 双击派活 / 打断（复测）** | 真机连撞**三个** bug，都已修，但**都要重启 DSH 才生效**：① 500 `cannot get property "agents" without inject`（`inject` 少了 `agents`）；② 503 `no-message-factory`（插件从仓库挂载，裸包名 `@deepseek-ai/dsh-llm` 解析不到宿主 `app.asar` 内的包）；③ 503 `no-agent`（渲染端只在 SSE 快照里学 sessionId，而 DSH 刚重启时 `/state` 是空的 → 它手上没有 id）。现为"尽力取官方工厂 + 内置等价兜底"+ "插件自己兜底挑主会话"，修订号 → **8** |
+| **A6 双击派活 / 打断（复测）** | 真机连撞**四个** bug，都已修，但**都要重启 DSH 才生效**：① 500 `cannot get property "agents" without inject`（`inject` 少了 `agents`）；② 503 `no-message-factory`（插件从仓库挂载，裸包名 `@deepseek-ai/dsh-llm` 解析不到宿主 `app.asar` 内的包）；③ 503 `no-agent`（渲染端只在 SSE 快照里学 sessionId，而 DSH 刚重启时 `/state` 是空的）；④ 503 `no-agent`（**sessionId 完全正确也没用** —— `ctx.agents.get()` 只找**活着的** agent，不活跃的会话必须走 `sessionController.agents.resolveAgent()` 恢复）。修订号 → **9** |
 | **A4 的"降回 idle"** | 一执行命令 agent 就是 running，回合内自证不了 |
 | **A5 气泡渲染端** | 插件侧 tail 有真实文本，但窗口里的气泡显示没从 UI 看过 |
 | **A7 显示侧**（冒泡 + 跳转） | 通知帧已推送，跳转逻辑未做 |
@@ -518,7 +518,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | A3 | **独立窗里出现宠物并待机动画**（已重定义） | ✅ 截图 + 参数采样（`Scene[3]` 待机在播） |
 | A4 | 真实会话事件驱动状态 | 🟡 四档切换已验证；降回 idle 未观察到 |
 | A5 | 逐字流进气泡 | 🟡 插件侧 ✅；渲染端未确认 |
-| A6 | 双击气泡派活 | 🟡 三处真机 bug 已修（500 `inject` 缺 `agents`；503 官方 `createUserMessage` 解析不到；503 渲染端没有 sessionId），**待重启复测** |
+| A6 | 双击气泡派活 | 🟡 四处真机 bug 已修（500 `inject` 缺 `agents`；503 官方 `createUserMessage` 解析不到；503 渲染端没有 sessionId；503 `agents.get` 只找活 agent，需 `resolveAgent` 恢复），**待重启复测** |
 | A7 | 审批积压主动提醒 | 🟡 插件侧 ✅；显示与跳转未做 |
 | A8 | Electron 透明置顶窗 | ✅ 可拖动、透明无边框 |
 | A9 | 点击穿透 | ✅ 用户实机确认（2026-10-02） |
@@ -559,6 +559,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **`motionGroups` 懒加载** | 刚调 `motion()` 时取不到 motion 对象 | 50ms × 20 次重试 |
 | **外部挂载的插件 import 不到宿主的包** | 派活报 503 `no-message-factory`；`import('@deepseek-ai/dsh-llm')` 必然 `ERR_MODULE_NOT_FOUND` | 裸包名只从插件**自己所在目录**往上找，而该包在宿主 `app.asar/dsh/node_modules/` 里 → 改成"尽力取官方 + 内置等价兜底"。**任何要从宿主包里拿东西的插件都会踩** |
 | **状态只在快照里学一次** | 派活报 503 `no-agent`：渲染端只在 SSE 快照里记 sessionId，而 DSH 刚重启时 `/state` 是空的 → 窗口"先连上、会话后出现"，它手上永远是 `undefined` | 快照只是**连接那一刻**的切片 → 后续每帧都要能补齐（现由 `primarySessionId` 承担），并且**服务端自己兜底**比指望客户端状态更稳 |
+| **`ctx.agents.get()` 只找"活着的" agent** | 派活 503 `no-agent`，**而 sessionId 完全正确**（`/state` 里就是它） | 注册表实现是 `store.get(id)?.agent`，store 只放 **entered** 条目，detach 即删 → 会话不活跃时必然 undefined。要**解析或恢复**得走 `ctx.sessionController.agents.resolveAgent(id)`（官方注释 "Resolve or resume one ordinary Session"，GUI 提交消息也是这条） |
 | **全局环形缓冲被高频通道刷爆** | `/debug/shapes` 80 条样本全是流式帧 | 按 channel 分别限量 |
 | **循环引用载荷预览不可读** | `agent/status` 样本 `<unserializable>` | 安全序列化（循环处标 `[circular]`） |
 | **绝不能用 pwsh 改含中文的源码** | 注释变乱码、吞换行 | 一律用 edit/write 工具 |
@@ -647,7 +648,7 @@ docs/
   Live2D约稿单.md                    委托说明（已暂缓，将来换自研形象可启用）
   screenshots/                      实机自检截图（含第三方角色，默认 gitignore）
 tools/
-  check-plugin.mjs                  插件自测（69 项断言，不需要 DSH）
+  check-plugin.mjs                  插件自测（71 项断言，不需要 DSH）
   tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）
