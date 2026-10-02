@@ -45,16 +45,25 @@ const STATE_MAP = {
   idle: { motion: 3, expressions: ['reset'] },
   // 工作中：俏皮小动作 + 打开「思考」特效
   running: { motion: 0, expressions: ['reset'], params: { Param9: 1 } },
-  // 待确认：闭眼笑 + 星光 + 惊喜特效（最能抓住注意力）
-  approval: { motion: 1, expressions: ['reset', 'surprise'] },
-  // 提问：招牌姿势 + 张嘴 + 问号
+  // 待确认：闭眼笑 + 星光 + 惊喜特效（最能抓住注意力）。**只播一次**再回待机，
+  // 否则"等你确认"会一直闪星星，反而变成噪音。
+  approval: { motion: 1, durationMs: 4000, once: true, expressions: ['reset', 'surprise'] },
+  // 提问：招牌姿势 + 张嘴 + 问号。**保持循环** —— 要一直等用户回答。
   question: { motion: 2, expressions: ['reset', 'question'] },
-  // 完成：闭眼笑 + 星光 + 开心
-  done: { motion: 1, expressions: ['reset', 'happy'] },
+  // 完成：闭眼笑 + 星光 + 开心。**只播一次**，然后回去荡秋千；
+  // 注意桌宠状态仍是 done（未读背板继续显示），只是动作不再重复。
+  done: { motion: 1, durationMs: 4000, once: true, expressions: ['reset', 'happy'] },
   // ⚠️ 出错：模型**没有**"困扰/失败"这类参数，只能靠眉毛+眼睛手工凑（见 ERROR_FACE），
   //    动作沿用最平静的荡秋千，避免"出错还蹦得欢"的违和感
   error: { motion: 3, expressions: ['reset'] },
 }
+
+/** 一次性动作播完之后回到哪个动作（荡秋千） */
+const BASE_MOTION = 3
+
+/** 一次性动作的兜底定时器 + 当前动作索引 */
+let oneShotTimer = null
+let currentMotion = null
 
 /** error 档的兜底：模型没有"困扰/失败"参数，用眉毛 + 眼睛手工凑一个皱眉苦脸 */
 const ERROR_FACE = {
@@ -272,19 +281,24 @@ async function init({ canvas, modelUrl, log, forceMotion, sampleMs }) {
     samplerSample(model.internalModel.coreModel)
   })
 
-  // 待机动作：默认 Scene[0] 循环。调试时可用 PET_FORCE_MOTION=Scene:N 指定。
-  let group = 'Scene'
-  let index = 0
+  // 一次性动作播完 → 回基础动作。事件挂在 motionManager 上。
+  model.internalModel.motionManager.on('motionFinish', () => {
+    const mapped = STATE_MAP[state.currentState]
+    if (mapped?.once) returnToBaseMotion()
+  })
+
+  // 起始动作：默认荡秋千。调试时可用 PET_FORCE_MOTION=Scene:N 指定。
   if (typeof forceMotion === 'string' && forceMotion.includes(':')) {
     const [g, i] = forceMotion.split(':')
-    group = g
-    index = Number(i) || 0
-  }
-  try {
-    model.motion(group, index, PIXI.live2d.MotionPriority.IDLE)
-    state.log(`已启动动作 ${group}[${index}]（循环）`)
-  } catch (error) {
-    state.log(`启动动作失败 ${group}[${index}]：${error.message}`)
+    const idx = Number(i) || 0
+    state.log(`调试模式：指定动作 ${g}[${idx}]`)
+    try {
+      model.motion(g, idx, PIXI.live2d.MotionPriority.IDLE)
+    } catch (error) {
+      state.log(`启动调试动作失败 ${g}[${idx}]：${error.message}`)
+    }
+  } else {
+    startMotion(BASE_MOTION, true)
   }
 
   if (sampleMs > 0) {
@@ -297,23 +311,85 @@ async function init({ canvas, modelUrl, log, forceMotion, sampleMs }) {
   return model
 }
 
+/**
+ * 启动某个动作。
+ * @param {number} index   Scene 组里的动作下标
+ * @param {boolean} loop   false = 只播一次（播完由 motionFinish / 兜底定时器接手）
+ */
+function startMotion(index, loop) {
+  if (!state.model) return
+  currentMotion = index
+  try {
+    // 用 FORCE 而不是 NORMAL：NORMAL 会被正在播放的动作挡住，
+    // 状态切换是显式意图，应该立刻生效（FORCE 仍走模型自带的淡入淡出）。
+    state.model.motion('Scene', index, PIXI.live2d.MotionPriority.FORCE)
+  } catch (error) {
+    state.log(`启动动作 Scene[${index}] 失败：${error.message}`)
+    return
+  }
+  if (loop) return
+  disableMotionLoop(index)
+}
+
+/**
+ * 关掉某个动作的循环。
+ *
+ * 为什么需要重试：`motionManager.motionGroups[group][index]` 是**懒加载**的，
+ * 刚调用 motion() 的那一刻往往还是 null（实测第一版就取不到，只能退回定时器）。
+ * 而 `CubismMotion._isLoop` 是每帧读的，所以启动后几十毫秒内设上都来得及。
+ */
+function disableMotionLoop(index, attempt = 0) {
+  const mm = state.model?.internalModel?.motionManager
+  const groups = mm?.motionGroups ?? {}
+  const motion = groups['Scene']?.[index]
+  if (motion && typeof motion.setIsLoop === 'function') {
+    motion.setIsLoop(false)
+    state.log(`Scene[${index}] 已设为只播一次（第 ${attempt + 1} 次尝试）`)
+    return
+  }
+  if (attempt === 0) {
+    // 首次失败时把实际结构打出来，便于区分"还没加载"和"取错了键"
+    state.log(`motionGroups 键=${JSON.stringify(Object.keys(groups))}，Scene 组长度=${groups['Scene']?.length ?? '无'}`)
+  }
+  if (attempt < 20) {
+    setTimeout(() => disableMotionLoop(index, attempt + 1), 50)
+  } else {
+    state.log(`Scene[${index}] 始终取不到 motion 对象，改用定时器兜底`)
+  }
+}
+
+/** 一次性动作结束后回到基础动作。
+ *  ⚠️ 刻意**不**改 state.currentState —— 桌宠仍是 done（未读背板继续显示），
+ *     只是动作不再重复播放。状态与动作是两件事。 */
+function returnToBaseMotion() {
+  if (currentMotion === BASE_MOTION) return
+  state.log(`一次性动作播完 → 回到基础动作 Scene[${BASE_MOTION}]（状态仍是 ${state.currentState}）`)
+  startMotion(BASE_MOTION, true)
+}
+
+/** 按状态切换动作 */
+function playStateMotion(next) {
+  const mapped = STATE_MAP[next] ?? STATE_MAP.idle
+  clearTimeout(oneShotTimer)
+  startMotion(mapped.motion, !mapped.once)
+  if (mapped.once) {
+    // 兜底：即使 setLoop(false) 没生效，也按已知时长切回，避免一直循环。
+    // 时长来自模型解析（Scene1=3s / Scene2=4s / Scene3=3s / Scene4=180s）。
+    const wait = (mapped.durationMs ?? 4000) + 250
+    oneShotTimer = setTimeout(() => {
+      if (state.currentState === next) returnToBaseMotion()
+    }, wait)
+  }
+}
+
 /** 切换桌宠状态 */
 function setState(next) {
   if (next === state.currentState) return
   state.currentState = next
   const mapped = STATE_MAP[next] ?? STATE_MAP.idle
-  state.log(`状态 → ${next}（动作 Scene[${mapped.motion}]）`)
-
-  // 切动作。用 FORCE 而不是 NORMAL：NORMAL 会被正在播放的动作挡住，
-  // 状态切换是显式意图，应该立刻生效（FORCE 仍会走模型自带的淡入淡出）。
-  if (state.model && mapped.motion !== undefined) {
-    try {
-      state.model.motion('Scene', mapped.motion, PIXI.live2d.MotionPriority.FORCE)
-    } catch (error) {
-      state.log(`切换动作失败 Scene[${mapped.motion}]：${error.message}`)
-    }
-  }
-
+  const onceLabel = mapped.once ? '，只播一次' : ''
+  state.log(`状态 → ${next}（动作 Scene[${mapped.motion}]${onceLabel}）`)
+  playStateMotion(next)
   setExpressions(mapped.expressions ?? ['reset'])
   if (mapped.params && Object.keys(mapped.params).length) setParams(mapped.params)
 }
