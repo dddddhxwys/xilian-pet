@@ -83,7 +83,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 10
+const CODE_REVISION = 11
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -732,6 +732,65 @@ export function apply(ctx, config = {}) {
         state: reminderState,
       }),
     `xilian-pet: GET ${pathPrefix}/debug/reminders`,
+  )
+
+  /**
+   * 诊断端点：**派活链路到底卡在哪一环**。
+   *
+   * 为什么需要：A6 连撞五个 bug，每轮都只能靠"用户点一下 → 气泡里一句话"来定位，
+   * 来回代价很高。这个端点是**只读**的，能在不派活、不打断、不污染会话的前提下，
+   * 把候选会话、活 agent、各候选能否 `get()` 到、`resolveAgent` 是否可用全列出来。
+   *
+   * ⚠️ 只有显式传 `?resolve=<sessionId>` 时才会真的调 `resolveAgent` ——
+   * 那个调用按官方语义会**解析/恢复**该会话的 agent（有副作用），所以必须显式要求。
+   */
+  register(
+    'GET',
+    `${pathPrefix}/debug/agents`,
+    async (req, res) => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      const observed = Object.values(state.sessions).map((s) => s.sessionId)
+      const host = hostSessionIds()
+      const candidates = [...new Set([...observed, ...host])].slice(0, 5)
+      const liveLookup = {}
+      for (const id of candidates) {
+        try {
+          liveLookup[id] = ctx.agents?.get?.(id) !== undefined
+        } catch (error) {
+          liveLookup[id] = `error: ${error?.message ?? error}`
+        }
+      }
+      let liveAgentIds = null
+      try {
+        liveAgentIds = (ctx.agents?.list?.() ?? []).map((a) => a?.id ?? a?.session?.id)
+      } catch {
+        liveAgentIds = 'unavailable'
+      }
+      const out = {
+        observedSessions: observed,
+        primarySessionId: primarySessionId(state) ?? null,
+        hostSessions: host,
+        liveAgentIds,
+        liveLookup,
+        resolveAgentAvailable: typeof ctx.sessionController?.agents?.resolveAgent === 'function',
+      }
+      const wantResolve = url.searchParams.get('resolve')
+      if (typeof wantResolve === 'string' && wantResolve !== '') {
+        try {
+          const found = await ctx.sessionController.agents.resolveAgent(wantResolve)
+          out.resolve = {
+            id: wantResolve,
+            ok: found?.agent !== undefined,
+            error: found?.error?.message ?? null,
+            via: found?.agent === undefined ? null : 'resolveAgent',
+          }
+        } catch (error) {
+          out.resolve = { id: wantResolve, ok: false, error: String(error?.message ?? error) }
+        }
+      }
+      return sendJson(res, 200, out)
+    },
+    `xilian-pet: GET ${pathPrefix}/debug/agents`,
   )
 
   // 心跳也放进 ctx.effect —— 官方契约要求资源都经由 ctx.effect/ctx.on 注册，

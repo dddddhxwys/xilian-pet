@@ -629,8 +629,8 @@ check('负向对照：mock 确实会因缺 inject 而抛错（证明上面两条
   )
 })
 
-check('apply 注册了 8 条 exact 路由', () => {
-  assert.equal(routes.size, 8, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
+check('apply 注册了 9 条 exact 路由', () => {
+  assert.equal(routes.size, 9, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
 })
 
 check('所有路由都是 exact（避免被 /api 之类的前缀路由吞掉）', () => {
@@ -1062,6 +1062,42 @@ await checkAsync('重启空窗期：用 ctx.agents.list() 里的活 agent 兜底
     const body = await res.json()
     assert.equal(body.sessionId, 'sess-live-only')
     assert.equal(localCalls.length, 1)
+  } finally {
+    await new Promise((resolve) => srv.close(resolve))
+    teardown()
+  }
+})
+
+await checkAsync('GET /debug/agents → 只读诊断，不派活（下次不用再靠气泡猜）', async () => {
+  const localCalls = []
+  const m = createMockCtx({
+    agents: (id) => (id === 'sess-live' ? { followup: async () => localCalls.push('x') } : undefined),
+    liveAgents: [{ id: 'sess-live' }],
+    hostSessions: [{ id: 'sess-host' }],
+  })
+  const teardown = apply(m.ctx, { pathPrefix: '/xilian-pet', minHoldMs: 0 })
+  for (const fn of m.listeners.get('session/event') ?? []) fn({ id: 'sess-observed' }, { type: 'turn/start', seq: 1 })
+
+  const srv = http.createServer((req, res) => {
+    const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
+    if (route === undefined) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    route.handler(req, res)
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  try {
+    const res = await fetch(`http://127.0.0.1:${srv.address().port}/xilian-pet/debug/agents`)
+    assert.equal(res.status, 200)
+    const body = await res.json()
+    assert.deepEqual(body.observedSessions, ['sess-observed'], '要报插件自己观测到的会话')
+    assert.deepEqual(body.hostSessions, ['sess-live', 'sess-host'], '要报问宿主拿到的会话')
+    assert.equal(body.liveLookup['sess-live'], true, '要逐个候选报 get() 是否拿得到')
+    assert.equal(body.resolveAgentAvailable, true)
+    assert.equal(body.resolve, undefined, '不带 ?resolve= 时绝不能触发 resolveAgent')
+    assert.equal(localCalls.length, 0, '诊断端点绝不能派活')
   } finally {
     await new Promise((resolve) => srv.close(resolve))
     teardown()

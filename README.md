@@ -8,8 +8,8 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1507 行 / 外壳 8 文件 2367 行 / 工具 14 文件 2695 行，53 个提交 |
-| 自测 | `& $NODE tools\check-plugin.mjs` → **73 项全绿** |
+| 规模 | 插件 5 文件 1566 行 / 外壳 8 文件 2367 行 / 工具 14 文件 2731 行，54 个提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **74 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
 > 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
@@ -311,6 +311,7 @@ Electron 44.5.1
 /xilian-pet/events              SSE 事件流
 /xilian-pet/debug/shapes        原始事件形状样本（按 channel 分别限量）
 /xilian-pet/debug/reminders     提醒引擎配置 / 免打扰判定 / 已发记录
+/xilian-pet/debug/agents        派活链路诊断（候选会话 / 活 agent / 能否 get()），只读
 /xilian-pet/prompt              反向操控：派活
 /xilian-pet/interrupt           反向操控：打断
 /xilian-pet/focus               会话聚焦（Phase 0 未实现，返回 501）
@@ -466,8 +467,8 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 
 | 项 | 证据 |
 |---|---|
-| 插件被加载 | `/health` → `{"ok":true,"code":9,...}`（A6 五处修复把修订号从 5 推到 **10**，待重启确认） |
-| 插件自测 73 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / **waterfall 回归 + 负向对照** / **inject 静态扫描 + 负向对照** / **派活兜底 + 主会话挑选 + resolveAgent 恢复 + 宿主会话枚举** / 清理注销 |
+| 插件被加载 | `/health` → `{"ok":true,"code":10,...}`（A6 五处修复 + 诊断端点把修订号从 5 推到 **11**，待重启确认） |
+| 插件自测 74 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / **waterfall 回归 + 负向对照** / **inject 静态扫描 + 负向对照** / **派活兜底 + 主会话挑选 + resolveAgent 恢复 + 宿主会话枚举 + 只读诊断** / 清理注销 |
 | 版本兼容性 | Cubism Core `05.01.0000`，`MsvGetLatestMocVersion=5`，模型 moc3 版本号 5 |
 | 事件协议取自事实 | 59 个真实事件类型名、`SessionEventMap`、`StreamChunk`（正文在 `frame.chunk.text`）均来自 asar 类型清单 |
 | Live2D 模型渲染 | 4200×3500 加载成功，截图见 `docs/screenshots/` |
@@ -502,7 +503,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 
 | 项 | 为什么 |
 |---|---|
-| **A6 双击派活 / 打断（复测）** | 真机连撞**五个** bug，都已修，但**都要重启 DSH 才生效**：① 500 `cannot get property "agents" without inject`；② 503 `no-message-factory`（裸包名解析不到宿主 `app.asar` 内的包）；③ 503 渲染端只在快照里学 sessionId（重启后为空）；④ 503 `ctx.agents.get()` 只找**活着的** agent，不活跃的会话要 `resolveAgent()` 恢复；⑤ 503 `no-session-known`（插件"知道哪些会话"全靠自己观测事件，**重启后有盲区**）。修订号 → **10** |
+| **A6 双击派活 / 打断（复测）** | 真机连撞**五个** bug，都已修，但**都要重启 DSH 才生效**：① 500 `cannot get property "agents" without inject`；② 503 `no-message-factory`（裸包名解析不到宿主 `app.asar` 内的包）；③ 503 渲染端只在快照里学 sessionId（重启后为空）；④ 503 `ctx.agents.get()` 只找**活着的** agent，不活跃的会话要 `resolveAgent()` 恢复；⑤ 503 `no-session-known`（插件"知道哪些会话"全靠自己观测事件，**重启后有盲区**）。修订号 → **11**，并加了只读诊断 `GET /debug/agents` |
 | **A4 的"降回 idle"** | 一执行命令 agent 就是 running，回合内自证不了 |
 | **A5 气泡渲染端** | 插件侧 tail 有真实文本，但窗口里的气泡显示没从 UI 看过 |
 | **A7 显示侧**（冒泡 + 跳转） | 通知帧已推送，跳转逻辑未做 |
@@ -649,7 +650,7 @@ docs/
   Live2D约稿单.md                    委托说明（已暂缓，将来换自研形象可启用）
   screenshots/                      实机自检截图（含第三方角色，默认 gitignore）
 tools/
-  check-plugin.mjs                  插件自测（73 项断言，不需要 DSH）
+  check-plugin.mjs                  插件自测（74 项断言，不需要 DSH）
   tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）
