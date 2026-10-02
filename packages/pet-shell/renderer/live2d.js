@@ -42,27 +42,38 @@
  */
 const STATE_MAP = {
   // 待机：默认就荡秋千。180 秒长循环，最像"自己待着"
-  idle: { motion: 3, expressions: ['reset'] },
+  idle: { motion: 3, expression: 'reset' },
   // 工作中：俏皮小动作 + 打开「思考」特效
-  running: { motion: 0, expressions: ['reset'], params: { Param9: 1 } },
+  running: { motion: 0, expression: 'reset', params: { Param9: 1 } },
   // 待确认：闭眼笑 + 星光 + 惊喜特效（最能抓住注意力）。**只播一次**再回待机，
   // 否则"等你确认"会一直闪星星，反而变成噪音。
-  approval: { motion: 1, durationMs: 4000, once: true, expressions: ['reset', 'surprise'] },
+  // 特效刻意**不**撤：它表达的正是"还在等你"，要一直挂着。
+  approval: { motion: 1, durationMs: 4000, once: true, expression: 'surprise' },
   // 提问：招牌姿势 + 张嘴 + 问号。**保持循环** —— 要一直等用户回答。
-  question: { motion: 2, expressions: ['reset', 'question'] },
-  // 完成：闭眼笑 + 星光 + 开心。**只播一次**，然后回去荡秋千；
+  question: { motion: 2, expression: 'question' },
+  // 完成：闭眼笑 + 星光 + 开心。动作**只播一次**，然后回去荡秋千；
   // 注意桌宠状态仍是 done（未读背板继续显示），只是动作不再重复。
-  done: { motion: 1, durationMs: 4000, once: true, expressions: ['reset', 'happy'] },
+  // 笑眼（Param3 开心）在动作结束后**再留 2~4 秒**才撤 ——
+  // 一结束就板起脸太突兀，"笑着看你一眼再恢复"更像活的。
+  done: { motion: 1, durationMs: 4000, once: true, expression: 'happy', lingerMs: [2000, 4000] },
   // ⚠️ 出错：模型**没有**"困扰/失败"这类参数，只能靠眉毛+眼睛手工凑（见 ERROR_FACE），
   //    动作沿用最平静的荡秋千，避免"出错还蹦得欢"的违和感
-  error: { motion: 3, expressions: ['reset'] },
+  error: { motion: 3, expression: 'reset' },
 }
+
+/**
+ * ⚠️ 这个模型同一时刻**只能有一个表情生效** ——
+ * `model.expression(name)` 是"替换当前表情"，不是叠加。
+ * 所以 STATE_MAP 里存的是**单个** expression 名，不要写成数组（写过，是误导）。
+ * 需要多个效果同时开时，得用 `params` 直接驱动参数（如 running 的 Param9）。
+ */
 
 /** 一次性动作播完之后回到哪个动作（荡秋千） */
 const BASE_MOTION = 3
 
-/** 一次性动作的兜底定时器 + 当前动作索引 */
+/** 一次性动作的兜底定时器、特效保持定时器、当前动作索引 */
 let oneShotTimer = null
+let lingerTimer = null
 let currentMotion = null
 
 /** error 档的兜底：模型没有"困扰/失败"参数，用眉毛 + 眼睛手工凑一个皱眉苦脸 */
@@ -117,19 +128,19 @@ function setParams(params) {
   }
 }
 
-/** 按名字拉起表达式（找得到才拉） */
-function setExpressions(names) {
+/** 按名字切换表情（找得到才切）。注意：同一时刻只有一个表情生效。 */
+function setExpression(name) {
   const model = state.model
-  if (!model) return
+  if (!model || !name) return
   const available = new Set((model.internalModel?.settings?.expressions ?? []).map((e) => e.Name))
-  for (const name of names) {
-    if (!available.has(name)) continue
-    try {
-      // 先 reset 再叠加，避免上一次的表达式残留
-      model.expression(name)
-    } catch (error) {
-      state.log(`表达式 ${name} 失败：${error.message}`)
-    }
+  if (!available.has(name)) {
+    state.log(`表情 ${name} 不存在，跳过`)
+    return
+  }
+  try {
+    model.expression(name)
+  } catch (error) {
+    state.log(`表情 ${name} 失败：${error.message}`)
   }
 }
 
@@ -365,12 +376,38 @@ function returnToBaseMotion() {
   if (currentMotion === BASE_MOTION) return
   state.log(`一次性动作播完 → 回到基础动作 Scene[${BASE_MOTION}]（状态仍是 ${state.currentState}）`)
   startMotion(BASE_MOTION, true)
+  scheduleLinger()
+}
+
+/**
+ * 让一次性状态的特效再保持一会儿再撤。
+ *
+ * 为什么不是动作一结束就撤：`done` 的笑眼（Param3 开心）是**表情**驱动的，
+ * 与动作相互独立。动作 4 秒播完就立刻板起脸太突兀，
+ * "笑着看你一眼再恢复"更像个活物。时长在 STATE_MAP 的 `lingerMs` 区间里随机取，
+ * 免得每次都是同一个节拍（这个模型的动作本身也都带随机性）。
+ */
+function scheduleLinger() {
+  clearTimeout(lingerTimer)
+  const mapped = STATE_MAP[state.currentState]
+  if (!mapped?.lingerMs) return
+  const [min, max] = mapped.lingerMs
+  const wait = Math.round(min + Math.random() * (max - min))
+  const expected = state.currentState
+  state.log(`特效「${mapped.expression}」再保持 ${wait}ms 后撤回`)
+  lingerTimer = setTimeout(() => {
+    // 期间状态变了就放弃这条（新状态已经在 playStateMotion 里清了定时器）
+    if (state.currentState !== expected) return
+    state.log(`特效撤回 → reset（桌宠状态仍是 ${expected}，未读语义不受影响）`)
+    setExpression('reset')
+  }, wait)
 }
 
 /** 按状态切换动作 */
 function playStateMotion(next) {
   const mapped = STATE_MAP[next] ?? STATE_MAP.idle
   clearTimeout(oneShotTimer)
+  clearTimeout(lingerTimer) // 切状态时取消上一条待撤的特效
   startMotion(mapped.motion, !mapped.once)
   if (mapped.once) {
     // 兜底：即使 setLoop(false) 没生效，也按已知时长切回，避免一直循环。
@@ -388,9 +425,9 @@ function setState(next) {
   state.currentState = next
   const mapped = STATE_MAP[next] ?? STATE_MAP.idle
   const onceLabel = mapped.once ? '，只播一次' : ''
-  state.log(`状态 → ${next}（动作 Scene[${mapped.motion}]${onceLabel}）`)
+  state.log(`状态 → ${next}（动作 Scene[${mapped.motion}]${onceLabel}，表情 ${mapped.expression}）`)
   playStateMotion(next)
-  setExpressions(mapped.expressions ?? ['reset'])
+  setExpression(mapped.expression)
   if (mapped.params && Object.keys(mapped.params).length) setParams(mapped.params)
 }
 
