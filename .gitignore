@@ -42,9 +42,10 @@ desktop.ini
 # tools/prepare-renderer-vendor.mjs 生成，不入库）
 /packages/pet-shell/renderer/vendor/
 
-# 含第三方 Live2D 角色的自检截图（作者要求注明用途+不得收费；
-# 截图可随时重跑生成，不入库以免被当作再分发）
-docs/screenshots/live2d-*.png
-docs/screenshots/state-*.png
-docs/screenshots/scene-*.png
-docs/screenshots/peak-*.png
+# 自检截图：**默认全部不入库**。
+#   理由一：含第三方 Live2D 角色的截图不应随仓库分发（作者要求注明用途+不得收费）。
+#   理由二：截图都能重跑生成（PET_SNAPSHOT=… node packages/pet-shell/scripts/launch.mjs）。
+# 之前用"逐个文件名排除"，每加一种命名就漏一次（连漏两回），所以改成整目录黑名单+白名单例外。
+docs/screenshots/*
+!docs/screenshots/phase0-smoke.png
+!docs/screenshots/phase0-live.png
