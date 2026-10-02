@@ -8,8 +8,8 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1566 行 / 外壳 8 文件 2367 行 / 工具 14 文件 2731 行，55 个提交 |
-| 自测 | `& $NODE tools\check-plugin.mjs` → **74 项全绿** |
+| 规模 | 插件 5 文件 1566 行 / 外壳 9 文件 2452 行 / 工具 14 文件 2791 行，56 个提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **79 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
 > 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
@@ -169,6 +169,7 @@ packages/pet-shell/           ← Electron 透明置顶窗
   main.js                     透明置顶 + SSE 订阅 + pet:// 协议 + 光标轮询命中测试
                               + 窗口位置/构图缓存持久化 + 自检截图
   preload.cjs                 最小 IPC 桥（只暴露桌宠需要的几件事）
+  hit-test.js                 命中测试纯函数（UI 控件矩形 + alpha 掩码 → 是否接管鼠标），可自测
   renderer/
     index.html                CSP + vendor 脚本加载顺序
     pet.css                   透明窗口样式（z-index 分层是踩过坑的）
@@ -287,6 +288,12 @@ Electron 44.5.1
 
 改为：**主进程每 16ms 轮询光标位置**（`screen.getCursorScreenPoint()`，不依赖任何窗口消息转发），
 配合渲染端送来的 alpha 掩码（降采样到 130×150，每 250ms 刷新）判断是否让窗口接管鼠标。
+
+⚠️ **光有 alpha 掩码还不够** —— 输入条、气泡是 **HTML 控件**，掩码里根本没有它们。
+只按掩码判会出这个 bug：控件上"没有角色像素盖住"的部分被判成透明 → 穿透 → 按钮点不动
+（实测：输入条右侧的「打断」点不到，而压在角色上的「派活」能点，很迷惑人）。
+所以渲染端把**可见 UI 控件的矩形**跟掩码一起送过去，主进程按"命中控件 **或** 命中不透明像素"
+判定。判定逻辑抽在 `packages/pet-shell/hit-test.js`（纯函数，可自测）。
 
 拖拽期间主进程强制保持可交互，否则鼠标快速移出角色时窗口会"甩掉"拖拽。
 
@@ -468,7 +475,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | 项 | 证据 |
 |---|---|
 | 插件被加载 | `/health` → `{"ok":true,"code":10,...}`（A6 五处修复 + 诊断端点把修订号从 5 推到 **11**，待重启确认） |
-| 插件自测 74 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / **waterfall 回归 + 负向对照** / **inject 静态扫描 + 负向对照** / **派活兜底 + 主会话挑选 + resolveAgent 恢复 + 宿主会话枚举 + 只读诊断** / 清理注销 |
+| 插件自测 79 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / **waterfall 回归 + 负向对照** / **inject 静态扫描 + 负向对照** / **派活兜底 + 主会话挑选 + resolveAgent 恢复 + 宿主会话枚举 + 只读诊断** / **外壳命中测试（UI 控件 / 掩码 / 坐标映射）** / 清理注销 |
 | 版本兼容性 | Cubism Core `05.01.0000`，`MsvGetLatestMocVersion=5`，模型 moc3 版本号 5 |
 | 事件协议取自事实 | 59 个真实事件类型名、`SessionEventMap`、`StreamChunk`（正文在 `frame.chunk.text`）均来自 asar 类型清单 |
 | Live2D 模型渲染 | 4200×3500 加载成功，截图见 `docs/screenshots/` |
@@ -562,6 +569,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **状态只在快照里学一次** | 派活报 503 `no-agent`：渲染端只在 SSE 快照里记 sessionId，而 DSH 刚重启时 `/state` 是空的 → 窗口"先连上、会话后出现"，它手上永远是 `undefined` | 快照只是**连接那一刻**的切片 → 后续每帧都要能补齐（现由 `primarySessionId` 承担），并且**服务端自己兜底**比指望客户端状态更稳 |
 | **`ctx.agents.get()` 只找"活着的" agent** | 派活 503 `no-agent`，**而 sessionId 完全正确**（`/state` 里就是它） | 注册表实现是 `store.get(id)?.agent`，store 只放 **entered** 条目，detach 即删 → 会话不活跃时必然 undefined。要**解析或恢复**得走 `ctx.sessionController.agents.resolveAgent(id)`（官方注释 "Resolve or resume one ordinary Session"，GUI 提交消息也是这条） |
 | **"我知道的会话"只来自自己观测的事件** | 派活 503 `no-session-known`：DSH 刚重启，插件一个会话都没观测到，空窗期里候选为空 | 观测事件 ≠ 世界全貌。宿主本来就有 `ctx.sessions.list()`（"All live sessions"）与 `ctx.agents.list()`，**别自己攒状态去猜** —— 能问就问 |
+| **命中测试只看 alpha 掩码** | 输入条右侧的「打断」点不到（穿透），而压在角色上的「派活」能点 | 掩码里只有 Live2D 像素，**HTML 控件不在其中** → 控件矩形要跟掩码一起送给主进程；判定逻辑抽成 `hit-test.js` 纯函数才测得到 |
 | **全局环形缓冲被高频通道刷爆** | `/debug/shapes` 80 条样本全是流式帧 | 按 channel 分别限量 |
 | **循环引用载荷预览不可读** | `agent/status` 样本 `<unserializable>` | 安全序列化（循环处标 `[circular]`） |
 | **绝不能用 pwsh 改含中文的源码** | 注释变乱码、吞换行 | 一律用 edit/write 工具 |
@@ -650,7 +658,7 @@ docs/
   Live2D约稿单.md                    委托说明（已暂缓，将来换自研形象可启用）
   screenshots/                      实机自检截图（含第三方角色，默认 gitignore）
 tools/
-  check-plugin.mjs                  插件自测（74 项断言，不需要 DSH）
+  check-plugin.mjs                  插件自测（79 项断言，含外壳命中测试，不需要 DSH）
   tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）

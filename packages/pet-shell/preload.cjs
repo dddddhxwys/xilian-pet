@@ -14,8 +14,11 @@ contextBridge.exposeInMainWorld('xilianPet', {
    * 把 alpha 掩码交给主进程做命中测试。
    * 为什么不在渲染端判断：见 main.js 顶部关于 Electron Windows 鼠标转发 bug 的说明。
    * 掩码请先降采样（主进程按比例取样，不需要全分辨率）。
+   * `uiRects` 是 HTML 控件（输入条/气泡）的矩形 —— 它们不在掩码里，
+   * 不一起送过去的话，控件上"没有角色像素"的部分会被判成穿透、按钮点不动。
    */
-  sendMask: (width, height, data) => ipcRenderer.send('pet:mask', { width, height, data }),
+  sendMask: (width, height, data, uiRects) =>
+    ipcRenderer.send('pet:mask', { width, height, data, uiRects }),
   /** 拖拽中：主进程会一直保持可交互，避免鼠标快速移出角色时把拖拽甩掉 */
   setDragging: (value) => ipcRenderer.send('pet:dragging', Boolean(value)),
   /** 构图缓存读写（按模型 URL 分开存） */

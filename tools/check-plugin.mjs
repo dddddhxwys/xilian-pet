@@ -16,6 +16,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { apply, inject as pluginInject } from '../packages/pet-plugin/index.js'
+import { hitTest, insideAnyRect } from '../packages/pet-shell/hit-test.js'
 import {
   aggregate,
   createPetState,
@@ -1203,6 +1204,65 @@ check('dispose() 后路由与监听器全部注销', () => {
 })
 
 await new Promise((resolve) => server.close(resolve))
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[5] 命中测试（外壳纯函数，不需要 Electron）')
+
+check('UI 控件（输入条）即使在透明像素上也要可交互 【实机 bug 回归】', () => {
+  // 真机症状：输入条右侧的「打断」点不到 —— 那里没有角色像素，
+  // 而判定只看 alpha 掩码，于是被判成透明 → 穿透。
+  const mask = { width: 10, height: 10, data: new Uint8Array(100) } // 全透明
+  const uiRects = [{ x: 10, y: 80, w: 100, h: 20 }]
+  const base = { mask, uiRects, winWidth: 120, winHeight: 100 }
+  const onBar = hitTest({ ...base, x: 50, y: 90 })
+  assert.equal(onBar.hitUi, true, '应命中输入条矩形')
+  assert.equal(onBar.interactive, true, '输入条上必须可交互，否则「打断」点不到')
+  // 输入条**之外**的透明处仍然要穿透（不能为了修它把整窗都变可交互）
+  assert.equal(hitTest({ ...base, x: 50, y: 40 }).interactive, false, '透明处仍要保持穿透')
+})
+
+check('掩码不透明处可交互；窗口外一律穿透', () => {
+  const data = new Uint8Array(100)
+  data[5 * 10 + 5] = 255 // 掩码 (5,5) 不透明 → 窗口 (550/100)…见下面映射用例
+  const mask = { width: 10, height: 10, data }
+  const base = { mask, uiRects: [], winWidth: 100, winHeight: 100 }
+  assert.equal(hitTest({ ...base, x: 55, y: 55 }).interactive, true, '不透明像素上可交互')
+  assert.equal(hitTest({ ...base, x: 5, y: 5 }).interactive, false, '透明像素上穿透')
+  assert.equal(hitTest({ ...base, x: -1, y: 50 }).inWindow, false)
+  assert.equal(hitTest({ ...base, x: 120, y: 50 }).interactive, false, '窗口外必须穿透')
+})
+
+check('掩码还没到时，UI 控件仍然可交互', () => {
+  const uiRects = [{ x: 0, y: 0, w: 50, h: 50 }]
+  const base = { mask: null, uiRects, winWidth: 100, winHeight: 100 }
+  assert.equal(hitTest({ ...base, x: 25, y: 25 }).interactive, true, '不能因为掩码没到就把输入条也穿透掉')
+  assert.equal(hitTest({ ...base, x: 75, y: 75 }).interactive, false)
+})
+
+check('掩码取样的坐标映射正确（窗口 200×100 → 掩码 20×10）', () => {
+  const data = new Uint8Array(20 * 10)
+  data[5 * 20 + 10] = 200 // 掩码 (10,5) 不透明 → 应映射到窗口 (100,50)
+  const mask = { width: 20, height: 10, data }
+  const base = { mask, uiRects: [], winWidth: 200, winHeight: 100 }
+  assert.equal(hitTest({ ...base, x: 100, y: 50 }).u, 10)
+  assert.equal(hitTest({ ...base, x: 100, y: 50 }).v, 5)
+  assert.equal(hitTest({ ...base, x: 100, y: 50 }).sampled, 200)
+  assert.equal(hitTest({ ...base, x: 100, y: 50 }).interactive, true)
+  assert.equal(hitTest({ ...base, x: 0, y: 0 }).sampled, 0)
+  // 坏矩形（NaN）不能把判定搞崩
+  assert.equal(
+    hitTest({ ...base, uiRects: [{ x: Number.NaN, y: 0, w: 10, h: 10 }], x: 5, y: 5 }).interactive,
+    false,
+  )
+})
+
+check('insideAnyRect 边界：闭区间', () => {
+  const rects = [{ x: 10, y: 10, w: 20, h: 20 }]
+  assert.equal(insideAnyRect(rects, 10, 10), true, '左上角算命中')
+  assert.equal(insideAnyRect(rects, 30, 30), true, '右下角算命中')
+  assert.equal(insideAnyRect(rects, 30.1, 30), false)
+  assert.equal(insideAnyRect(null, 10, 10), false, 'rects 不是数组时不能抛')
+})
 
 console.log(`\n${'─'.repeat(56)}`)
 console.log(`通过 ${passed} 项，失败 ${failed} 项`)

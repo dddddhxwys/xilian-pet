@@ -66,6 +66,27 @@ function maskSource() {
  * 取块内**最大值**而不是平均值 —— 宁可判成不透明，也不能漏掉细小的可点区域
  * （比如发梢、绳子的细线）。
  */
+/**
+ * 当前「可见且需要接住鼠标」的 UI 区域（CSS px，相对视口）。
+ *
+ * 为什么要送给主进程：点击穿透的判定**在主进程**（见 main.js 顶部 —— 绕开 Electron 在
+ * Windows 上的鼠标转发 bug），而主进程手上只有 Live2D 的 alpha 掩码，
+ * **它不知道输入条 / 气泡这些 HTML 控件**。
+ * 于是"控件在、但角色轮廓没盖住"的位置会被判成透明 → 穿透 → 按钮点不动。
+ * 实测症状：输入条右侧的「打断」点不到（那儿没有角色像素），
+ * 而「派活」恰好压在角色上所以能点 —— 很迷惑人。
+ */
+function visibleUiRects() {
+  const rects = []
+  for (const el of [composer, bubble]) {
+    if (el.hidden) continue
+    const r = el.getBoundingClientRect()
+    if (r.width <= 0 || r.height <= 0) continue
+    rects.push({ x: r.left, y: r.top, w: r.width, h: r.height })
+  }
+  return rects
+}
+
 function publishMask() {
   if (!alphaMap || !mapW || !mapH) return
   const step = Math.max(1, Math.ceil(Math.max(mapW, mapH) / 160))
@@ -90,7 +111,7 @@ function publishMask() {
       out[y * w + x] = max
     }
   }
-  api.sendMask(w, h, out)
+  api.sendMask(w, h, out, visibleUiRects())
 }
 
 async function buildAlphaMap() {
@@ -405,7 +426,7 @@ async function startLive2D() {
     api.log(`alpha 掩码构建失败：${error.message} → 退化为整窗可交互`)
     // 送一张全不透明的掩码给主进程，等价于"整窗可交互"，避免完全点不到
     const side = 8
-    api.sendMask(side, side, new Uint8Array(side * side).fill(255))
+    api.sendMask(side, side, new Uint8Array(side * side).fill(255), visibleUiRects())
   }
 
   // Live2D 模型会形变，掩码要跟着刷新（250ms 一次，开销可忽略）

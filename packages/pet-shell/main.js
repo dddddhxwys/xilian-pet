@@ -13,6 +13,7 @@
 import { app, BrowserWindow, globalShortcut, ipcMain, protocol, screen } from 'electron'
 import http from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { hitTest } from './hit-test.js'
 import { readFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -322,6 +323,15 @@ const HIT_TEST_MS = 16 // ≈60Hz，足够跟手
 const HIT_ALPHA_THRESHOLD = 24
 /** 渲染端送来的 alpha 掩码（已降采样，够用又省 IPC） */
 let alphaMask = null
+/**
+ * 渲染端送来的 HTML 控件矩形（输入条 / 气泡，CSS px 相对视口）。
+ *
+ * ⚠️ 没有它就会出这个 bug：命中测试只看 Live2D 的 alpha 掩码，
+ * 而输入条、气泡是 HTML —— 掩码里根本没有它们。于是"控件在、但角色轮廓没盖住"的位置
+ * 被判成透明 → 穿透 → 按钮点不动（实测：输入条右侧的「打断」点不到，
+ * 而压在角色上的「派活」能点，很迷惑人）。
+ */
+let uiRects = []
 /** 拖拽中必须一直保持可交互：否则鼠标快速移出角色时窗口会"甩掉"拖拽 */
 let draggingNow = false
 let lastIgnore = null
@@ -348,35 +358,32 @@ function startHitTestLoop(win) {
       applyIgnore(win, false)
       return
     }
-    if (!alphaMask) {
-      applyIgnore(win, true)
-      return
-    }
     const p = screen.getCursorScreenPoint()
     const b = win.getBounds()
     const x = p.x - b.x
     const y = p.y - b.y
-    let opaque = false
-    let u = -1
-    let v = -1
-    let sampled = -1
-    if (x >= 0 && y >= 0 && x < b.width && y < b.height) {
-      u = Math.floor((x / b.width) * alphaMask.width)
-      v = Math.floor((y / b.height) * alphaMask.height)
-      if (u >= 0 && v >= 0 && u < alphaMask.width && v < alphaMask.height) {
-        sampled = alphaMask.data[v * alphaMask.width + u]
-        opaque = sampled > HIT_ALPHA_THRESHOLD
-      }
-    }
+    // 判定统一走 hit-test.js 的纯函数（可自测）：
+    // ① UI 控件（输入条/气泡）—— HTML，不在 alpha 掩码里；漏了它「打断」会被穿透
+    // ② alpha 掩码 —— Live2D 实际渲染出来的不透明区域
+    const hit = hitTest({
+      mask: alphaMask,
+      uiRects,
+      winWidth: b.width,
+      winHeight: b.height,
+      x,
+      y,
+      threshold: HIT_ALPHA_THRESHOLD,
+    })
     // PET_HIT_DEBUG=1 时每秒打一行，肉眼可核对坐标换算对不对
     if (debug && Date.now() - lastDebugAt > 1000) {
       lastDebugAt = Date.now()
       log(
         `[命中] 光标(${p.x},${p.y}) 窗口(${b.x},${b.y} ${b.width}×${b.height}) ` +
-          `局部(${x},${y}) 掩码(${u},${v}) alpha=${sampled} → ${opaque ? '可交互' : '穿透'}`,
+          `局部(${x},${y}) 掩码(${hit.u},${hit.v}) alpha=${hit.sampled} ui=${hit.hitUi ? '中' : '-'} ` +
+          `→ ${hit.interactive ? '可交互' : '穿透'}`,
       )
     }
-    applyIgnore(win, !opaque)
+    applyIgnore(win, !hit.interactive)
   }, HIT_TEST_MS)
   timer.unref?.()
   return timer
@@ -526,6 +533,10 @@ app.whenReady().then(async () => {
     if (mask && mask.width > 0 && mask.height > 0 && mask.data?.length === mask.width * mask.height) {
       if (!alphaMask) log(`收到 alpha 掩码 ${mask.width}×${mask.height}，命中测试交给主进程轮询光标`)
       alphaMask = mask
+      // UI 矩形与掩码同一批送来（渲染端每 250ms 刷一次），一起更新
+      uiRects = (Array.isArray(mask.uiRects) ? mask.uiRects : []).filter(
+        (r) => r && [r.x, r.y, r.w, r.h].every((v) => Number.isFinite(v)),
+      )
     }
   })
   ipcMain.on('pet:dragging', (_event, value) => {
