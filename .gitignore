@@ -21,6 +21,8 @@ tools/_crawl-*.mjs
 .idea/
 Thumbs.db
 desktop.ini
+# Windows 快捷方式（含绝对路径，属于本机产物）
+*.lnk
 
 # 第三方桌宠/模型包（Live2DViewerEX 等）
 # 这类文件是他人作品或加密商业格式，不属于本项目，禁止入库/分发
