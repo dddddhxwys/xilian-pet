@@ -283,6 +283,13 @@ api.onLink((link) => {
 })
 
 api.onFrame((frame) => {
+  // 任何一帧只要带了主会话 id 就记住它。
+  // 为什么不能只在 snapshot 里学：DSH 刚重启时 /state 是空的，窗口可能"先连上、会话后出现"，
+  // 那样 snapshot 里没有会话、sessionId 会一直是 undefined → 派活 503。
+  // 主会话由插件算（以最近活跃为准），这里只管记住。
+  if (typeof frame.primarySessionId === 'string' && frame.primarySessionId !== '') {
+    latestSessionId = frame.primarySessionId
+  }
   switch (frame.type) {
     case 'hello':
       api.log(`hello protocol=${frame.protocol}`)
@@ -290,9 +297,6 @@ api.onFrame((frame) => {
     case 'snapshot':
       setState(frame.state)
       setBadge(frame.unread ?? 0)
-      if (Array.isArray(frame.sessions) && frame.sessions.length > 0) {
-        latestSessionId = frame.sessions[frame.sessions.length - 1].sessionId
-      }
       break
     case 'state':
       setState(frame.state)

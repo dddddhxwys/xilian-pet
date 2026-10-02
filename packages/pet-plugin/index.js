@@ -27,6 +27,7 @@ import {
   normalizeSessionEvent,
   normalizeStreamChunk,
   pendingApprovalCount,
+  primarySessionId,
   reduceAgentError,
   reduceAgentStatus,
   reducePetEvent,
@@ -56,7 +57,7 @@ export const name = 'xilian-pet'
  *
  * 这个坑的真实代价：A6「双击派活」一直报
  * `派活失败 (500)：cannot get property "agents" without inject`；
- * 而 `resolveAgent()` 里那句 `agents === undefined` 的兜底**根本执行不到** ——
+ * 而 `resolveAgentTarget()` 里那句 `agents === undefined` 的兜底**根本执行不到** ——
  * 异常在"取属性"那一步就抛了。
  *
  * 它还解释了"自测 62 项全绿、真机却失败"：mock ctx 把 `agents` 当普通属性发，
@@ -74,7 +75,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 7
+const CODE_REVISION = 8
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -190,6 +191,13 @@ export function apply(ctx, config = {}) {
   const startedAt = Date.now()
 
   function publish(frame) {
+    // 统一补上"当前主会话"再发出去。
+    // 为什么需要：渲染端只在 SSE `snapshot` 里学到 sessionId，而 DSH 刚重启时 /state 是空的
+    // —— 窗口先连上、会话后出现，它手上的 sessionId 就一直是 undefined（派活必失败）。
+    // 在这里补，渲染端不必自己猜，也能从任何一帧里学会。
+    if (frame !== null && typeof frame === 'object' && (frame.type === 'state' || frame.type === 'control')) {
+      frame = { ...frame, primarySessionId: primarySessionId(state) ?? null }
+    }
     const line = sseData(frame)
     for (const res of connections) {
       try {
@@ -415,15 +423,40 @@ export function apply(ctx, config = {}) {
 
   // ── 3. 反向操控 ────────────────────────────────────────────────────
   /**
-   * ⚠️ 下面这行 `ctx.agents` 能成立，**前提是顶部 `inject` 里声明了 `'agents'`**。
+   * ⚠️ `ctx.agents` 能成立，**前提是顶部 `inject` 里声明了 `'agents'`**。
    * 少了声明不会拿到 undefined，而是当场抛 `cannot get property "agents" without inject`。
-   * 所以紧接着那句 undefined 兜底，只在"服务已注入、但没有这个 sessionId"时才轮得到。
+   *
+   * 注册表**以 sessionId 为键**（已从 asar 核实：typert 的 agent lookup 用
+   * `wireTypeSymbol: dsh-session/types#SessionId`、`resolve: (sessionId) => this.get(sessionId)`）。
+   *
+   * 拿不到目标时的兜底（A6 第二次真机失败的原因）：
+   * 渲染端只在 SSE `snapshot` 里学到 sessionId，而 **DSH 刚重启时 /state 是空的** ——
+   * 窗口先连上、后才有会话，于是它手上的 sessionId 一直是 undefined，派活必 503。
+   * 会话清单本来就只有插件知道，所以这里由插件兜底：默认 id 不行就退到
+   * `primarySessionId(state)`（最近活跃的会话）。
    */
-  function resolveAgent(sessionId) {
+  function resolveAgentTarget(sessionId) {
     const agents = ctx.agents
-    if (agents === undefined || typeof agents.get !== 'function') return undefined
-    if (sessionId === undefined) return undefined
-    return agents.get(sessionId)
+    if (agents === undefined || typeof agents.get !== 'function') {
+      return { agent: undefined, requested: sessionId ?? null, reason: 'service-missing' }
+    }
+    const fallbackId = primarySessionId(state)
+    const tried = []
+    for (const candidate of [sessionId, fallbackId]) {
+      if (typeof candidate !== 'string' || candidate === '' || tried.includes(candidate)) continue
+      tried.push(candidate)
+      const agent = agents.get(candidate)
+      if (agent !== undefined) {
+        return { agent, sessionId: candidate, requested: sessionId ?? null, fallbackUsed: candidate !== sessionId }
+      }
+    }
+    return {
+      agent: undefined,
+      requested: sessionId ?? null,
+      tried,
+      knownSessions: Object.values(state.sessions).map((s) => s.sessionId),
+      reason: tried.length === 0 ? 'no-session-known' : 'not-found',
+    }
   }
 
   /**
@@ -504,13 +537,18 @@ export function apply(ctx, config = {}) {
       const body = await readJsonBody(req)
       const text = typeof body.text === 'string' ? body.text.trim() : ''
       if (text === '') return sendJson(res, 400, { error: 'empty-text' })
-      const agent = resolveAgent(body.sessionId)
-      if (agent === undefined) {
+      const target = resolveAgentTarget(body.sessionId)
+      if (target.agent === undefined) {
         return sendJson(res, 503, {
           error: 'no-agent',
-          message: 'ctx.agents.get(sessionId) 不可用或 sessionId 缺失',
+          message: '没有可派活的 agent（渲染端未给 sessionId，且插件也没有已知会话）',
+          requestedSessionId: target.requested,
+          triedSessionIds: target.tried ?? [],
+          knownSessions: target.knownSessions ?? [],
+          reason: target.reason,
         })
       }
+      const agent = target.agent
       // 一定会拿到工厂：官方解析不到就用内置等价实现（见 getUserMessageFactory），不再 503
       const createUserMessage = await getUserMessageFactory()
       const followup = agent.followup ?? agent.steer
@@ -520,8 +558,13 @@ export function apply(ctx, config = {}) {
       // 照抄官方调用点：content 是文本块数组，source.kind = 'user'
       const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
       await followup.call(agent, message)
-      publish({ type: 'control', action: 'prompt', sessionId: body.sessionId, ok: true })
-      return sendJson(res, 200, { ok: true, messageId: message?.id })
+      publish({ type: 'control', action: 'prompt', sessionId: target.sessionId, ok: true })
+      return sendJson(res, 200, {
+        ok: true,
+        messageId: message?.id,
+        sessionId: target.sessionId,
+        fallbackUsed: target.fallbackUsed === true,
+      })
     },
     `xilian-pet: POST ${pathPrefix}/prompt`,
   )
@@ -531,10 +574,18 @@ export function apply(ctx, config = {}) {
     `${pathPrefix}/interrupt`,
     async (req, res) => {
       const body = await readJsonBody(req)
-      const agent = resolveAgent(body.sessionId)
-      if (agent === undefined) {
-        return sendJson(res, 503, { error: 'no-agent', message: 'ctx.agents.get(sessionId) 不可用' })
+      const target = resolveAgentTarget(body.sessionId)
+      if (target.agent === undefined) {
+        return sendJson(res, 503, {
+          error: 'no-agent',
+          message: '没有可打断的 agent（渲染端未给 sessionId，且插件也没有已知会话）',
+          requestedSessionId: target.requested,
+          triedSessionIds: target.tried ?? [],
+          knownSessions: target.knownSessions ?? [],
+          reason: target.reason,
+        })
       }
+      const agent = target.agent
       const cancel = agent.cancel ?? agent.interrupt ?? agent.abort
       if (typeof cancel !== 'function') {
         return sendJson(res, 503, { error: 'no-cancel', message: 'agent 未暴露 cancel/interrupt/abort' })
@@ -542,8 +593,8 @@ export function apply(ctx, config = {}) {
       // 官方签名：cancel(cause: AgentCancelCause, options?)；
       // AgentCancelCause = { kind: 'user' } | { kind: 'parent' } | { kind: 'hook'; reason } | { kind: 'disposed' }
       await cancel.call(agent, { kind: 'user' })
-      publish({ type: 'control', action: 'interrupt', sessionId: body.sessionId, ok: true })
-      return sendJson(res, 200, { ok: true })
+      publish({ type: 'control', action: 'interrupt', sessionId: target.sessionId, ok: true })
+      return sendJson(res, 200, { ok: true, sessionId: target.sessionId, fallbackUsed: target.fallbackUsed === true })
     },
     `xilian-pet: POST ${pathPrefix}/interrupt`,
   )

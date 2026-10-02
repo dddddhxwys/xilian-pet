@@ -256,7 +256,9 @@ function sessionOf(state, sessionId, now) {
 }
 
 function commit(state, session, sessionId, now, extraFrames = []) {
-  const next = { ...state, sessions: { ...state.sessions, [sessionId]: session } }
+  // 打"最近活跃"点 —— primarySessionId() 靠它挑派活目标
+  const stamped = { ...session, lastActivityAt: now }
+  const next = { ...state, sessions: { ...state.sessions, [sessionId]: stamped } }
   const evaluated = evaluate(next, now)
   const frames = [...extraFrames, ...evaluated.frames]
   if (frames.length === 0) {
@@ -427,12 +429,38 @@ export function reduceStreamChunk(state, chunk, now = 0) {
   return { state: evaluated.state, frames }
 }
 
+/**
+ * 挑出"当前最相关"的会话 id —— 派活/打断在渲染端没给 sessionId（或给的已失效）时的兜底目标。
+ *
+ * 判据以**最近活跃**为主，而不是状态优先级：桌宠是给"你正在用的那个 agent"派活，
+ * 而按优先级挑会挑到一个早已结束的 `done` 会话（`done` 优先级 3 > `running` 1）
+ * —— 那等于把活派给一个已经结束的会话。活跃时间打平时才用状态优先级兜底。
+ *
+ * `lastActivityAt` 由 commit() 打点；极老的会话记录没有该字段时退回 `since`。
+ */
+export function primarySessionId(state) {
+  const list = Object.values(state.sessions).filter(
+    (s) => typeof s.sessionId === 'string' && s.sessionId !== '' && s.sessionId !== 'unknown',
+  )
+  if (list.length === 0) return undefined
+  const activity = (s) => s.lastActivityAt ?? s.since ?? 0
+  const best = list.reduce((a, b) => {
+    const ta = activity(a)
+    const tb = activity(b)
+    if (ta !== tb) return tb > ta ? b : a
+    return (STATE_PRIORITY[b.state] ?? 0) > (STATE_PRIORITY[a.state] ?? 0) ? b : a
+  })
+  return best.sessionId
+}
+
 export function snapshot(state) {
   return {
     state: state.current,
     unread: unreadCount(state),
     pendingApprovals: pendingApprovalCount(state),
     seq: state.seq,
+    // 渲染端拿不到 sessionId 时的兜底目标（也是 /prompt、/interrupt 的兜底目标）
+    primarySessionId: primarySessionId(state) ?? null,
     sessions: Object.values(state.sessions).map((s) => ({
       sessionId: s.sessionId,
       state: s.state,

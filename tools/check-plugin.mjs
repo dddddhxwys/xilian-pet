@@ -25,6 +25,7 @@ import {
   normalizeSessionEvent,
   normalizeStreamChunk,
   pendingApprovalCount,
+  primarySessionId,
   reduceAgentError,
   reduceAgentStatus,
   reducePetEvent,
@@ -401,6 +402,53 @@ check('reminders.enabled=false 时一条都不发', () => {
   assert.equal(r.fires.length, 0)
 })
 
+check('primarySessionId 取最近活跃的会话（而不是优先级更高的旧 done）', () => {
+  // 为什么这条重要：按状态优先级挑会挑到 done（优先级 3 > running 1），
+  // 那等于把活派给一个早就结束的会话。
+  assert.equal(
+    primarySessionId({
+      sessions: {
+        old: { sessionId: 'sess-done', state: 'done', lastActivityAt: 1000 },
+        live: { sessionId: 'sess-live', state: 'running', lastActivityAt: 9000 },
+      },
+    }),
+    'sess-live',
+    '最近活跃的才是派活目标',
+  )
+  // 活跃时间打平时才用状态优先级兜底
+  assert.equal(
+    primarySessionId({
+      sessions: {
+        a: { sessionId: 'a', state: 'running', lastActivityAt: 5 },
+        b: { sessionId: 'b', state: 'done', lastActivityAt: 5 },
+      },
+    }),
+    'b',
+  )
+  // 没有 lastActivityAt 的老记录退回 since
+  assert.equal(
+    primarySessionId({
+      sessions: {
+        a: { sessionId: 'a', state: 'running', since: 1 },
+        b: { sessionId: 'b', state: 'running', since: 2 },
+      },
+    }),
+    'b',
+  )
+  // 过滤掉 unknown / 空 / 无会话
+  assert.equal(primarySessionId({ sessions: { u: { sessionId: 'unknown', lastActivityAt: 9 } } }), undefined)
+  assert.equal(primarySessionId({ sessions: { e: { sessionId: '', lastActivityAt: 9 } } }), undefined)
+  assert.equal(primarySessionId({ sessions: {} }), undefined)
+})
+
+check('commit 会打 lastActivityAt 时间戳（primarySessionId 的依据）', () => {
+  // 走真实归一化路径（normalizeSessionEvent 产出的字段是 kind，不是 type）
+  const ev = normalizeSessionEvent({ id: 's1' }, { type: 'turn/start', seq: 1 })
+  assert.ok(ev !== null, 'turn/start 应能被归一化')
+  const s = reducePetEvent(createPetState(), ev, 4242).state
+  assert.equal(s.sessions.s1.lastActivityAt, 4242)
+})
+
 // ─────────────────────────────────────────────────────────────
 console.log('\n[2] 插件契约（mock ctx）')
 
@@ -730,6 +778,87 @@ await checkAsync('拿不到官方 createUserMessage → 用内置等价实现派
     assert.equal(health.messageFactory, 'builtin', '自测环境里解析不到官方包，应报告 builtin')
     assert.ok(Array.isArray(health.messageFactoryAttempts) && health.messageFactoryAttempts.length > 0,
       '必须留下候选失败原因，便于真机诊断')
+  } finally {
+    await new Promise((resolve) => srv.close(resolve))
+    teardown()
+  }
+})
+
+await checkAsync('渲染端没给 sessionId → 插件兜底派给最近活跃的会话（复现 A6 第二次真机失败）', async () => {
+  // 真实场景：DSH 刚重启时 /state 是空的，窗口"先连上、会话后出现"，
+  // 渲染端手上的 sessionId 是 undefined —— 旧代码直接 503 no-agent。
+  const localCalls = []
+  const fallbackAgent = { followup: async (m) => localCalls.push(['followup', m]) }
+  const m = createMockCtx({ agents: (id) => (id === 'sess-live' ? fallbackAgent : undefined) })
+  const teardown = apply(m.ctx, {
+    pathPrefix: '/xilian-pet',
+    minHoldMs: 0,
+    createUserMessage: stubCreateUserMessage,
+  })
+  // 让插件通过事件认识会话（模拟"会话在窗口连上之后才出现"）
+  for (const fn of m.listeners.get('session/event') ?? []) fn({ id: 'sess-live' }, { type: 'turn/start', seq: 1 })
+
+  const srv = http.createServer((req, res) => {
+    const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
+    if (route === undefined) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    route.handler(req, res)
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  const local = `http://127.0.0.1:${srv.address().port}`
+  try {
+    const res = await fetch(`${local}/xilian-pet/prompt`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: '派个活' }), // 刻意不带 sessionId
+    })
+    assert.equal(res.status, 200, '应兜底成功，而不是 503 no-agent')
+    const body = await res.json()
+    assert.equal(body.sessionId, 'sess-live', '要报告实际派给了哪个会话')
+    assert.equal(body.fallbackUsed, true)
+    assert.equal(localCalls.length, 1)
+
+    // /state 也要暴露主会话，供渲染端学习（否则窗口永远学不到）
+    const st = await (await fetch(`${local}/xilian-pet/state`)).json()
+    assert.equal(st.primarySessionId, 'sess-live')
+  } finally {
+    await new Promise((resolve) => srv.close(resolve))
+    teardown()
+  }
+})
+
+await checkAsync('彻底没有会话时，503 必须带诊断信息（不再是一句不可诊断的话）', async () => {
+  const m = createMockCtx({ agents: () => undefined })
+  const teardown = apply(m.ctx, {
+    pathPrefix: '/xilian-pet',
+    minHoldMs: 0,
+    createUserMessage: stubCreateUserMessage,
+  })
+  const srv = http.createServer((req, res) => {
+    const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
+    if (route === undefined) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    route.handler(req, res)
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  try {
+    const res = await fetch(`http://127.0.0.1:${srv.address().port}/xilian-pet/prompt`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: '派个活' }),
+    })
+    assert.equal(res.status, 503)
+    const body = await res.json()
+    assert.equal(body.error, 'no-agent')
+    assert.equal(body.reason, 'no-session-known')
+    assert.deepEqual(body.knownSessions, [])
+    assert.deepEqual(body.triedSessionIds, [])
   } finally {
     await new Promise((resolve) => srv.close(resolve))
     teardown()
