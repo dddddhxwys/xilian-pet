@@ -119,10 +119,23 @@ DSH Host 插件 (Node, 零外部依赖)
    → **2026-09-29 已按修订决策落地（改为独立 Electron 窗、不写 client 插件）**：Host 插件（纯 ESM、零依赖、零构建）+ Electron 透明置顶窗 + 程序化占位素材 + 28 项自测全部通过。
    ⚠️ 尚未装进 profile（沙箱写边界）→ **A1/A2 待验证**；窗口未实际启动（Electron 下载中）→ **A3/A8/A9 待验证**。见 `README.md` §六。
 3. **事件层**：`session/event` + `agent/assistant-stream` 归一化 → `PetReducer` 纯函数 + 单测（Node 内置 `node --test`，零依赖）；跑通 A4/A5。
-4. **Live2D 渲染**：引入 Cubism Core + pixi + pixi-live2d-display（走官方示例模型，留意许可），实现状态→动作/表情映射；命中测试 alpha 掩码；跑通 A9/A10。
-   → **2026-09-30 决定：走「A 档」完整 Live2D**（拆件 + 补绘 + 绑定 + 物理），不使用仅做整体形变的低成本中间档。
-   素材现状（`xilian_art_assets_export.zip`，35 条目 / 36 MB）：6 张成品 sprite 均为**同一坐姿的 Q 版**，其中 `idle-open` 与 `idle-blink` 只差眼睛睁闭 —— 直接给出眨眼参数两端。
-   转 Live2D 的实际工作量在**拆件与遮挡补绘**（约占 60%~70%），不在"做动画"；目录/部件清单、三类动画（程序化 / motions / 需新画）与状态机映射见 `README.md`。
+4. **Live2D 渲染**：引入 Cubism Core + pixi + pixi-live2d-display，实现状态→动作/表情映射；命中测试 alpha 掩码；跑通 A9/A10。
+   → **2026-10-02 变更：不再自研模型，改用现成授权模型。**
+   经调研找到 **B站 @是依七哒** 的「秋千版」昔涟 Live2D 模型，作者要求**注明用途 + 不得收费**，已获授权。
+   **原「A 档约稿」方案冻结**（`docs/Live2D约稿单.md` 转为暂缓备用，将来想换自研形象可直接启用）。
+
+   ⚠️ **技术选型被版本钉死**（实测，见 `README.md` 第六节）：
+
+   | 项 | 结论 |
+   |---|---|
+   | 模型 | **Cubism 5.0**（`.moc3` 头 `4D 4F 43 33 05`，版本号 5） |
+   | Core 支持上限 | 官方最新 Core 定义 `MocVersion_50 = 5` → **刚好支持** |
+   | 因此 Must | `pixi.js@^7` + **`pixi-live2d-display@0.5.0-beta`** + 官方最新 Cubism Core |
+   | 陷阱 | npm 的 `latest` 是 **0.4.0（2022年，配 PixiJS v6，且完全不感知 moc3 版本）**，绝不能装到它 |
+   | 参考实现 | `Playa-Cyrene/Cyrene-Agent`（642★，MIT）用的正是这个组合 |
+
+   模型已修复三处问题（`tools/fix-live2d-model.mjs`）：补 `Motions`/`Expressions` 声明（原清单未挂，
+   不改则动作表情全不加载）、补 `LipSync` 分组、纹理 8192→2048。
 5. **双向操控**（差异点 1）：气泡输入 → `followup()`；中断按钮 → `cancel()`；跑通 A6。
 6. **主动提醒**（差异点 2）：审批/提问积压、待办到点、久坐、本轮花销 → 可配置概率门 + 免打扰时段；跑通 A7。
 7. **Electron 桌面窗**：透明置顶 + 点击穿透 + 拖动 + 单实例；跑通 A8。

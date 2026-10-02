@@ -141,10 +141,43 @@ git -c http.sslBackend=openssl ls-remote https://gitee.com/...
 | **B** 入库（只入必需） | 只提交 5 张原画 + 6 张成品，剔除绿幕/历史/预览 | ~9.3 MB（且随迭代只涨） | ✅ 能跑，能看真角色 |
 | **C** 独立素材包（**推荐**） | 仓库不放素材；素材仍以 `xilian_art_assets_export.zip` 这种独立包分发 | **0 MB** | ✅ 下载素材包即可，**声明随包走** |
 
-**推荐 C 的理由**：你已经有一个形态完整的导出包（带 `catalog.csv` / 预览图 / README / SHA256），它本身就是一个**可分发单元**。这样代码仓库保持轻量、素材独立版本化、法律声明跟素材一起走最自然，而且**不用改任何现有文件**。
+**推荐 C 的理由**：你已经有一个形态完整的导出包（带 `catalog.csv` / 预览图 / README / SHA256），它本身就是一个**可分发单元**。这样代码仓库保持轻量、素材独立版本化、法律声明跟素材一起走最自然。
 
 > 素材本地路径：`E:\xilian_desktop_pet\art_assets_export\`
 > 原始项目（Python + PySide6 旧桌宠）：`E:\xilian_desktop_pet\`，交接说明见 `昔涟桌宠项目交接说明.md`
+
+### 已定：Live2D 模型（2026-10-02 接入）
+
+角色形象改用 **B站 @是依七哒** 制作的「秋千版」昔涟 Live2D 模型。
+
+| 项 | 内容 |
+|---|---|
+| 模型 | `Cyrene`（**Cubism 5.0**，`.moc3` 版本号 5） |
+| 授权 | **注明用途 + 不得收费**（作者要求）；不进 MIT 范围；**入库禁止** |
+| 署名 | 见 [`NOTICE.md`](NOTICE.md) 第四节（**必须保留**） |
+| 位置 | `assets/live2d/Cyrene/`（整个 `assets/live2d/` 已 gitignore） |
+| 体积 | 纹理降采样后 **1.38 MB**（原 8.86 MB） |
+
+**接入时必须做的三处修复**（原始模型有问题，见 `tools/fix-live2d-model.mjs`）：
+
+1. **补 `Motions` / `Expressions` 声明** —— 原 `model3.json` 只有 394 字节，没挂动作和表情，
+   不改的话运行时 **4 个动作 + 13 个表情一个都不会加载**
+2. **补 `LipSync` 分组** —— 原为空，导致说话口型不可用
+3. **纹理 8192 → 2048** —— 显示仅约 250px 高，8192 超标 30 倍
+
+> ⚠️ 降采样**不能直接 resize**：该纹理是**直通 alpha**，且 5680 万个全透明像素里存了垃圾 RGB。
+> 直接四通道重采样会把这些颜色插值进边缘 → **黑边**（实测 24.5% 的边缘像素差异 > 120）。
+> 正确做法是 **预乘 → LANCZOS → 反预乘**，见 `tools/downsample-texture.py`。
+
+> ⚠️ 模型**未声明 `HitAreas`**，不能用 `model.hitTest()`，点击命中需自行实现 alpha 掩码测试。
+
+### 相关工具
+
+| 工具 | 用途 |
+|---|---|
+| `tools/inspect-live2d-model.mjs` | 解析任意 Cubism 模型：参数/表情/动作/物理/清单完整性 |
+| `tools/fix-live2d-model.mjs` | 把"文件夹里有但清单没挂"的动作表情接上；补空分组 |
+| `tools/downsample-texture.py` | 纹理降采样（预乘 alpha 正确处理） |
 
 ## 七、Phase 0 骨架：怎么跑
 

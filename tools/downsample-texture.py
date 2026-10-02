@@ -2,14 +2,21 @@
 """
 把 Cubism 模型的纹理降采样到指定尺寸，并同步改 model3.json 的纹理路径。
 
-为什么需要：很多模型的纹理是 8192×8192，但桌宠显示尺寸只有 250px 左右 ——
-纹理超标 30 倍，白吃显存和加载时间。降到 2048 仍有 8 倍余量。
+⚠️ 为什么不能"直接 resize"（我第一版就是这么写的，踩了坑）：
+   很多纹理会**在全透明像素里存垃圾 RGB**（本模型 355 万个透明像素里
+   355 万个 RGB 非零）。直通 alpha 下四通道独立重采样，会把那些垃圾颜色
+   插值进**有 alpha 的边缘像素** → 角色四周出现黑边/彩边。
+
+   正确顺序：**预乘 alpha → 重采样 → 反预乘**
+     · 预乘会把全透明像素的 RGB 归零（A=0 ⇒ RGB=0），垃圾自然消失
+     · 线性重采样在预乘空间下才是数学正确的
+     · 反预乘回直通 alpha，与原图的 alpha 约定保持一致
 
 要点：
-  · 用 LANCZOS 重采样（RGBA 四通道独立处理；Cubism 纹理为预乘 alpha，
-    线性重采样在预乘空间下是正确的，不会产生黑边）
-  · 全透明像素的 RGB 归零，避免边缘杂色
+  · LANCZOS 重采样
+  · 输出保持**直通 alpha 且全透明像素 RGB 归零**（与原始素材一致）
   · 目录名带尺寸（Cyrene.8192），降采样后同步改名并更新 model3.json
+  · 幂等：已是目标尺寸则跳过
 
 用法：
   python tools/downsample-texture.py <模型文件夹> [目标尺寸=2048]
@@ -19,6 +26,7 @@ import shutil
 import sys
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 # Windows 控制台默认是 GBK，直接 print emoji/中文会抛 UnicodeEncodeError。
@@ -28,6 +36,45 @@ try:
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
+
+
+def resize_straight_alpha(im: Image.Image, target: int) -> Image.Image:
+    """把直通 alpha 的图正确重采样到 target×target。
+
+    预乘 → LANCZOS → 反预乘。返回直通 alpha 的图（透明像素 RGB=0）。
+    """
+    arr = np.asarray(im.convert("RGBA")).astype(np.float32)
+    alpha = arr[..., 3:4] / 255.0
+
+    # ① 预乘：A=0 的像素 RGB 自动变 0，垃圾颜色在这一步被清除
+    premul = arr.copy()
+    premul[..., :3] *= alpha
+
+    # ② 在预乘空间重采样（线性滤波在此空间才是正确的）
+    small = np.asarray(
+        Image.fromarray(premul.round().clip(0, 255).astype(np.uint8), "RGBA").resize(
+            (target, target), Image.LANCZOS
+        )
+    ).astype(np.float32)
+
+    # ③ 反预乘回直通 alpha
+    sa = small[..., 3:4] / 255.0
+    out = np.zeros_like(small)
+    np.divide(small[..., :3], sa, out=out[..., :3], where=sa > 0)
+    out[..., :3] = np.clip(out[..., :3], 0, 255)
+    out[..., 3:4] = small[..., 3:4]
+    # 全透明像素 RGB 强制归零
+    out[sa[..., 0] == 0, :3] = 0
+    return Image.fromarray(out.round().clip(0, 255).astype(np.uint8), "RGBA")
+
+
+def fringe_stats(im: Image.Image) -> tuple[int, int]:
+    """返回（全透明像素数，其中 RGB 非零的数量）"""
+    arr = np.asarray(im.convert("RGBA"))
+    a = arr[..., 3]
+    transparent = int((a == 0).sum())
+    bad = int(((a == 0) & (arr[..., :3].max(axis=2) > 0)).sum())
+    return transparent, bad
 
 
 def main() -> int:
@@ -63,18 +110,10 @@ def main() -> int:
                 continue
 
             before = src.stat().st_size
-            im = im.convert("RGBA")
-            new = im.resize((target, target), Image.LANCZOS)
+            t_before, bad_before = fringe_stats(im)
+            new = resize_straight_alpha(im, target)
+            t_after, bad_after = fringe_stats(new)
 
-            # 全透明像素 RGB 归零
-            px = new.load()
-            for y in range(new.height):
-                for x in range(new.width):
-                    r, g, b, a = px[x, y]
-                    if a == 0 and (r or g or b):
-                        px[x, y] = (0, 0, 0, 0)
-
-            # 新目录名把尺寸标出来
             new_dir_name = f"{model_dir.name}.{target}"
             new_dir = model_dir / new_dir_name
             new_dir.mkdir(exist_ok=True)
@@ -83,8 +122,9 @@ def main() -> int:
             after = dst.stat().st_size
 
             print(f"· {rel}: {w}×{h} ({before/1048576:.1f} MB) → {target}×{target} ({after/1048576:.1f} MB)")
+            print(f"  透明像素 RGB 残留：{bad_before}/{t_before} → {bad_after}/{t_after}")
+            print(f"  重采样方式：预乘 → LANCZOS → 反预乘（避免透明区垃圾颜色污染边缘）")
 
-            # 删掉旧纹理目录（若是带尺寸后缀的独立目录）
             if src.parent != model_dir and src.parent.name.startswith(f"{model_dir.name}."):
                 shutil.rmtree(src.parent, ignore_errors=True)
                 print(f"  已删除旧目录 {src.parent.name}/")
@@ -94,10 +134,11 @@ def main() -> int:
 
     if changed:
         model3_path.write_text(json.dumps(data, ensure_ascii=False, indent="\t") + "\n", encoding="utf-8")
-        print(f"\n✅ 已更新 {model3_path.name} 的纹理路径：{textures}")
+        print(f"\n[OK] 已更新 {model3_path.name} 的纹理路径：{textures}")
     else:
-        print("\n✅ 无需改动")
+        print("\n[OK] 无需改动")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
