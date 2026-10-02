@@ -323,7 +323,12 @@ api.onFrame((frame) => {
       setState(frame.state)
       setBadge(frame.unread ?? 0)
       break
+    case 'activity':
+      // 活动摘要（"执行了命令""已完成分析"…）—— 气泡现在只显示这个，不显示 AI 正文
+      showBubble(frame.text)
+      break
     case 'stream':
+      // 老的逐字流：插件默认已不再推（bubbleMode: 'activity'），保留分支以防切回
       if (frame.sessionId !== undefined) latestSessionId = frame.sessionId
       showBubble(frame.text)
       break

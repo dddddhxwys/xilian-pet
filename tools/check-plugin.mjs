@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs'
 import { apply, inject as pluginInject } from '../packages/pet-plugin/index.js'
 import { hitTest, insideAnyRect } from '../packages/pet-shell/hit-test.js'
 import {
+  activityLabel,
   aggregate,
   createPetState,
   hasActivity,
@@ -448,6 +449,32 @@ check('commit 会打 lastActivityAt 时间戳（primarySessionId 的依据）', 
   assert.ok(ev !== null, 'turn/start 应能被归一化')
   const s = reducePetEvent(createPetState(), ev, 4242).state
   assert.equal(s.sessions.s1.lastActivityAt, 4242)
+})
+
+check('activityLabel：把事件压成一句人话（气泡不再灌 AI 正文）', () => {
+  assert.equal(activityLabel({ kind: 'turn/start' }), '开始处理新任务')
+  assert.equal(activityLabel({ kind: 'step/start' }), '分析中…')
+  assert.equal(activityLabel({ kind: 'tool/call', data: { name: 'pwsh' } }), '执行了命令')
+  assert.equal(activityLabel({ kind: 'tool/call', data: { name: 'read' } }), '读取了文件')
+  assert.equal(activityLabel({ kind: 'tool/call', data: { name: 'edit' } }), '修改了文件')
+  assert.equal(activityLabel({ kind: 'tool/call', data: { name: 'weird_tool' } }), '执行了 weird_tool')
+  assert.equal(activityLabel({ kind: 'tool/call', data: {} }), '执行了一步操作')
+  assert.equal(activityLabel({ kind: 'tool/result', data: {} }), '这一步完成了')
+  assert.equal(activityLabel({ kind: 'tool/result', data: { isError: true } }), '这一步失败了')
+  assert.equal(activityLabel({ kind: 'assistant/message', data: {} }), '已完成分析')
+  assert.equal(activityLabel({ kind: 'turn/end', data: { reason: { kind: 'completed' } } }), '这一轮完成了')
+  assert.equal(activityLabel({ kind: 'turn/end', data: { reason: { kind: 'error' } } }), '出错了')
+  assert.equal(activityLabel({ kind: 'turn/end', data: { reason: { kind: 'aborted' } } }), '已中断')
+  // 不值得打扰的一律 null（否则气泡又会变成刷屏）
+  assert.equal(activityLabel({ kind: 'request/header', data: {} }), null)
+  assert.equal(activityLabel({ kind: 'session-log-deepseek/delivery-accepted', data: {} }), null)
+  assert.equal(activityLabel(null), null)
+  assert.equal(activityLabel({}), null)
+  // 关键：正文绝不能被塞进摘要
+  assert.equal(
+    activityLabel({ kind: 'assistant/message', text: '很长很长的 AI 正文，不该出现在气泡里' }),
+    '已完成分析',
+  )
 })
 
 // ─────────────────────────────────────────────────────────────
@@ -1125,7 +1152,7 @@ await checkAsync('SSE：观测到 turn/start → 推出 running 状态帧', asyn
   assert.match(text, /"state":"running"/)
 })
 
-await checkAsync('SSE：assistant/stream → 推出 stream 帧', async () => {
+await checkAsync('SSE：默认不再把 AI 正文推进气泡（bubbleMode=activity）', async () => {
   const sse = await openSse(`${base}/xilian-pet/events`)
   await sse.readUntil((b) => b.includes('"snapshot"'), 3000)
   for (const fn of listeners.get('agent/assistant-stream'))
@@ -1133,9 +1160,22 @@ await checkAsync('SSE：assistant/stream → 推出 stream 帧', async () => {
       agent: { session: { id: 's1' } },
       frame: { type: 'chunk', index: 0, chunk: { type: 'text-delta', index: 0, text: '昔涟在写' } },
     })
-  const text = await sse.readUntil((b) => b.includes('"type":"stream"'), 3000)
+  // 等一小会儿，确认没有 stream 帧冒出来（用户反馈：AI 正文太多，看不清）
+  const text = await sse.readUntil(() => false, 400)
   sse.close()
-  assert.match(text, /昔涟在写/)
+  assert.doesNotMatch(text, /"type":"stream"/, '默认模式下 AI 正文不该进气泡')
+  assert.doesNotMatch(text, /昔涟在写/, '正文一个字都不该漏进气泡')
+})
+
+await checkAsync('SSE：工具调用 → 推 activity 摘要（"执行了命令"）', async () => {
+  const sse = await openSse(`${base}/xilian-pet/events`)
+  await sse.readUntil((b) => b.includes('"snapshot"'), 3000)
+  for (const fn of listeners.get('session/event') ?? [])
+    fn({ id: 's-act' }, { type: 'tool/call', seq: 9, data: { name: 'pwsh' } })
+  const text = await sse.readUntil((b) => b.includes('"type":"activity"'), 3000)
+  sse.close()
+  assert.match(text, /"type":"activity"/)
+  assert.match(text, /执行了命令/)
 })
 
 await checkAsync('GET /debug/shapes → 记录到原始事件形状样本（按 channel 分别限量）', async () => {

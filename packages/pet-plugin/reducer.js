@@ -81,6 +81,62 @@ export const TURN_END_STATE = {
   error: { state: 'error', unread: true },
 }
 
+/** 工具名 → 一句人话。桌宠气泡只显示这个，**不显示 AI 原文**（用户反馈：输出太多看不清）。 */
+const TOOL_LABELS = {
+  pwsh: '执行了命令',
+  shell: '执行了命令',
+  read: '读取了文件',
+  edit: '修改了文件',
+  write: '写了文件',
+  grep: '搜索了代码',
+  glob: '查找了文件',
+  list: '列了目录',
+  web_search: '联网搜索了',
+  web_fetch: '抓取了网页',
+  ask_user_question: '向你提了问题',
+  subagent: '派了子任务',
+  subagent_fork: '派了子任务',
+  goal: '更新了目标',
+}
+
+function toolLabel(name) {
+  if (typeof name !== 'string' || name === '') return '执行了一步操作'
+  return TOOL_LABELS[name.toLowerCase()] ?? `执行了 ${name}`
+}
+
+/**
+ * 把一条会话事件压成**一句人话**，供桌宠气泡使用。
+ * 返回 `null` = 这条事件不该打扰用户（例如流式正文、心跳类事件）。
+ *
+ * 为什么不直接把 AI 正文放进气泡：实测输出量太大，根本看不清（用户明确要求改掉）。
+ * 气泡只回答一个问题：**"它现在在干什么 / 干完什么了"**。
+ */
+export function activityLabel(ev) {
+  if (ev === null || typeof ev !== 'object') return null
+  const data = ev.data ?? {}
+  switch (ev.kind) {
+    case 'turn/start':
+      return '开始处理新任务'
+    case 'step/start':
+      return '分析中…'
+    case 'tool/call':
+      return toolLabel(data.name)
+    case 'tool/result':
+      return data.isError === true ? '这一步失败了' : '这一步完成了'
+    case 'assistant/message':
+      return '已完成分析'
+    case 'turn/end': {
+      const kind = data.reason?.kind
+      if (kind === 'error') return '出错了'
+      if (kind === 'aborted' || kind === 'interrupted') return '已中断'
+      return '这一轮完成了'
+    }
+    // 其余（含 request/header、各类 session-log 事件）都不值得打扰
+    default:
+      return null
+  }
+}
+
 export function createPetState(options = {}) {
   return {
     sessions: Object.create(null),

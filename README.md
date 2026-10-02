@@ -8,8 +8,8 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1566 行 / 外壳 9 文件 2452 行 / 工具 14 文件 2791 行，56 个提交 |
-| 自测 | `& $NODE tools\check-plugin.mjs` → **79 项全绿** |
+| 规模 | 插件 5 文件 1651 行 / 外壳 9 文件 2457 行 / 工具 14 文件 2831 行，57 个提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **81 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
 > 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
@@ -254,6 +254,26 @@ Electron 44.5.1
 | `question` | Scene[2] | question | 循环，要一直等回答 |
 | `done` | Scene[1] **只播一次** | happy | 演完**特效也撤** |
 | `error` | Scene[3] | reset | ⚠️ 模型**没有**"困扰"参数，靠 `ERROR_FACE` 手工凑眉毛 |
+
+### 气泡显示什么（活动摘要，**不显示 AI 正文**）
+
+用户反馈：把 AI 正文逐字灌进气泡，"输出太多，根本看不清"。
+现在气泡只回答一个问题 —— **它现在在干什么 / 刚干完什么**：
+
+| 事件 | 气泡文案 |
+|---|---|
+| `turn/start` | 开始处理新任务 |
+| `step/start` | 分析中… |
+| `tool/call`（`pwsh` / `shell`） | 执行了命令 |
+| `tool/call`（`read` / `edit` / `write` / `grep` / `glob` …） | 读取了文件 / 修改了文件 / 搜索了代码 … |
+| `tool/call`（未收录的工具） | 执行了 &lt;工具名&gt; |
+| `tool/result` | 这一步完成了（失败则"这一步失败了"） |
+| `assistant/message` | 已完成分析 |
+| `turn/end` | 这一轮完成了 / 出错了 / 已中断 |
+
+- 映射是**纯函数** `activityLabel()`（`reducer.js`），因此可自测；连续相同的摘要会去重，不刷屏。
+- AI 正文仍留在 `/state` 的 `tail` 里供诊断，**只是不再进气泡**。
+- 想回到旧的逐字流：配置 `bubbleMode: 'stream'`（`packages/pet-plugin/cordis.patch.yml`）。
 
 ### 三条特殊规则（都是实测踩出来的）
 
@@ -512,7 +532,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 |---|---|
 | **A6 双击派活 / 打断（复测）** | 真机连撞**五个** bug，都已修，但**都要重启 DSH 才生效**：① 500 `cannot get property "agents" without inject`；② 503 `no-message-factory`（裸包名解析不到宿主 `app.asar` 内的包）；③ 503 渲染端只在快照里学 sessionId（重启后为空）；④ 503 `ctx.agents.get()` 只找**活着的** agent，不活跃的会话要 `resolveAgent()` 恢复；⑤ 503 `no-session-known`（插件"知道哪些会话"全靠自己观测事件，**重启后有盲区**）。修订号 → **11**，并加了只读诊断 `GET /debug/agents` |
 | **A4 的"降回 idle"** | 一执行命令 agent 就是 running，回合内自证不了 |
-| **A5 气泡渲染端** | 插件侧 tail 有真实文本，但窗口里的气泡显示没从 UI 看过 |
+| **A5 气泡渲染端** | 原来显示 AI 正文（用户反馈"输出太多，看不清"），现改为**活动摘要**；窗口里的实际观感待确认 |
 | **A7 显示侧**（冒泡 + 跳转） | 通知帧已推送，跳转逻辑未做 |
 | 长时间稳定性 | 没跑过几小时 |
 | 多显示器 / DPI 缩放 | 没测过 |
@@ -525,7 +545,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | A2 | ~~设置页出现「桌宠配置」~~ **已砍掉** | ❌ 不适用：不做 GUI 内嵌，配置走 `packages/pet-plugin/cordis.patch.yml` |
 | A3 | **独立窗里出现宠物并待机动画**（已重定义） | ✅ 截图 + 参数采样（`Scene[3]` 待机在播） |
 | A4 | 真实会话事件驱动状态 | 🟡 四档切换已验证；降回 idle 未观察到 |
-| A5 | 逐字流进气泡 | 🟡 插件侧 ✅；渲染端未确认 |
+| A5 | **活动摘要进气泡**（2026-10-02 重定义） | 🟡 插件侧 ✅（`activity` 帧 + 自测）；渲染端待肉眼确认。原定义"逐字流进气泡"**已按用户要求废弃** |
 | A6 | 双击气泡派活 | 🟡 五处真机 bug 已修（500 `inject` 缺 `agents`；503 官方 `createUserMessage` 解析不到；503 渲染端没有 sessionId；503 `agents.get` 只找活 agent；503 插件重启后有会话盲区），**待重启复测** |
 | A7 | 审批积压主动提醒 | 🟡 插件侧 ✅；显示与跳转未做 |
 | A8 | Electron 透明置顶窗 | ✅ 可拖动、透明无边框 |
@@ -658,7 +678,7 @@ docs/
   Live2D约稿单.md                    委托说明（已暂缓，将来换自研形象可启用）
   screenshots/                      实机自检截图（含第三方角色，默认 gitignore）
 tools/
-  check-plugin.mjs                  插件自测（79 项断言，含外壳命中测试，不需要 DSH）
+  check-plugin.mjs                  自测（81 项断言，含外壳命中测试，不需要 DSH）
   tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）

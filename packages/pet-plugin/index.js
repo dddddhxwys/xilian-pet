@@ -20,6 +20,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import {
+  activityLabel,
   createPetState,
   hasActivity,
   normalizeAgentError,
@@ -83,7 +84,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 11
+const CODE_REVISION = 12
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -182,6 +183,15 @@ export function apply(ctx, config = {}) {
       : '/xilian-pet'
   const minHoldMs = Number.isFinite(config.minHoldMs) ? config.minHoldMs : 500
   const captureRawShapes = Number.isFinite(config.captureRawShapes) ? config.captureRawShapes : 20
+  /**
+   * 气泡显示什么：
+   *  - `'activity'`（默认）—— 只显示**一句人话**的活动摘要（"执行了命令""已完成分析"…），
+   *    见 reducer.js 的 activityLabel()。用户反馈：直接灌 AI 正文输出太多，根本看不清。
+   *  - `'stream'` —— 老的逐字流行为（把 AI 正文的尾巴放进气泡），留着调试用。
+   */
+  const bubbleMode = config.bubbleMode === 'stream' ? 'stream' : 'activity'
+  /** 上一次推给气泡的摘要（按会话去重，避免同一步骤刷屏） */
+  const lastActivity = new Map()
 
   // A7 主动提醒
   const reminderConfig = mergeReminderConfig(config.reminders)
@@ -251,9 +261,24 @@ export function apply(ctx, config = {}) {
       const result = reducePetEvent(state, ev, Date.now())
       state = result.state
       publishFrames(result.frames)
+      publishActivity(ev)
     } catch (error) {
       warn(`observe(session/event) failed: ${error?.message ?? error}`)
     }
+  }
+
+  /**
+   * 把事件压成一句活动摘要推给气泡（`bubbleMode: 'activity'` 时）。
+   * 去重：同一条摘要连着来（例如连续两次 tool/result）不重复推，省得刷屏。
+   */
+  function publishActivity(ev) {
+    if (bubbleMode !== 'activity') return
+    const text = activityLabel(ev)
+    if (text === null) return
+    const key = ev.sessionId ?? 'unknown'
+    if (lastActivity.get(key) === text) return
+    lastActivity.set(key, text)
+    publish({ type: 'activity', sessionId: key, text, kind: ev.kind })
   }
 
   /** 观测 agent/assistant-stream。真实签名是 ({ agent, frame }) 一个对象。 */
@@ -264,7 +289,11 @@ export function apply(ctx, config = {}) {
       if (chunk === null) return
       const result = reduceStreamChunk(state, chunk, Date.now())
       state = result.state
-      publishFrames(result.frames)
+      // activity 模式下**不把 AI 正文推进气泡**（那是用户明确要改掉的噪音）；
+      // 状态帧照发，tail 也只是留在 /state 里供诊断。
+      publishFrames(
+        bubbleMode === 'stream' ? result.frames : result.frames.filter((f) => f.type !== 'stream'),
+      )
     } catch (error) {
       warn(`observe(assistant-stream) failed: ${error?.message ?? error}`)
     }
