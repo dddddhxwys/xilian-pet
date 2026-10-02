@@ -45,18 +45,32 @@ let unread = 0
 let live2dActive = false
 let maskTimer = null
 
+// live2d.js 是 ES 模块，由启动流程动态 import（见文件末尾）。
+// 用动态 import 是刻意的：静态 import 一旦失败会连本文件都不执行，降级就没了。
+// 命名上刻意**不叫** setState/fit 之类 —— 本文件已有同名函数。
+let live2d = null
+
 // ── alpha 掩码 ──────────────────────────────────────────────────────
 // Live2D 接管时从 WebGL 画布取样（模型会形变，不能用原始纹理当掩码）；
 // 降级时用占位 <img>。两者共用同一套掩码结构。
+// 取样实现放在 live2d.js（readAlpha），避免两处各写一份 drawImage 逻辑。
 function maskSource() {
   return live2dActive ? canvas : img
 }
 
 async function buildAlphaMap() {
-  const source = maskSource()
-  if (!live2dActive) await img.decode()
-  const w = live2dActive ? canvas.width : img.naturalWidth
-  const h = live2dActive ? canvas.height : img.naturalHeight
+  if (live2dActive) {
+    const shot = live2d?.readAlpha?.()
+    if (!shot) return
+    mapW = shot.width
+    mapH = shot.height
+    alphaMap = shot.alpha
+    return
+  }
+
+  await img.decode()
+  const w = img.naturalWidth
+  const h = img.naturalHeight
   if (!w || !h) return
 
   const scratch = document.createElement('canvas')
@@ -64,7 +78,7 @@ async function buildAlphaMap() {
   scratch.height = h
   const context = scratch.getContext('2d', { willReadFrequently: true })
   context.clearRect(0, 0, w, h)
-  context.drawImage(source, 0, 0)
+  context.drawImage(img, 0, 0)
 
   const { data } = context.getImageData(0, 0, w, h)
   mapW = w
@@ -153,8 +167,9 @@ window.addEventListener('dblclick', (event) => {
 function setState(state) {
   halo.dataset.state = state
   // 转发给 Live2D。内部做了去重，同一状态重复推送不会重复触发。
+  // 注意 live2d 可能还是 null（模块加载中或加载失败），所以用可选链。
   try {
-    window.xilianLive2D?.setState(state)
+    live2d?.setState(state)
   } catch (error) {
     api.log(`Live2D 状态切换失败：${error.message}`)
   }
@@ -251,8 +266,8 @@ api.onFrame((frame) => {
 // ── 启动 ────────────────────────────────────────────────────────────
 /** 尝试用 Live2D 接管；任何一步失败都返回 false → 保持占位图（验收项 A10 降级） */
 async function startLive2D() {
-  if (!window.xilianLive2D) {
-    api.log('未找到 window.xilianLive2D → 使用占位形象')
+  if (!live2d) {
+    api.log('Live2D 模块不可用 → 使用占位形象')
     return false
   }
   const info = await api.modelInfo()
@@ -261,7 +276,7 @@ async function startLive2D() {
     api.log('模型文件不存在 → 使用占位形象（A10 降级）')
     return false
   }
-  await window.xilianLive2D.init({
+  await live2d.init({
     canvas,
     modelUrl: info.url,
     log: (message) => api.log(`[live2d] ${message}`),
@@ -281,6 +296,14 @@ async function startLive2D() {
 }
 
 ;(async () => {
+  // 动态 import 模块版 live2d.js。失败也不能影响占位图降级。
+  try {
+    live2d = await import('./live2d.js')
+  } catch (error) {
+    api.log(`Live2D 模块加载失败：${error.message} → 将使用占位形象`)
+    live2d = null
+  }
+
   try {
     live2dActive = await startLive2D()
   } catch (error) {

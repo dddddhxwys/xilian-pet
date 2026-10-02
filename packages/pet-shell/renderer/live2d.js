@@ -21,7 +21,17 @@
  *    → 开心、惊喜这些是**道具/卡通特效**，不是眉眼情绪。
  *      眉眼的"情绪"要靠 `ParamBrow*`（8 个参数）自己组合。
  *
- * 命名：挂 window.xilianLive2D。**不要**用 window.pet 之类可能与元素 id 撞名的名字。
+ * 命名：挂 window.xilianLive2D（仅便于在 devtools 里调试；实际由 pet.js 动态 import）。
+ *
+ * ⚠️ 本文件是 **ES 模块**（由 pet.js 用 `await import('./live2d.js')` 加载）。
+ *    为什么必须是模块：它和 pet.js 都曾是普通 <script>，**共享同一个全局作用域** ——
+ *    实测踩过两次：
+ *      1. `const ALPHA_THRESHOLD` 两边都写 → `SyntaxError: Identifier ... has already
+ *         been declared` → **pet.js 整个不执行**（整页静默失效）
+ *      2. `function setState` 两边都有 → 函数声明**静默互相覆盖**（更危险，不报错）
+ *    模块自带作用域，从根上杜绝这类撞名。
+ *    用动态 import（而不是静态 import）是刻意的：静态 import 一旦失败会连 pet.js 一起
+ *    不执行，降级到占位图（验收项 A10）就没了。
  */
 
 /**
@@ -99,8 +109,38 @@ const state = {
   log: () => {},
 }
 
-/** 把模型缩放并贴底居中铺进舞台 */
-function fit() {
+// ── 构图参数 ────────────────────────────────────────────────────────
+// 为什么不能按"模型画布"适配：画布是 4200×3500，但角色只占中间一块，
+// 四周大量空白 → 按画布适配会让角色显得很小、上方留一大片空（实测就是这个现象）。
+// 改成按**渲染出来的实际不透明包围盒**适配。
+const FIT_MARGIN_PX = 6 // 四周留白（CSS 像素）
+const FIT_FILL = 0.94 // 内容最多占可用区域的比例，留点余量给动作的最大幅度
+const FIT_MEASURE_MS = 3000 // 测量窗口：必须覆盖动作的一个周期，否则会按"某一瞬间"适配而裁到动作
+const FIT_SAMPLE_MS = 200
+const ALPHA_THRESHOLD = 24
+
+/**
+ * 从渲染画布读回 alpha 通道。
+ * 依赖 PIXI 的 `preserveDrawingBuffer: true` —— 否则在渲染循环之外 drawImage 读到的是空白。
+ * 命中测试（pet.js）与构图测量都用它，避免两处各写一份。
+ */
+export function readAlpha() {
+  const c = state.canvas
+  if (!c || !c.width || !c.height) return null
+  const scratch = document.createElement('canvas')
+  scratch.width = c.width
+  scratch.height = c.height
+  const ctx = scratch.getContext('2d', { willReadFrequently: true })
+  ctx.clearRect(0, 0, c.width, c.height)
+  ctx.drawImage(c, 0, 0)
+  const { data } = ctx.getImageData(0, 0, c.width, c.height)
+  const alpha = new Uint8Array(c.width * c.height)
+  for (let i = 0; i < alpha.length; i++) alpha[i] = data[i * 4 + 3]
+  return { alpha, width: c.width, height: c.height }
+}
+
+/** 先把模型整块铺进舞台（保底，保证测量期间角色可见） */
+export function fit() {
   const { model, canvas } = state
   if (!model || !canvas) return
   const cw = canvas.clientWidth || canvas.width
@@ -110,9 +150,120 @@ function fit() {
   if (!mw || !mh) return
   const scale = Math.min(cw / mw, ch / mh)
   model.scale.set(scale)
-  // Live2DModel 的 position 是左上角
   model.position.set((cw - mw * scale) / 2, ch - mh * scale)
-  state.log(`模型适配 ${mw.toFixed(0)}×${mh.toFixed(0)} → 舞台 ${cw}×${ch}，scale=${scale.toFixed(3)}`)
+  state.log(`初步适配（按画布）${mw.toFixed(0)}×${mh.toFixed(0)} → 舞台 ${cw}×${ch}，scale=${scale.toFixed(4)}`)
+}
+
+/** 在测量窗口内反复采样，最后按包围盒并集重新构图 */
+function measureAndFitContent() {
+  const shots = []
+  const t0 = performance.now()
+  const step = () => {
+    const shot = readAlpha()
+    if (shot) shots.push(shot)
+    if (performance.now() - t0 < FIT_MEASURE_MS) {
+      setTimeout(step, FIT_SAMPLE_MS)
+    } else {
+      applyContentFit(shots)
+    }
+  }
+  step()
+}
+
+/** 内容在**模型局部坐标**里的包围盒（由测量得出；缓存下来供重新布局用） */
+let contentLocal = null
+
+/**
+ * 按"所有采样帧包围盒的并集"重新构图。
+ *
+ * 为什么取并集：模型一直在动（荡秋千时翅膀会甩开），
+ * 按单帧适配会在动作幅度最大的时候切掉边缘。
+ */
+function applyContentFit(shots) {
+  const { model, canvas } = state
+  if (!model || !shots.length) return
+  const cssW = canvas.clientWidth || canvas.width
+  const cssH = canvas.clientHeight || canvas.height
+
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -1
+  let maxY = -1
+  let mw = 0
+  let mh = 0
+  for (const { alpha, width, height } of shots) {
+    mw = width
+    mh = height
+    for (let y = 0; y < height; y++) {
+      const row = y * width
+      for (let x = 0; x < width; x++) {
+        if (alpha[row + x] > ALPHA_THRESHOLD) {
+          if (x < minX) minX = x
+          if (x > maxX) maxX = x
+          if (y < minY) minY = y
+          if (y > maxY) maxY = y
+        }
+      }
+    }
+  }
+  if (maxX < 0) {
+    state.log('构图测量：所有像素全透明，跳过适配')
+    return
+  }
+
+  // 掩码坐标 → CSS 坐标（画布有 devicePixelRatio 缩放），再折算回**模型局部坐标**。
+  // ⚠️ 全程只用模型局部坐标做布局计算 —— 之前混用"当前 CSS 尺寸"和"新 scale"，
+  //    量纲不对（实测算出"上方留白 281px"而窗口才 300px 高）。
+  const kx = cssW / mw
+  const ky = cssH / mh
+  const s = model.scale.x
+  contentLocal = {
+    x: (minX * kx - model.position.x) / s,
+    y: (minY * ky - model.position.y) / s,
+    w: ((maxX - minX + 1) * kx) / s,
+    h: ((maxY - minY + 1) * ky) / s,
+  }
+  state.log(
+    `内容包围盒（模型局部）：x=${contentLocal.x.toFixed(0)} y=${contentLocal.y.toFixed(0)} ` +
+      `w=${contentLocal.w.toFixed(0)} h=${contentLocal.h.toFixed(0)}（${shots.length} 帧并集）`,
+  )
+  layoutFromContent()
+}
+
+/** 用缓存的包围盒重新排布（窗口尺寸变化时也走这里） */
+function layoutFromContent() {
+  const { model, canvas } = state
+  if (!model || !contentLocal) return
+  const cssW = canvas.clientWidth || canvas.width
+  const cssH = canvas.clientHeight || canvas.height
+
+  const availW = (cssW - FIT_MARGIN_PX * 2) * FIT_FILL
+  const availH = (cssH - FIT_MARGIN_PX * 2) * FIT_FILL
+  const s2 = Math.min(availW / contentLocal.w, availH / contentLocal.h)
+
+  model.scale.set(s2)
+  const dX = (cssW - contentLocal.w * s2) / 2 // 水平居中
+  const dY = cssH - FIT_MARGIN_PX - contentLocal.h * s2 // 贴底（像站在桌面上）
+  model.position.set(dX - contentLocal.x * s2, dY - contentLocal.y * s2)
+
+  state.log(
+    `构图：内容 ${(contentLocal.w * s2).toFixed(0)}×${(contentLocal.h * s2).toFixed(0)} CSS px / ` +
+      `舞台 ${cssW}×${cssH}，scale=${s2.toFixed(4)}，上方留白 ${dY.toFixed(0)}px`,
+  )
+
+  // 下次内容尺寸变化时（窗口/DPR 变了）自动重排，不用重新测量
+  if (!state.resizeHooked) {
+    state.resizeHooked = true
+    let pending = false
+    window.addEventListener('resize', () => {
+      if (pending) return
+      pending = true
+      requestAnimationFrame(() => {
+        pending = false
+        layoutFromContent()
+      })
+    })
+  }
 }
 
 /** 直接写底层 Cubism 参数（模型内部参数 id） */
@@ -240,7 +391,7 @@ function applyState() {
 }
 
 /** 初始化：创建 PIXI 应用并加载模型 */
-async function init({ canvas, modelUrl, log, forceMotion, sampleMs }) {
+export async function init({ canvas, modelUrl, log, forceMotion, sampleMs }) {
   state.canvas = canvas
   state.log = log ?? (() => {})
   if (!window.PIXI?.live2d?.Live2DModel) {
@@ -317,6 +468,9 @@ async function init({ canvas, modelUrl, log, forceMotion, sampleMs }) {
     state.log(`开始参数采样 ${sampleMs}ms（动作 ${group}[${index}]）`)
     setTimeout(samplerFinish, sampleMs)
   }
+
+  // 构图测量要等模型真的动起来（刚加载时可能还没渲染出有效帧）
+  setTimeout(measureAndFitContent, 400)
 
   state.ready = true
   return model
@@ -420,7 +574,7 @@ function playStateMotion(next) {
 }
 
 /** 切换桌宠状态 */
-function setState(next) {
+export function setState(next) {
   if (next === state.currentState) return
   state.currentState = next
   const mapped = STATE_MAP[next] ?? STATE_MAP.idle
@@ -436,6 +590,8 @@ window.xilianLive2D = {
   init,
   setState,
   fit,
+  /** 读回渲染画布的 alpha 通道，供命中测试使用（{ alpha, width, height }） */
+  readAlpha,
   /** 供 alpha 掩码取样用的渲染画布（空白表示不可交互） */
   getCanvas: () => state.canvas,
   get isReady() {

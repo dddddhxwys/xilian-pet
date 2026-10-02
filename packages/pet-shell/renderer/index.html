@@ -47,14 +47,17 @@
         2. unsafe-eval.min.js       → 让 PixiJS 在禁 eval 的 CSP 下也能生成着色器（必须在 pixi 之后）
         3. live2dcubismcore.min.js  → window.Live2DCubismCore（官方 Core，含 MocVersion_50）
         4. cubism4.min.js           → window.PIXI.live2d（依赖前面四个）
-      这五个都在 renderer/vendor/，由 tools/prepare-renderer-vendor.mjs 生成，不入库。
+      这五个都是普通 <script>（它们本来就挂全局），由
+      tools/prepare-renderer-vendor.mjs 生成，不入库。
+
+      注意这里**没有** live2d.js —— 它是 ES 模块，由 pet.js 用动态 import 加载
+      （模块自带作用域，避免与 pet.js 的顶层声明撞名；用动态是为了失败仍能降级）。
     -->
     <script src="vendor/process-shim.js"></script>
     <script src="vendor/pixi.min.js"></script>
     <script src="vendor/unsafe-eval.min.js"></script>
     <script src="vendor/live2dcubismcore.min.js"></script>
     <script src="vendor/cubism4.min.js"></script>
-    <script src="live2d.js"></script>
     <script src="pet.js"></script>
   </body>
 </html>
