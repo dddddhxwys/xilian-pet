@@ -81,6 +81,53 @@ const STATE_MAP = {
 /** 一次性动作播完之后回到哪个动作（荡秋千） */
 const BASE_MOTION = 3
 
+/**
+ * 眼神由**动作本身**负责演的动作下标，我们的眨眼要让位。
+ *
+ * Scene[1]（4s，happy/惊喜）就是"闭眼笑"的表演，眼睛眯起来是它的内容；
+ * 如果我们还在那儿输出 ParamEyeLOpen=1，这个表情就毁了。
+ */
+const EYE_OWNED_MOTIONS = new Set([1])
+
+// ── 眨眼 ────────────────────────────────────────────────────────────
+// ⚠️ 为什么必须自己实现（这是实测踩出来的 bug）：
+//   库的自动眨眼条件是 `if (!motionUpdated) eyeBlink.updateParameters(...)`
+//   —— **只有没有动作播放时才眨眼**。而我们待机用的是 Scene[3]（180 秒循环），
+//   动作永远在播 → 自动眨眼永远不跑。
+//   更糟的是 Scene[3] **只在前 2.2 秒驱动眼睛**（参数采样实测：
+//   `ParamEyeLOpen 范围 0.00~1.00 活动 0.04~2.21s`），之后冻结在闭眼值，
+//   于是待机时眼睛一直闭着。
+//   所以挂在 `beforeModelUpdate`（动作之后）自己输出眨眼值，把眼睛接管过来。
+const BLINK_MS = 140 // 单次眨眼时长
+const BLINK_GAP_MIN_MS = 2400 // 两次眨眼的间隔（随机，避免机械节拍）
+const BLINK_GAP_MAX_MS = 6200
+
+let blinkStartAt = 0 // 本次眨眼开始时刻；0 = 当前没在眨
+let nextBlinkAt = 0
+
+/** 每帧输出眼睛开合（1 = 睁，0 = 闭） */
+function applyBlink(now) {
+  // 动作自己在演眼神时让位
+  if (EYE_OWNED_MOTIONS.has(currentMotion)) return
+
+  if (blinkStartAt === 0 && now >= nextBlinkAt) {
+    blinkStartAt = now
+    nextBlinkAt = now + BLINK_GAP_MIN_MS + Math.random() * (BLINK_GAP_MAX_MS - BLINK_GAP_MIN_MS)
+  }
+
+  let openness = 1
+  if (blinkStartAt !== 0) {
+    const p = (now - blinkStartAt) / BLINK_MS
+    if (p >= 1) {
+      blinkStartAt = 0
+    } else {
+      // 0→0.5 闭，0.5→1 睁
+      openness = p < 0.5 ? 1 - p * 2 : (p - 0.5) * 2
+    }
+  }
+  setParams({ ParamEyeLOpen: openness, ParamEyeROpen: openness })
+}
+
 /** 一次性动作的兜底定时器、特效保持定时器、当前动作索引 */
 let oneShotTimer = null
 let lingerTimer = null
@@ -388,6 +435,8 @@ function applyState() {
   const mapped = STATE_MAP[state.currentState] ?? STATE_MAP.idle
   if (mapped.params && Object.keys(mapped.params).length) setParams(mapped.params)
   if (state.currentState === 'error') setParams(ERROR_FACE)
+  // 眨眼也在这里输出 —— 位置在动作之后，才能压过被动作冻结的眼睛参数
+  applyBlink(performance.now())
 }
 
 /** 初始化：创建 PIXI 应用并加载模型 */
@@ -450,9 +499,14 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs }) {
   })
 
   // 起始动作：默认荡秋千。调试时可用 PET_FORCE_MOTION=Scene:N 指定。
+  // 注意记下"实际启动了哪个动作" —— 采样日志要用它。
+  // （这里曾经引用重构时已删掉的 group/index：一开采样就抛 ReferenceError，
+  //   init 中途失败 → state.ready 与构图测量都不执行。排查花了不少时间。）
+  let startedMotion = BASE_MOTION
   if (typeof forceMotion === 'string' && forceMotion.includes(':')) {
     const [g, i] = forceMotion.split(':')
     const idx = Number(i) || 0
+    startedMotion = idx
     state.log(`调试模式：指定动作 ${g}[${idx}]`)
     try {
       model.motion(g, idx, PIXI.live2d.MotionPriority.IDLE)
@@ -465,7 +519,7 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs }) {
 
   if (sampleMs > 0) {
     samplerBegin(sampleMs)
-    state.log(`开始参数采样 ${sampleMs}ms（动作 ${group}[${index}]）`)
+    state.log(`开始参数采样 ${sampleMs}ms（动作 Scene[${startedMotion}]）`)
     setTimeout(samplerFinish, sampleMs)
   }
 
