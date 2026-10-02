@@ -20,3 +20,12 @@ tools/_probe-*.mjs
 .idea/
 Thumbs.db
 desktop.ini
+
+# 第三方桌宠/模型包（Live2DViewerEX 等）
+# 这类文件是他人作品或加密商业格式，不属于本项目，禁止入库/分发
+*.wpk
+*.lpk
+*.moc3
+*.motion3.json
+*.exp3.json
+*.physics3.json
