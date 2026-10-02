@@ -84,7 +84,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 12
+const CODE_REVISION = 13
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -820,6 +820,35 @@ export function apply(ctx, config = {}) {
       return sendJson(res, 200, out)
     },
     `xilian-pet: GET ${pathPrefix}/debug/agents`,
+  )
+
+  /**
+   * 调试端点：**手动放一条通知**。
+   *
+   * 为什么需要：A7 的显示侧（冒泡 + 单击跳转）只有"审批积压"这类事件才会触发，
+   * 想真等一次几乎不可控 —— 那就等于没法验证。这里给个开关，随手就能看效果。
+   * body（都可省）：`{ text?, urgent?, notice? }`
+   */
+  register(
+    'POST',
+    `${pathPrefix}/debug/notice`,
+    async (req, res) => {
+      const body = await readJsonBody(req)
+      const frame = {
+        type: 'notice',
+        notice: typeof body.notice === 'string' && body.notice !== '' ? body.notice : 'debug',
+        text:
+          typeof body.text === 'string' && body.text !== '' ? body.text : '有 2 个操作在等你审批',
+        urgent: body.urgent !== false,
+        at: Date.now(),
+      }
+      // 与真实提醒走同一条路：入队（供重连补发）+ 立即推送
+      pendingNotices.push(frame)
+      if (pendingNotices.length > 20) pendingNotices.shift()
+      publish(frame)
+      return sendJson(res, 200, { ok: true, frame, subscribers: connections.size })
+    },
+    `xilian-pet: POST ${pathPrefix}/debug/notice`,
   )
 
   // 心跳也放进 ctx.effect —— 官方契约要求资源都经由 ctx.effect/ctx.on 注册，

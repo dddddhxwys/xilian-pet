@@ -8,8 +8,8 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1651 行 / 外壳 9 文件 2457 行 / 工具 14 文件 2831 行，58 个提交 |
-| 自测 | `& $NODE tools\check-plugin.mjs` → **81 项全绿** |
+| 规模 | 插件 5 文件 1680 行 / 外壳 9 文件 2648 行 / 工具 14 文件 2865 行，59 个提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **82 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
 > 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
@@ -275,6 +275,26 @@ Electron 44.5.1
 - AI 正文仍留在 `/state` 的 `tail` 里供诊断，**只是不再进气泡**。
 - 想回到旧的逐字流：配置 `bubbleMode: 'stream'`（`packages/pet-plugin/cordis.patch.yml`）。
 
+### 主动提醒的显示（A7）
+
+插件侧早就在推 `notice` 帧（审批积压 / 久坐 / 花销），但窗口里原来什么都不显示。
+现在有独立的**通知条**，与气泡**分层错开**（通知在顶、气泡自动让位）：
+
+| | 气泡 | 通知条 |
+|---|---|---|
+| 说什么 | "它现在在干什么"的流水 | "要你注意 / 要你动手" |
+| 何时消失 | 固定 6 秒 | **urgent 不自动消失**（点它才收）；低优先 8 秒 |
+
+- **urgent**（审批积压）带小圆点脉冲动画，专门等你去处理
+- **单击通知条 → 把 DSH 窗口唤到前台**。DSH 是**另一个进程**的 Electron 应用，
+  所以桌宠用 Win32 `EnumWindows` + `SetForegroundWindow` 把它的窗口拉出来（`main.js` 的 `focusDshWindow()`）
+- 想手动看效果（不必真等一次审批积压）：
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:19387/xilian-pet/debug/notice `
+  -ContentType 'application/json' -Body '{"text":"有 2 个操作在等你审批"}'
+```
+
 ### 三条特殊规则（都是实测踩出来的）
 
 1. **开场手势**：启动先演一次 `Scene[0]` 比嘘，**0.6x 慢放**，演完落待机。
@@ -339,6 +359,7 @@ Electron 44.5.1
 /xilian-pet/debug/shapes        原始事件形状样本（按 channel 分别限量）
 /xilian-pet/debug/reminders     提醒引擎配置 / 免打扰判定 / 已发记录
 /xilian-pet/debug/agents        派活链路诊断（候选会话 / 活 agent / 能否 get()），只读
+/xilian-pet/debug/notice        手动放一条通知（A7 显示侧的手动验证入口）
 /xilian-pet/prompt              反向操控：派活
 /xilian-pet/interrupt           反向操控：打断
 /xilian-pet/focus               会话聚焦（Phase 0 未实现，返回 501）
@@ -495,7 +516,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | 项 | 证据 |
 |---|---|
 | 插件被加载 | `/health` → `{"ok":true,"code":10,...}`（A6 五处修复 + 诊断端点把修订号从 5 推到 **11**，待重启确认） |
-| 插件自测 79 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / **waterfall 回归 + 负向对照** / **inject 静态扫描 + 负向对照** / **派活兜底 + 主会话挑选 + resolveAgent 恢复 + 宿主会话枚举 + 只读诊断** / **外壳命中测试（UI 控件 / 掩码 / 坐标映射）** / 清理注销 |
+| 插件自测 82 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / **waterfall 回归 + 负向对照** / **inject 静态扫描 + 负向对照** / **派活兜底 + resolveAgent 恢复 + 宿主会话枚举 + 只读诊断** / **外壳命中测试** / **活动摘要 + 通知帧** / 清理注销 |
 | 版本兼容性 | Cubism Core `05.01.0000`，`MsvGetLatestMocVersion=5`，模型 moc3 版本号 5 |
 | 事件协议取自事实 | 59 个真实事件类型名、`SessionEventMap`、`StreamChunk`（正文在 `frame.chunk.text`）均来自 asar 类型清单 |
 | Live2D 模型渲染 | 4200×3500 加载成功，截图见 `docs/screenshots/` |
@@ -533,7 +554,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 |---|---|
 | **A4 的"降回 idle"** | 一执行命令 agent 就是 running，回合内自证不了 |
 | **A5 气泡渲染端** | 原来显示 AI 正文（用户反馈"输出太多，看不清"），现改为**活动摘要**；窗口里的实际观感待确认 |
-| **A7 显示侧**（冒泡 + 跳转） | 通知帧已推送，跳转逻辑未做 |
+| **A7 显示侧的观感** | 通知条 + 点击唤到 DSH 前台的逻辑已实现（外壳秒级可验证），**实际观感与"跳转是否真的把窗口拉到前台"待你确认** |
 | 长时间稳定性 | 没跑过几小时 |
 | 多显示器 / DPI 缩放 | 没测过 |
 
@@ -547,7 +568,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | A4 | 真实会话事件驱动状态 | 🟡 四档切换已验证；降回 idle 未观察到 |
 | A5 | **活动摘要进气泡**（2026-10-02 重定义） | 🟡 插件侧 ✅（`activity` 帧 + 自测）；渲染端待肉眼确认。原定义"逐字流进气泡"**已按用户要求废弃** |
 | A6 | 双击气泡派活 | ✅ 用户实机确认（2026-10-02）：派活 + 打断都可用（修掉五层 bug，见上） |
-| A7 | 审批积压主动提醒 | 🟡 插件侧 ✅；显示与跳转未做 |
+| A7 | 审批积压主动提醒 | 🟡 插件侧 ✅；**显示侧已做**（通知条 + 点击把 DSH 唤到前台），观感待确认 |
 | A8 | Electron 透明置顶窗 | ✅ 可拖动、透明无边框 |
 | A9 | 点击穿透 | ✅ 用户实机确认（2026-10-02） |
 | A10 | 模型缺失时降级 | ✅ |
@@ -678,7 +699,7 @@ docs/
   Live2D约稿单.md                    委托说明（已暂缓，将来换自研形象可启用）
   screenshots/                      实机自检截图（含第三方角色，默认 gitignore）
 tools/
-  check-plugin.mjs                  自测（81 项断言，含外壳命中测试，不需要 DSH）
+  check-plugin.mjs                  自测（82 项断言，含外壳命中测试，不需要 DSH）
   tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）

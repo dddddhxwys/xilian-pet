@@ -84,6 +84,7 @@ body {
 /* UI 控件必须在模型之上 */
 #badge,
 #bubble,
+#notice,
 #composer,
 #status {
   z-index: 2;
@@ -187,6 +188,73 @@ body {
   border: 6px solid transparent;
   border-top-color: rgba(255, 255, 255, 0.96);
   border-bottom: 0;
+}
+
+/* A7 通知（审批积压 / 久坐 / 花销）
+   与气泡的区别：气泡是"它现在在干什么"的流水、自动消失；
+   通知是"要你注意 / 要你动手"，urgent 的一直留着直到你点它。 */
+#notice {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 244px;
+  padding: 7px 10px;
+  border-radius: 12px;
+  background: rgba(255, 252, 245, 0.98);
+  border: 1.5px solid rgba(214, 158, 46, 0.75);
+  color: #4a3410;
+  font-size: 12.5px;
+  line-height: 1.4;
+  box-shadow: 0 4px 16px rgba(90, 60, 10, 0.3);
+  cursor: pointer;
+  word-break: break-word;
+}
+
+#notice[data-urgent="1"] {
+  border-color: rgba(214, 90, 40, 0.85);
+  background: rgba(255, 246, 240, 0.99);
+  color: #5c2410;
+}
+
+#noticeDot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d69e2e;
+}
+
+#notice[data-urgent="1"] #noticeDot {
+  background: #e0522a;
+  animation: noticePulse 1.1s ease-in-out infinite;
+}
+
+#noticeHint {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
+@keyframes noticePulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.78);
+  }
+}
+
+/* 通知在顶、气泡让位，避免两层叠在一起看不清 */
+body.has-notice #bubble {
+  top: 52px;
 }
 
 /* 派活输入条（双击宠物唤出） */

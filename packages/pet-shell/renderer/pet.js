@@ -25,6 +25,8 @@ const bubbleText = document.getElementById('bubbleText')
 const composer = document.getElementById('composer')
 const composerInput = document.getElementById('composerInput')
 const interruptBtn = document.getElementById('interruptBtn')
+const notice = document.getElementById('notice')
+const noticeText = document.getElementById('noticeText')
 const status = document.getElementById('status')
 
 const ALPHA_THRESHOLD = 24
@@ -38,6 +40,7 @@ let dragX = 0
 let dragY = 0
 let lastClickAt = 0
 let bubbleTimer = null
+let noticeTimer = null
 let latestSessionId = undefined
 let unread = 0
 
@@ -78,7 +81,9 @@ function maskSource() {
  */
 function visibleUiRects() {
   const rects = []
-  for (const el of [composer, bubble]) {
+  // ⚠️ 只收**能接住点击**的控件。气泡是 pointer-events:none 的被动展示，
+  // 把它算进来会在它覆盖的区域形成一个"点了没反应、也不穿透"的死区。
+  for (const el of [composer, notice]) {
     if (el.hidden) continue
     const r = el.getBoundingClientRect()
     if (r.width <= 0 || r.height <= 0) continue
@@ -276,6 +281,40 @@ function toggleComposer() {
   }
 }
 
+// ── A7 主动提醒 ─────────────────────────────────────────────────────
+/**
+ * 显示一条主动提醒（审批积压 / 久坐 / 花销）。
+ *
+ * 与气泡的区别：气泡是"它现在在干什么"的流水，固定 6 秒消失；
+ * 通知是"要你注意 / 要你动手"：
+ *  · `urgent`（审批积压）**不自动消失** —— 它就是要你去处理，点了才收
+ *  · 低优先（久坐 / 花销）8 秒后自己收，免得长期霸占桌面
+ */
+function showNotice({ text, urgent, notice: kind } = {}) {
+  if (typeof text !== 'string' || text.trim() === '') return
+  noticeText.textContent = text
+  notice.dataset.urgent = urgent ? '1' : '0'
+  notice.dataset.kind = kind ?? ''
+  notice.hidden = false
+  document.body.classList.add('has-notice')
+  clearTimeout(noticeTimer)
+  if (!urgent) noticeTimer = setTimeout(hideNotice, 8000)
+  api.log(`通知：${text}${urgent ? '（urgent）' : ''}`)
+}
+
+function hideNotice() {
+  clearTimeout(noticeTimer)
+  notice.hidden = true
+  document.body.classList.remove('has-notice')
+}
+
+// 点击通知 → 把 DSH 窗口唤到前台（"单击跳转"）。失败就留着，好让你再点一次。
+notice.addEventListener('click', async () => {
+  const result = await api.focusDsh()
+  api.log(`focus-dsh → ${JSON.stringify(result)}`)
+  if (result?.ok !== false) hideNotice()
+})
+
 composer.addEventListener('submit', async (event) => {
   event.preventDefault()
   const text = composerInput.value.trim()
@@ -331,6 +370,15 @@ api.onFrame((frame) => {
       // 老的逐字流：插件默认已不再推（bubbleMode: 'activity'），保留分支以防切回
       if (frame.sessionId !== undefined) latestSessionId = frame.sessionId
       showBubble(frame.text)
+      break
+    case 'notice':
+      showNotice(frame)
+      break
+    case 'notices':
+      // 窗口没连时发出的提醒，连上后补发最近 5 条 —— 只显示最新的一条，别堆一屏
+      if (Array.isArray(frame.notices) && frame.notices.length > 0) {
+        showNotice(frame.notices[frame.notices.length - 1])
+      }
       break
     case 'control':
       api.log(`control ${frame.action} ok=${frame.ok}`)

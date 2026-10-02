@@ -657,8 +657,8 @@ check('负向对照：mock 确实会因缺 inject 而抛错（证明上面两条
   )
 })
 
-check('apply 注册了 9 条 exact 路由', () => {
-  assert.equal(routes.size, 9, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
+check('apply 注册了 10 条 exact 路由', () => {
+  assert.equal(routes.size, 10, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
 })
 
 check('所有路由都是 exact（避免被 /api 之类的前缀路由吞掉）', () => {
@@ -1130,6 +1130,40 @@ await checkAsync('GET /debug/agents → 只读诊断，不派活（下次不用�
     await new Promise((resolve) => srv.close(resolve))
     teardown()
   }
+})
+
+await checkAsync('POST /debug/notice → 推 notice 帧（A7 显示侧的手动验证入口）', async () => {
+  const sse = await openSse(`${base}/xilian-pet/events`)
+  await sse.readUntil((b) => b.includes('"snapshot"'), 3000)
+  const res = await fetch(`${base}/xilian-pet/debug/notice`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: '有 3 个操作在等你审批', urgent: true }),
+  })
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.equal(body.ok, true)
+  assert.equal(body.frame.type, 'notice')
+  assert.equal(body.frame.urgent, true)
+  assert.equal(body.frame.notice, 'debug', '没给 notice 类型时应落到默认值')
+  const text = await sse.readUntil((b) => b.includes('"type":"notice"'), 3000)
+  sse.close()
+  assert.match(text, /有 3 个操作在等你审批/, 'notice 帧要真的推到 SSE 上')
+
+  // 省参数时的默认值：urgent 默认 true，文案有兜底
+  const dflt = await (await fetch(`${base}/xilian-pet/debug/notice`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  })).json()
+  assert.equal(dflt.frame.urgent, true)
+  assert.match(dflt.frame.text, /审批/)
+  const soft = await (await fetch(`${base}/xilian-pet/debug/notice`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ urgent: false }),
+  })).json()
+  assert.equal(soft.frame.urgent, false, 'urgent:false 要能透传（低优先通知会自动消失）')
 })
 
 await checkAsync('SSE：连接即收到 connected 注释 + hello + snapshot', async () => {

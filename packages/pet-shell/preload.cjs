@@ -34,6 +34,8 @@ contextBridge.exposeInMainWorld('xilianPet', {
   moveBy: (dx, dy) => ipcRenderer.send('pet:move-by', Math.round(dx), Math.round(dy)),
   /** 反向操控：prompt / interrupt / focus */
   control: (action, payload) => ipcRenderer.invoke('pet:control', action, payload),
+  /** A7：把 DSH 窗口唤到前台（点击通知时用） */
+  focusDsh: () => ipcRenderer.invoke('pet:focus-dsh'),
   /** Live2D 模型信息：{ dir, exists, url } —— url 走 pet:// 协议，避开 file:// 的 fetch 限制 */
   modelInfo: () => ipcRenderer.invoke('pet:model-info'),
   /** 请主进程立刻截一张自检截图（用于精确捕捉动作的关键帧） */

@@ -11,6 +11,7 @@
  */
 
 import { app, BrowserWindow, globalShortcut, ipcMain, protocol, screen } from 'electron'
+import { execFile } from 'node:child_process'
 import http from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { hitTest } from './hit-test.js'
@@ -143,6 +144,64 @@ function showWindow(win) {
 }
 
 const log = (...args) => console.log('[pet]', ...args)
+
+/**
+ * A7「单击跳转」：把 DSH 窗口唤到前台。
+ *
+ * 为什么走 PowerShell：DSH 是**另一个进程**的 Electron 应用，桌宠无法直接操作它的窗口。
+ *
+ * ⚠️ 必须用 `-EncodedCommand`，**不能用 `-Command`**：
+ *    命令行传多行脚本时，参数传递会把 here-string 里的 `"` 吃掉，
+ *    实测直接变成一堆 PowerShell 解析错误（`Unrecognized token in source text`）。
+ *    base64(UTF-16LE) 完全免疫引号/换行问题。
+ *
+ * ⚠️ 也不能只靠 `Process.MainWindowHandle`：实测本机它一直是 **0**，不可靠。
+ *    主路径是 **EnumWindows 枚举顶层窗口 → 按进程名匹配 PID → SetForegroundWindow**，
+ *    再用 `AppActivate('DeepSeek Harness')` 兜一次。
+ *    失败时把 `pids` / `visible` 一起报出来 —— 能区分"没找到进程"和"进程在但没窗口"。
+ *
+ * @returns {Promise<{ok: boolean, detail: string}>} 供渲染端决定是否收掉通知
+ */
+function focusDshWindow() {
+  const script = [
+    "$ErrorActionPreference='SilentlyContinue'",
+    "$names=@('DeepSeek Harness','DeepSeekHarness','deepseek-harness','dsh')",
+    'Add-Type @"',
+    'using System;',
+    'using System.Runtime.InteropServices;',
+    'public class WinActivate {',
+    '  public delegate bool EnumProc(IntPtr h, IntPtr l);',
+    '  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);',
+    '  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);',
+    '  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);',
+    '  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);',
+    '  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);',
+    '}',
+    '"@',
+    "$pids=@(Get-Process | Where-Object { $names -contains $_.ProcessName } | Select-Object -ExpandProperty Id)",
+    '$global:found=[IntPtr]::Zero',
+    '$global:visible=0',
+    '$cb=[WinActivate+EnumProc]{ param($h,$l) if(-not [WinActivate]::IsWindowVisible($h)){return $true}; $global:visible=$global:visible+1; $p=0; [void][WinActivate]::GetWindowThreadProcessId($h,[ref]$p); if($pids -contains $p){ $global:found=$h; return $false }; return $true }',
+    '[void][WinActivate]::EnumWindows($cb,[IntPtr]::Zero)',
+    "if($global:found -ne [IntPtr]::Zero){ [void][WinActivate]::ShowWindow($global:found,9); $ok=[WinActivate]::SetForegroundWindow($global:found); Write-Output ('ok=' + $ok + ' hwnd=' + $global:found) } else { $s=New-Object -ComObject WScript.Shell; $ok=$s.AppActivate('DeepSeek Harness'); Write-Output ('ok=' + $ok + ' detail=no-window pids=' + $pids.Count + ' visible=' + $global:visible) }",
+  ].join('\n')
+  // UTF-16LE + base64 —— PowerShell 的 -EncodedCommand 约定
+  const encoded = Buffer.from(script, 'utf16le').toString('base64')
+  return new Promise((resolve) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+      { windowsHide: true, timeout: 10_000 },
+      (error, stdout, stderr) => {
+        const out = String(stdout ?? '').trim()
+        const ok = /ok=True/.test(out)
+        const detail = out !== '' ? out : String(error?.message ?? stderr ?? 'no-output').trim()
+        log(`[focus-dsh] ${ok ? '已唤到前台' : '失败'}：${detail}`)
+        resolve({ ok, detail })
+      },
+    )
+  })
+}
 
 function loadWindowState() {
   try {
@@ -565,6 +624,8 @@ app.whenReady().then(async () => {
     win.setPosition(x + dx, y + dy)
   })
   ipcMain.handle('pet:control', (_event, action, payload) => postControl(action, payload))
+  // A7：点击桌宠上的通知 → 把 DSH 窗口唤到前台
+  ipcMain.handle('pet:focus-dsh', () => focusDshWindow())
   ipcMain.handle('pet:model-info', () => {
     const file = findModelSettings()
     return {

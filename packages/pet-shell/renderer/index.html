@@ -31,6 +31,18 @@
         <div id="bubbleText"></div>
       </div>
 
+      <!--
+        A7 主动提醒（审批积压 / 久坐 / 花销）。
+        与气泡的区别：气泡是"它现在在干什么"的流水，会自动消失；
+        通知是"要你注意/要你动手"，urgent 的一直留着直到你点它。
+        点击 → 把 DSH 窗口唤到前台（见 main.js 的 pet:focus-dsh）。
+      -->
+      <div id="notice" hidden>
+        <span id="noticeDot"></span>
+        <span id="noticeText"></span>
+        <span id="noticeHint">点击回到 DSH</span>
+      </div>
+
       <form id="composer" hidden>
         <input id="composerInput" type="text" placeholder="给 agent 派个活…" autocomplete="off" />
         <button type="submit">派活</button>
