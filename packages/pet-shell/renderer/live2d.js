@@ -57,15 +57,16 @@ const STATE_MAP = {
   running: { motion: 0, expression: 'reset', params: { Param9: 1 } },
   // 待确认：闭眼笑 + 星光 + 惊喜特效（最能抓住注意力）。**只播一次**再回待机，
   // 否则"等你确认"会一直闪星星，反而变成噪音。
-  // 特效刻意**不**撤：它表达的正是"还在等你"，要一直挂着。
-  approval: { motion: 1, durationMs: 4000, once: true, expression: 'surprise' },
+  // 特效刻意**留着**（keepEffect）：它表达的正是"还在等你"。
+  approval: { motion: 1, durationMs: 4000, once: true, expression: 'surprise', keepEffect: true },
   // 提问：招牌姿势 + 张嘴 + 问号。**保持循环** —— 要一直等用户回答。
   question: { motion: 2, expression: 'question' },
-  // 完成：闭眼笑 + 星光 + 开心。动作**只播一次**，然后回去荡秋千；
+  // 完成：闭眼笑 + 星光 + 开心。**只播一次**，然后回去荡秋千；
   // 注意桌宠状态仍是 done（未读背板继续显示），只是动作不再重复。
-  // 笑眼（Param3 开心）在动作结束后**再留 2~4 秒**才撤 ——
-  // 一结束就板起脸太突兀，"笑着看你一眼再恢复"更像活的。
-  done: { motion: 1, durationMs: 4000, once: true, expression: 'happy', lingerMs: [2000, 4000] },
+  // 特效**演完就撤**（不设 keepEffect）—— 用户实测后明确要求：
+  //   "从叉腰切换成待机后笑眼不再留存"。
+  // （早先做过"再保持 2~4 秒"（lingerMs），已按此要求撤掉；机制保留在 scheduleLinger。）
+  done: { motion: 1, durationMs: 4000, once: true, expression: 'happy' },
   // ⚠️ 出错：模型**没有**"困扰/失败"这类参数，只能靠眉毛+眼睛手工凑（见 ERROR_FACE），
   //    动作沿用最平静的荡秋千，避免"出错还蹦得欢"的违和感
   error: { motion: 3, expression: 'reset' },
@@ -636,7 +637,16 @@ function returnToBaseMotion() {
   if (currentMotion === BASE_MOTION) return
   state.log(`一次性动作播完 → 回到基础动作 Scene[${BASE_MOTION}]（状态仍是 ${state.currentState}）`)
   startMotion(BASE_MOTION, true)
-  scheduleLinger()
+
+  const mapped = STATE_MAP[state.currentState]
+  if (mapped?.lingerMs) {
+    // 特效再保留一小段（目前没有状态用这条，机制留着备用）
+    scheduleLinger()
+  } else if (mapped?.once && !mapped.keepEffect) {
+    // 演完就撤特效：否则回到待机了脸上还挂着笑（用户实测后明确要求撤掉）
+    state.log(`一次性动作结束 → 撤掉特效「${mapped.expression}」`)
+    setExpression('reset')
+  }
 }
 
 /**
