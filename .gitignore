@@ -46,3 +46,5 @@ desktop.ini
 # 截图可随时重跑生成，不入库以免被当作再分发）
 docs/screenshots/live2d-*.png
 docs/screenshots/state-*.png
+docs/screenshots/scene-*.png
+docs/screenshots/peak-*.png
