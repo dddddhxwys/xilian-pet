@@ -8,7 +8,7 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1566 行 / 外壳 8 文件 2367 行 / 工具 14 文件 2731 行，54 个提交 |
+| 规模 | 插件 5 文件 1566 行 / 外壳 8 文件 2367 行 / 工具 14 文件 2731 行，55 个提交 |
 | 自测 | `& $NODE tools\check-plugin.mjs` → **74 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
@@ -558,7 +558,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **动作播放时库不自动眨眼** | 待机眼睛一直闭 | 条件 `if (!motionUpdated) eyeBlink...`；自己兜底 |
 | **眨眼接管条件写反** | 比嘘的 wink 变成两只眼睁着 | 判据应是"哪些动作持续驱动 `ParamEyeLOpen`"（数据），不是"哪个动作闭眼"（零散现象） |
 | **`motionGroups` 懒加载** | 刚调 `motion()` 时取不到 motion 对象 | 50ms × 20 次重试 |
-| **外部挂载的插件 import 不到宿主的包** | 派活报 503 `no-message-factory`；`import('@deepseek-ai/dsh-llm')` 必然 `ERR_MODULE_NOT_FOUND` | 裸包名只从插件**自己所在目录**往上找，而该包在宿主 `app.asar/dsh/node_modules/` 里 → 改成"尽力取官方 + 内置等价兜底"。**任何要从宿主包里拿东西的插件都会踩** |
+| **外部挂载的插件 import 不到宿主的包** | 派活报 503 `no-message-factory`；`import('@deepseek-ai/dsh-llm')` 必然 `ERR_MODULE_NOT_FOUND` | 裸包名只从插件**自己所在目录**往上找，而该包在宿主 `app.asar/dsh/node_modules/` 里。**实测结论（2026-10-02）**：改用 `file://` 指向 `app.asar` 内那个文件的绝对路径**能成功 import**（Electron 44 支持 asar 内 ESM）—— `/health` 的 `messageFactory` 现在报的就是 `module:file:///F:/dsh/resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-llm/lib/index.js`。所以走的是**官方工厂**，内置等价实现只作兜底 |
 | **状态只在快照里学一次** | 派活报 503 `no-agent`：渲染端只在 SSE 快照里记 sessionId，而 DSH 刚重启时 `/state` 是空的 → 窗口"先连上、会话后出现"，它手上永远是 `undefined` | 快照只是**连接那一刻**的切片 → 后续每帧都要能补齐（现由 `primarySessionId` 承担），并且**服务端自己兜底**比指望客户端状态更稳 |
 | **`ctx.agents.get()` 只找"活着的" agent** | 派活 503 `no-agent`，**而 sessionId 完全正确**（`/state` 里就是它） | 注册表实现是 `store.get(id)?.agent`，store 只放 **entered** 条目，detach 即删 → 会话不活跃时必然 undefined。要**解析或恢复**得走 `ctx.sessionController.agents.resolveAgent(id)`（官方注释 "Resolve or resume one ordinary Session"，GUI 提交消息也是这条） |
 | **"我知道的会话"只来自自己观测的事件** | 派活 503 `no-session-known`：DSH 刚重启，插件一个会话都没观测到，空窗期里候选为空 | 观测事件 ≠ 世界全貌。宿主本来就有 `ctx.sessions.list()`（"All live sessions"）与 `ctx.agents.list()`，**别自己攒状态去猜** —— 能问就问 |
