@@ -41,8 +41,25 @@ import {
 
 export const name = 'xilian-pet'
 
-/** 需要 webServer 服务就绪后才注册路由 */
-export const inject = ['webServer']
+/**
+ * 需要哪些服务就绪后才跑 apply。
+ *
+ * ⚠️ **用到 `ctx.<服务>` 就必须在这里声明，否则读属性时当场抛**
+ * `cannot get property "agents" without inject`。
+ * 原因：Cordis 的 ctx 是 Proxy —— 访问一个**已注册的服务**属性时，
+ * 若该名字不在 `inject` 列表里，它**抛错**而不是返回 undefined
+ * （已从 `app.asar` 里的 Context handler 核实）。
+ *
+ * 这个坑的真实代价：A6「双击派活」一直报
+ * `派活失败 (500)：cannot get property "agents" without inject`；
+ * 而 `resolveAgent()` 里那句 `agents === undefined` 的兜底**根本执行不到** ——
+ * 异常在"取属性"那一步就抛了。
+ *
+ * 它还解释了"自测 62 项全绿、真机却失败"：mock ctx 把 `agents` 当普通属性发，
+ * 没复现 inject 校验。mock 已按真实语义收紧（见 `tools/check-plugin.mjs`），
+ * 并补了静态扫描 + 负向对照，防止再犯。
+ */
+export const inject = ['webServer', 'agents']
 
 const PROTOCOL_VERSION = 1
 const HEARTBEAT_MS = 15_000
@@ -53,7 +70,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 5
+const CODE_REVISION = 6
 
 /**
  * 安全预览：载荷里常有循环引用（例如 agent.ctx）。
@@ -355,6 +372,11 @@ export function apply(ctx, config = {}) {
   )
 
   // ── 3. 反向操控 ────────────────────────────────────────────────────
+  /**
+   * ⚠️ 下面这行 `ctx.agents` 能成立，**前提是顶部 `inject` 里声明了 `'agents'`**。
+   * 少了声明不会拿到 undefined，而是当场抛 `cannot get property "agents" without inject`。
+   * 所以紧接着那句 undefined 兜底，只在"服务已注入、但没有这个 sessionId"时才轮得到。
+   */
   function resolveAgent(sessionId) {
     const agents = ctx.agents
     if (agents === undefined || typeof agents.get !== 'function') return undefined

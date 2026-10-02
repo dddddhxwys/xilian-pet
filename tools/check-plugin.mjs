@@ -13,8 +13,9 @@
 
 import http from 'node:http'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
-import { apply } from '../packages/pet-plugin/index.js'
+import { apply, inject as pluginInject } from '../packages/pet-plugin/index.js'
 import {
   aggregate,
   createPetState,
@@ -403,12 +404,30 @@ check('reminders.enabled=false 时一条都不发', () => {
 // ─────────────────────────────────────────────────────────────
 console.log('\n[2] 插件契约（mock ctx）')
 
-function createMockCtx({ agents } = {}) {
+/** 真实宿主里可注入的服务名（读 ctx.<名字> 受 inject 校验管辖） */
+const MOCK_SERVICES = new Set(['webServer', 'agents'])
+
+/**
+ * 模拟 Cordis 的 ctx。
+ *
+ * ⚠️ **必须复现 inject 校验**：真实的 ctx 是 Proxy —— 访问一个**已注册的服务**属性时，
+ * 若该名字不在插件的 `inject` 里，它**抛错**而不是返回 undefined：
+ *     cannot get property "agents" without inject
+ *
+ * 这里一开始没模拟这一点（把 `agents` 当普通属性发），后果是：
+ * **自测 62 项全绿，真机「双击派活」却 500** ——
+ * 又是"mock 比真实宿主宽松 → 测出假象"这一类坑（与 waterfall 那次同源）。
+ * 现在按真实语义收紧：服务属性只有在 `inject` 声明过才给。
+ *
+ * @param {object}  opts
+ * @param {Function} [opts.agents]         sessionId → agent 的取用函数
+ * @param {string[]} [opts.declaredInject] 覆盖 inject 声明（仅用于负向对照）
+ */
+function createMockCtx({ agents, declaredInject = pluginInject } = {}) {
   const routes = new Map()
   const listeners = new Map()
   const warnings = []
-  const ctx = {
-    logger: { warn: (m) => warnings.push(String(m)), info: () => {} },
+  const services = {
     webServer: {
       register(route) {
         if (routes.has(route.path)) throw new Error(`duplicate route: ${route.path}`)
@@ -416,21 +435,39 @@ function createMockCtx({ agents } = {}) {
         return () => routes.delete(route.path)
       },
     },
-    on(event, fn) {
-      if (!listeners.has(event)) listeners.set(event, [])
-      listeners.get(event).push(fn)
-      return () => {
-        const arr = listeners.get(event)
-        const i = arr.indexOf(fn)
-        if (i >= 0) arr.splice(i, 1)
-      }
-    },
-    effect(fn) {
-      const dispose = fn()
-      return () => dispose?.()
-    },
     agents: agents === undefined ? undefined : { get: agents },
   }
+  const ctx = new Proxy(
+    {
+      logger: { warn: (m) => warnings.push(String(m)), info: () => {} },
+      on(event, fn) {
+        if (!listeners.has(event)) listeners.set(event, [])
+        listeners.get(event).push(fn)
+        return () => {
+          const arr = listeners.get(event)
+          const i = arr.indexOf(fn)
+          if (i >= 0) arr.splice(i, 1)
+        }
+      },
+      effect(fn) {
+        const dispose = fn()
+        return () => dispose?.()
+      },
+    },
+    {
+      get(target, prop, receiver) {
+        if (Reflect.has(target, prop)) return Reflect.get(target, prop, receiver)
+        if (MOCK_SERVICES.has(prop)) {
+          // 真实语义：没在 inject 里声明就抛，**不是**给 undefined
+          if (!declaredInject.includes(prop)) {
+            throw new Error(`cannot get property "${String(prop)}" without inject`)
+          }
+          return services[prop]
+        }
+        return undefined
+      },
+    },
+  )
   return { ctx, routes, listeners, warnings }
 }
 
@@ -474,6 +511,48 @@ const dispose = apply(ctx, {
   pathPrefix: '/xilian-pet',
   minHoldMs: 0,
   createUserMessage: stubCreateUserMessage,
+})
+
+check('inject 声明覆盖了用到的服务（webServer + agents）', () => {
+  assert.ok(Array.isArray(pluginInject), 'inject 必须是数组')
+  assert.ok(
+    pluginInject.includes('webServer'),
+    `inject 缺 webServer：${JSON.stringify(pluginInject)}`,
+  )
+  assert.ok(
+    pluginInject.includes('agents'),
+    `inject 缺 agents —— 真机会报 cannot get property "agents" without inject：${JSON.stringify(pluginInject)}`,
+  )
+})
+
+check('回归：源码里每次 ctx.<服务> 访问都在 inject 里声明过', () => {
+  // 静态扫一遍。为什么不能只靠上面那个 Proxy：Proxy 只在**真的执行到那一行**时才抛，
+  // 而某条路由可能根本没有测试走到 —— 静态扫描覆盖全部代码路径。
+  const src = readFileSync(new URL('../packages/pet-plugin/index.js', import.meta.url), 'utf8')
+  // 框架自带的 ctx 能力，不受 inject 管辖（含注释里出现的那些）
+  const FRAMEWORK = new Set([
+    'on', 'effect', 'logger', 'waterfall', 'emit', 'parallel', 'serial',
+    'reflect', 'fiber', 'events', 'inject', 'isolate', 'shadow', 'set', 'get',
+  ])
+  const used = new Set([...src.matchAll(/\bctx\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]))
+  const services = [...used].filter((n) => !FRAMEWORK.has(n))
+  const missing = services.filter((n) => !pluginInject.includes(n))
+  assert.deepEqual(
+    missing,
+    [],
+    `这些服务没在 inject 里声明：${missing.join(', ')}（扫到的服务：${services.join(', ')}）`,
+  )
+  assert.ok(services.length > 0, '静态扫描没扫到任何服务，正则可能失效了')
+})
+
+check('负向对照：mock 确实会因缺 inject 而抛错（证明上面两条测得出问题）', () => {
+  // 把 inject 缩回出 bug 的那一版（只有 webServer），断言访问 agents 会抛真实宿主的错
+  const { ctx: broken } = createMockCtx({ agents: mockAgentGetter, declaredInject: ['webServer'] })
+  assert.throws(
+    () => broken.agents,
+    /cannot get property "agents" without inject/,
+    'mock 没有复现 inject 校验，那这个自测就永远测不出这类 bug',
+  )
 })
 
 check('apply 注册了 8 条 exact 路由', () => {
