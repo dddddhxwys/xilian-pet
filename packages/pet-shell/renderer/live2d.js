@@ -82,6 +82,24 @@ const STATE_MAP = {
 const BASE_MOTION = 3
 
 /**
+ * 启动时先演一次的动作：**Scene[0] = "比嘘"手势**（手指举到唇边）。
+ * 用户明确要求把开场动作换成这个。演完自动落到待机（荡秋千）。
+ * 注意 Scene[0] 同时也是 `running` 的动作，所以循环开关必须能双向设置
+ * （见 setMotionLoop 的注释）。
+ */
+const INTRO_MOTION = 0
+/** 启动手势是否还在演（演完/被打断后置 false） */
+let introPending = true
+/**
+ * 这些状态是"立刻要你注意"的，可以**打断**开场手势；
+ * 其余状态（idle/running/question/done…）都排队等手势演完再应用 ——
+ * 否则 agent 正在干活（running）时启动，开场手势会被立刻掐掉，等于没做。
+ */
+const INTRO_INTERRUPT = new Set(['approval', 'error'])
+/** 开场手势期间到达的状态，记下来，演完再应用 */
+let stateWaitingIntro = null
+
+/**
  * 眼神由**动作本身**负责演的动作下标，我们的眨眼要让位。
  *
  * Scene[1]（4s，happy/惊喜）就是"闭眼笑"的表演，眼睛眯起来是它的内容；
@@ -508,6 +526,11 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cache
 
   // 一次性动作播完 → 回基础动作。事件挂在 motionManager 上。
   model.internalModel.motionManager.on('motionFinish', () => {
+    // 开场手势演完 → 落到待机（或应用排队中的状态）
+    if (introPending) {
+      finishIntro()
+      return
+    }
     const mapped = STATE_MAP[state.currentState]
     if (mapped?.once) returnToBaseMotion()
   })
@@ -528,7 +551,16 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cache
       state.log(`启动调试动作失败 ${g}[${idx}]：${error.message}`)
     }
   } else {
-    startMotion(BASE_MOTION, true)
+    // 启动先演一次"比嘘"手势，演完自动落到待机（荡秋千）
+    state.log(`启动手势 Scene[${INTRO_MOTION}]（只演一次），之后落到待机 Scene[${BASE_MOTION}]`)
+    startMotion(INTRO_MOTION, false)
+    // 兜底：万一循环没关掉（motionFinish 不触发），按时长强制结束开场手势
+    setTimeout(() => {
+      if (introPending) {
+        state.log('开场手势未收到 motionFinish，按时长兜底结束')
+        finishIntro()
+      }
+    }, 3600)
   }
 
   if (sampleMs > 0) {
@@ -557,35 +589,44 @@ function startMotion(index, loop) {
     state.log(`启动动作 Scene[${index}] 失败：${error.message}`)
     return
   }
-  if (loop) return
-  disableMotionLoop(index)
+  if (loop !== undefined) setMotionLoop(index, loop)
 }
 
 /**
- * 关掉某个动作的循环。
+ * 关/开某个动作的循环。
  *
  * 为什么需要重试：`motionManager.motionGroups[group][index]` 是**懒加载**的，
  * 刚调用 motion() 的那一刻往往还是 null（实测第一版就取不到，只能退回定时器）。
  * 而 `CubismMotion._isLoop` 是每帧读的，所以启动后几十毫秒内设上都来得及。
+ *
+ * 为什么要**双向**设置（而不只是关循环）：
+ * Scene[0] 既当"启动手势"（只演一次）又当 `running` 的动作（要循环）。
+ * 如果把它的循环永久关掉，running 时就会只播一遍然后冻在最后一帧。
+ * 所以每次启动动作都显式声明这一次要循环还是不循环。
+ *
+ * token 用来作废过期的重试：同一动作被连续启动两次时，
+ * 前一次的延迟重试不能把后一次的设置覆盖掉。
  */
-function disableMotionLoop(index, attempt = 0) {
-  const mm = state.model?.internalModel?.motionManager
-  const groups = mm?.motionGroups ?? {}
-  const motion = groups['Scene']?.[index]
-  if (motion && typeof motion.setIsLoop === 'function') {
-    motion.setIsLoop(false)
-    state.log(`Scene[${index}] 已设为只播一次（第 ${attempt + 1} 次尝试）`)
-    return
+let loopSetToken = 0
+
+function setMotionLoop(index, loop) {
+  const token = ++loopSetToken
+  const trySet = (attempt) => {
+    if (token !== loopSetToken) return // 已被更新的调用取代
+    const mm = state.model?.internalModel?.motionManager
+    const motion = mm?.motionGroups?.['Scene']?.[index]
+    if (motion && typeof motion.setIsLoop === 'function') {
+      motion.setIsLoop(loop)
+      state.log(`Scene[${index}] 循环=${loop}（第 ${attempt + 1} 次尝试）`)
+      return
+    }
+    if (attempt < 20) {
+      setTimeout(() => trySet(attempt + 1), 50)
+    } else {
+      state.log(`Scene[${index}] 始终取不到 motion 对象，循环设置未生效`)
+    }
   }
-  if (attempt === 0) {
-    // 首次失败时把实际结构打出来，便于区分"还没加载"和"取错了键"
-    state.log(`motionGroups 键=${JSON.stringify(Object.keys(groups))}，Scene 组长度=${groups['Scene']?.length ?? '无'}`)
-  }
-  if (attempt < 20) {
-    setTimeout(() => disableMotionLoop(index, attempt + 1), 50)
-  } else {
-    state.log(`Scene[${index}] 始终取不到 motion 对象，改用定时器兜底`)
-  }
+  trySet(0)
 }
 
 /** 一次性动作结束后回到基础动作。
@@ -622,8 +663,35 @@ function scheduleLinger() {
   }, wait)
 }
 
+/** 开场手势结束（正常演完或超时兜底）→ 应用排队中的状态，没有就落到待机 */
+function finishIntro() {
+  if (!introPending) return
+  introPending = false
+  const next = stateWaitingIntro
+  stateWaitingIntro = null
+  if (next) {
+    state.log(`启动手势结束 → 应用等待中的状态 ${next}`)
+    playStateMotion(next)
+  } else {
+    state.log('启动手势结束 → 落到待机')
+    returnToBaseMotion()
+  }
+}
+
 /** 按状态切换动作 */
 function playStateMotion(next) {
+  // 开场手势优先演完（这是用户明确要的开场动作）
+  if (introPending) {
+    if (INTRO_INTERRUPT.has(next)) {
+      introPending = false
+      state.log(`启动手势被紧急状态 ${next} 打断`)
+    } else {
+      stateWaitingIntro = next
+      state.log(`状态 ${next} 在启动手势期间到达，等手势演完再应用`)
+      return
+    }
+  }
+
   const mapped = STATE_MAP[next] ?? STATE_MAP.idle
   clearTimeout(oneShotTimer)
   clearTimeout(lingerTimer) // 切状态时取消上一条待撤的特效
