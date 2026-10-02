@@ -265,7 +265,18 @@ async function startLive2D() {
     canvas,
     modelUrl: info.url,
     log: (message) => api.log(`[live2d] ${message}`),
+    forceMotion: info.forceMotion,
+    sampleMs: info.sampleMs,
   })
+
+  // 精确捕捉动作关键帧：从**动作开始**（= init 返回）算起，
+  // 而不是从窗口 ready 算起（那会差 1~3 秒且不稳定，实测踩不到高光时刻）。
+  if (info.snapshotAtMs > 0) {
+    setTimeout(() => {
+      api.log(`到达动作 ${info.snapshotAtMs}ms，请求截图`)
+      api.snapshotNow()
+    }, info.snapshotAtMs)
+  }
   return true
 }
 

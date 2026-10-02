@@ -24,14 +24,36 @@
  * 命名：挂 window.xilianLive2D。**不要**用 window.pet 之类可能与元素 id 撞名的名字。
  */
 
-/** 各桌宠状态 → 要拉起的表达式 / 参数 */
+/**
+ * 各桌宠状态 → 动作 / 表达式 / 参数。
+ *
+ * ⚠️ 四个动作原本都叫 `Scene1~4`，名字看不出内容。这里的对应关系是靠
+ * **参数采样 + 高光时刻截图**反推出来的（`PET_SAMPLE_PARAMS=1` / `PET_SNAPSHOT_AT_MOTION_MS`），
+ * 依据是各动作独有的"特效开关"参数与画面表现：
+ *
+ *   Scene[0] 3s   → Param15 嘻嘻 + Param5 星星 + Param12 手指
+ *                    画面：双手抬到胸前的小动作 + 细碎亮点
+ *   Scene[1] 4s   → Param7 闪耀 + Param17/18 叉腰1/2
+ *                    画面：闭眼笑 + 张嘴 + 周围明显星光
+ *   Scene[2] 3s   → Param10/11 招牌1/2 + 嘴开闭 + 角度X 甩到 -25°
+ *                    画面：摆招牌姿势 + 张嘴说话
+ *   Scene[3] 180s → Param13/14 秋千1/2 + Param31 秋千特殊 + Param32 秋千开关
+ *                    画面：秋千明显倾斜摆动、腿鞋摇晃满量程（±30°）
+ */
 const STATE_MAP = {
-  idle: { expressions: ['reset'] },
-  running: { expressions: ['reset'], params: { Param9: 1 } }, // Param9 = 思考
-  approval: { expressions: ['reset', 'surprise'] }, // 惊喜 + 待确认
-  question: { expressions: ['reset', 'question'] }, // 问号
-  done: { expressions: ['reset', 'happy'] }, // 开心
-  error: { expressions: ['reset'], params: {} }, // ⚠️ 模型无"困扰"参数，见下方 fallback
+  // 待机：默认就荡秋千。180 秒长循环，最像"自己待着"
+  idle: { motion: 3, expressions: ['reset'] },
+  // 工作中：俏皮小动作 + 打开「思考」特效
+  running: { motion: 0, expressions: ['reset'], params: { Param9: 1 } },
+  // 待确认：闭眼笑 + 星光 + 惊喜特效（最能抓住注意力）
+  approval: { motion: 1, expressions: ['reset', 'surprise'] },
+  // 提问：招牌姿势 + 张嘴 + 问号
+  question: { motion: 2, expressions: ['reset', 'question'] },
+  // 完成：闭眼笑 + 星光 + 开心
+  done: { motion: 1, expressions: ['reset', 'happy'] },
+  // ⚠️ 出错：模型**没有**"困扰/失败"这类参数，只能靠眉毛+眼睛手工凑（见 ERROR_FACE），
+  //    动作沿用最平静的荡秋千，避免"出错还蹦得欢"的违和感
+  error: { motion: 3, expressions: ['reset'] },
 }
 
 /** error 档的兜底：模型没有"困扰/失败"参数，用眉毛 + 眼睛手工凑一个皱眉苦脸 */
@@ -118,6 +140,79 @@ function setExpressions(names) {
  *   另一个后果：**动作在播时库不会自动眨眼**（`if (!motionUpdated) eyeBlink...`），
  *   眨眼由动作自带的 `ParamEyeLOpen` 曲线负责 —— 我们不必也不该另外驱动。
  */
+/**
+ * 参数采样器 —— 用来"看懂"一个动作到底做了什么。
+ *
+ * 背景：这个模型的 4 个动作都叫 Scene1~4，光看名字不知道是什么。
+ * 而它的"表情"其实是**特效开关**（墨镜/星星/问号/闪耀/思考/手指/招牌/秋千…），
+ * 所以只要把这些参数**随时间的取值**采下来，就能反推出每个动作的内容 ——
+ * 比逐帧截图省事得多，也更准（能看到精确的起止时刻）。
+ *
+ * 打开方式：PET_SAMPLE_PARAMS=1（可配 PET_SAMPLE_MS 指定采样时长）
+ */
+const WATCH_PARAMS = {
+  Param: '惊喜', Param2: '圈圈', Param3: '开心', Param15: '嘻嘻',
+  Param4: '墨镜', Param5: '星星', Param6: '问号', Param7: '闪耀', Param8: '问号WL',
+  Param9: '思考', Param10: '招牌1', Param11: '招牌2', Param12: '手指',
+  Param13: '秋千1', Param14: '秋千2', Param16: '绳子', Param17: '叉腰1', Param18: '叉腰2',
+  Param19: '左腿摇晃', Param20: '右腿摇晃', Param21: '左鞋摇晃', Param22: '右鞋摇晃',
+  Param23: '秋千摇晃1', Param24: '秋千摇晃2',
+  Param25: '摆动WL1', Param26: '摆动WL2', Param27: '跟随WL1', Param28: '跟随WL2',
+  Param29: '头发WL1', Param30: '头发WL2', Param31: '秋千特殊', Param32: '秋千开关',
+  ParamEyeLOpen: '左眼开闭', ParamEyeROpen: '右眼开闭',
+  ParamMouthOpenY: '嘴开闭', ParamAngleX: '角度X', ParamAngleZ: '角度Z', ParamBreath: '呼吸',
+}
+
+let sampler = null
+
+function samplerBegin(durationMs) {
+  sampler = { t0: performance.now(), durationMs, data: new Map(Object.keys(WATCH_PARAMS).map((k) => [k, []])) }
+}
+
+/** 在 beforeModelUpdate 里调用；顺手把状态参数也应用了 */
+function samplerSample(core) {
+  if (!sampler) return
+  const t = performance.now() - sampler.t0
+  for (const id of sampler.data.keys()) {
+    let value
+    try {
+      value = core.getParameterValueById(id)
+    } catch {
+      value = undefined
+    }
+    sampler.data.get(id).push([t, value])
+  }
+}
+
+function samplerFinish() {
+  if (!sampler) return
+  const { durationMs, data } = sampler
+  const lines = []
+  for (const [id, series] of data) {
+    const valid = series.filter(([, v]) => typeof v === 'number')
+    if (!valid.length) continue
+    const values = valid.map(([, v]) => v)
+    const min = Math.min(...values)
+    const max = Math.max(...values)
+    // 全程贴着 0 的参数没有信息量，跳过
+    if (Math.abs(min) < 0.05 && Math.abs(max) < 0.05) continue
+    // 找一个"明显的活动区间"：|v| 超过阈值的第一刻与最后一刻
+    const threshold = Math.max(0.15, Math.max(Math.abs(min), Math.abs(max)) * 0.3)
+    const active = valid.filter(([, v]) => Math.abs(v) >= threshold)
+    const from = active.length ? (active[0][0] / 1000).toFixed(2) : '-'
+    const to = active.length ? (active[active.length - 1][0] / 1000).toFixed(2) : '-'
+    const steady = Math.abs(max - min) < 0.05
+    lines.push(
+      `  ${id.padEnd(16)} 「${WATCH_PARAMS[id]}」  范围 ${min.toFixed(2)}~${max.toFixed(2)}` +
+        (steady ? ' 恒定' : `  活动 ${from}~${to}s`),
+    )
+  }
+  state.log(`===== 参数采样（${(durationMs / 1000).toFixed(1)}s）=====`)
+  for (const l of lines) state.log(l)
+  state.log(`===== 采样结束，共 ${lines.length} 个有变化的参数 =====`)
+  sampler = null
+}
+
 function applyState() {
   const mapped = STATE_MAP[state.currentState] ?? STATE_MAP.idle
   if (mapped.params && Object.keys(mapped.params).length) setParams(mapped.params)
@@ -125,7 +220,7 @@ function applyState() {
 }
 
 /** 初始化：创建 PIXI 应用并加载模型 */
-async function init({ canvas, modelUrl, log }) {
+async function init({ canvas, modelUrl, log, forceMotion, sampleMs }) {
   state.canvas = canvas
   state.log = log ?? (() => {})
   if (!window.PIXI?.live2d?.Live2DModel) {
@@ -171,15 +266,31 @@ async function init({ canvas, modelUrl, log }) {
 
   fit()
 
-  // 状态参数挂在每帧的最后时机（见 applyState 上方注释）
-  model.internalModel.on('beforeModelUpdate', applyState)
+  // 状态参数 +（可选）参数采样，都挂在每帧的最后一个时机
+  model.internalModel.on('beforeModelUpdate', () => {
+    applyState()
+    samplerSample(model.internalModel.coreModel)
+  })
 
-  // 待机动作：Scene 组，循环播放
+  // 待机动作：默认 Scene[0] 循环。调试时可用 PET_FORCE_MOTION=Scene:N 指定。
+  let group = 'Scene'
+  let index = 0
+  if (typeof forceMotion === 'string' && forceMotion.includes(':')) {
+    const [g, i] = forceMotion.split(':')
+    group = g
+    index = Number(i) || 0
+  }
   try {
-    model.motion('Scene', 0, PIXI.live2d.MotionPriority.IDLE)
-    state.log('已启动待机动作 Scene[0]（循环）')
+    model.motion(group, index, PIXI.live2d.MotionPriority.IDLE)
+    state.log(`已启动动作 ${group}[${index}]（循环）`)
   } catch (error) {
-    state.log(`启动动作失败：${error.message}`)
+    state.log(`启动动作失败 ${group}[${index}]：${error.message}`)
+  }
+
+  if (sampleMs > 0) {
+    samplerBegin(sampleMs)
+    state.log(`开始参数采样 ${sampleMs}ms（动作 ${group}[${index}]）`)
+    setTimeout(samplerFinish, sampleMs)
   }
 
   state.ready = true
@@ -191,7 +302,18 @@ function setState(next) {
   if (next === state.currentState) return
   state.currentState = next
   const mapped = STATE_MAP[next] ?? STATE_MAP.idle
-  state.log(`状态 → ${next}`)
+  state.log(`状态 → ${next}（动作 Scene[${mapped.motion}]）`)
+
+  // 切动作。用 FORCE 而不是 NORMAL：NORMAL 会被正在播放的动作挡住，
+  // 状态切换是显式意图，应该立刻生效（FORCE 仍会走模型自带的淡入淡出）。
+  if (state.model && mapped.motion !== undefined) {
+    try {
+      state.model.motion('Scene', mapped.motion, PIXI.live2d.MotionPriority.FORCE)
+    } catch (error) {
+      state.log(`切换动作失败 Scene[${mapped.motion}]：${error.message}`)
+    }
+  }
+
   setExpressions(mapped.expressions ?? ['reset'])
   if (mapped.params && Object.keys(mapped.params).length) setParams(mapped.params)
 }

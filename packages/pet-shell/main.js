@@ -267,30 +267,41 @@ function postControl(action, payload) {
 }
 
 // ── 自检截图（只截我们自己的透明窗，不碰用户桌面）──────────────────
-// 用法：PET_SNAPSHOT=<png路径> [PET_SNAPSHOT_EXIT=1]
+// 用法：PET_SNAPSHOT=<png路径> [PET_SNAPSHOT_EXIT=1] [PET_SNAPSHOT_DELAY_MS=2500]
+//       PET_SNAPSHOT_AT_MOTION_MS=<ms>  ← 从**动作开始**算起的精确时刻截图
 // 有它的意义：agent 看不到屏幕，但可以拿这张图确认"窗口确实渲染出了宠物"，
 // 并且能直接检查透明通道是否正确（透明区域必须是 alpha=0）。
-function maybeSnapshot(win) {
+//
+// 为什么需要 AT_MOTION_MS：PET_SNAPSHOT_DELAY_MS 是从 ready-to-show 起算，
+// 而动作要等模型加载完才开始（实测差 1~3 秒且不稳定），踩不准动作里的高光时刻。
+// 所以那种情况由渲染端在动作跑到指定时刻时主动请求截图。
+async function captureSnapshot(win) {
   const target = process.env.PET_SNAPSHOT
-  if (!target) return
+  if (!target || win.isDestroyed()) return
+  try {
+    const image = await win.webContents.capturePage()
+    const png = image.toPNG()
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, png)
+    log(`自检截图已写出：${target}（${png.length} 字节，${image.getSize().width}x${image.getSize().height}）`)
+    win.webContents.send('pet:snapshot-done', target)
+  } catch (error) {
+    log('自检截图失败：', error.message)
+  }
+  if (process.env.PET_SNAPSHOT_EXIT === '1') {
+    setTimeout(() => app.quit(), 300)
+  }
+}
+
+function maybeSnapshot(win) {
+  if (!process.env.PET_SNAPSHOT) return
+  // 精确时刻模式：等渲染端发 'pet:snapshot-now'
+  if (process.env.PET_SNAPSHOT_AT_MOTION_MS) {
+    log(`等待渲染端在动作 ${process.env.PET_SNAPSHOT_AT_MOTION_MS}ms 处触发截图`)
+    return
+  }
   const delay = Number(process.env.PET_SNAPSHOT_DELAY_MS ?? 2500)
-  setTimeout(async () => {
-    try {
-      const image = await win.webContents.capturePage()
-      const png = image.toPNG()
-      const { writeFileSync, mkdirSync } = await import('node:fs')
-      const { dirname } = await import('node:path')
-      mkdirSync(dirname(target), { recursive: true })
-      writeFileSync(target, png)
-      log(`自检截图已写出：${target}（${png.length} 字节，${image.getSize().width}x${image.getSize().height}）`)
-      win.webContents.send('pet:snapshot-done', target)
-    } catch (error) {
-      log('自检截图失败：', error.message)
-    }
-    if (process.env.PET_SNAPSHOT_EXIT === '1') {
-      setTimeout(() => app.quit(), 300)
-    }
-  }, delay)
+  setTimeout(() => captureSnapshot(win), delay)
 }
 
 // ── 窗口 ────────────────────────────────────────────────────────────
@@ -394,8 +405,18 @@ app.whenReady().then(async () => {
       exists: file !== null,
       // 与页面同源（都是 pet://app），所以渲染端 XHR 不会被 CORS 拦
       url: file === null ? null : `pet://app/model/${encodeURIComponent(file)}`,
+      // 调试用（agent 看不到屏幕，只能靠日志与截图）：
+      //   PET_FORCE_MOTION=Scene:1  指定播放哪个动作
+      //   PET_SAMPLE_PARAMS=1       采样动作驱动的参数（用来"看懂"动作内容）
+      //   PET_SAMPLE_MS=4000        采样时长
+      forceMotion: process.env.PET_FORCE_MOTION ?? null,
+      sampleMs: process.env.PET_SAMPLE_PARAMS === '1' ? Number(process.env.PET_SAMPLE_MS ?? 5000) : 0,
+      // 从动作开始算起的截图时刻（0 = 不用这条路径）
+      snapshotAtMs: Number(process.env.PET_SNAPSHOT_AT_MOTION_MS ?? 0),
     }
   })
+  // 渲染端在动作跑到指定时刻时主动请求截图（见 maybeSnapshot 上方注释）
+  ipcMain.on('pet:snapshot-now', () => captureSnapshot(win))
   ipcMain.on('pet:log', (_event, message) => log('[renderer]', message))
   // 渲染端注册好 handler 之后握手一次，补发最近的连接状态与快照帧
   ipcMain.on('pet:ready', () => {
