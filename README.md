@@ -8,7 +8,7 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1680 行 / 外壳 9 文件 2648 行 / 工具 14 文件 2865 行，59 个提交 |
+| 规模 | 插件 5 文件 1680 行 / 外壳 9 文件 2660 行 / 工具 14 文件 2865 行，60 个提交 |
 | 自测 | `& $NODE tools\check-plugin.mjs` → **82 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
@@ -291,8 +291,12 @@ Electron 44.5.1
 - 想手动看效果（不必真等一次审批积压）：
 
 ```powershell
+# ⚠️ 中文**必须发字节**：PowerShell 5.1 的 `-Body <字符串>` 默认按 ASCII 编码，
+#    中文会变成 `?????`（实测踩过，渲染端拿到的就是坏字符串）。
+$json = '{"text":"有 2 个操作在等你审批","urgent":true}'
 Invoke-RestMethod -Method Post http://127.0.0.1:19387/xilian-pet/debug/notice `
-  -ContentType 'application/json' -Body '{"text":"有 2 个操作在等你审批"}'
+  -ContentType 'application/json; charset=utf-8' `
+  -Body ([System.Text.Encoding]::UTF8.GetBytes($json))
 ```
 
 ### 三条特殊规则（都是实测踩出来的）
@@ -614,6 +618,8 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **全局环形缓冲被高频通道刷爆** | `/debug/shapes` 80 条样本全是流式帧 | 按 channel 分别限量 |
 | **循环引用载荷预览不可读** | `agent/status` 样本 `<unserializable>` | 安全序列化（循环处标 `[circular]`） |
 | **绝不能用 pwsh 改含中文的源码** | 注释变乱码、吞换行 | 一律用 edit/write 工具 |
+| **`Invoke-RestMethod -Body <字符串>` 发中文变 `?????`** | 通知 / 派活里的中文到了宿主就是问号 | PowerShell 5.1 对字符串 body 默认按 ASCII 编码 → 传**字节**：`-Body ([Text.Encoding]::UTF8.GetBytes($json))` + `charset=utf-8` |
+| **绝对定位 + flex 会把中文挤成一列** | 通知条变成"一个字一行"的高柱，几乎占满整个窗口（实测截图） | 绝对定位元素宽度是"收缩适应"，flex 文本项会被压到近 0 宽 → 改**固定宽度 + 块级布局** |
 
 ### 关于 `setIgnoreMouseEvents` 那个 bug（值得单独记）
 

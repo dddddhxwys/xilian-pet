@@ -297,6 +297,8 @@ function showNotice({ text, urgent, notice: kind } = {}) {
   notice.dataset.kind = kind ?? ''
   notice.hidden = false
   document.body.classList.add('has-notice')
+  // 量出通知实际高度，交给 CSS 把气泡让开（1 行 / 2 行都能对上，不写死偏移）
+  document.body.style.setProperty('--notice-h', `${notice.offsetHeight}px`)
   clearTimeout(noticeTimer)
   if (!urgent) noticeTimer = setTimeout(hideNotice, 8000)
   api.log(`通知：${text}${urgent ? '（urgent）' : ''}`)
@@ -306,6 +308,7 @@ function hideNotice() {
   clearTimeout(noticeTimer)
   notice.hidden = true
   document.body.classList.remove('has-notice')
+  document.body.style.removeProperty('--notice-h')
 }
 
 // 点击通知 → 把 DSH 窗口唤到前台（"单击跳转"）。失败就留着，好让你再点一次。
