@@ -8,7 +8,7 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1680 行 / 外壳 9 文件 2660 行 / 工具 14 文件 2865 行，61 个提交 |
+| 规模 | 插件 5 文件 1680 行 / 外壳 9 文件 2712 行 / 工具 14 文件 2865 行，62 个提交 |
 | 自测 | `& $NODE tools\check-plugin.mjs` → **82 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
@@ -286,8 +286,15 @@ Electron 44.5.1
 | 何时消失 | 固定 6 秒 | **urgent 不自动消失**（点它才收）；低优先 8 秒 |
 
 - **urgent**（审批积压）带小圆点脉冲动画，专门等你去处理
-- **单击通知条 → 把 DSH 窗口唤到前台**。DSH 是**另一个进程**的 Electron 应用，
-  所以桌宠用 Win32 `EnumWindows` + `SetForegroundWindow` 把它的窗口拉出来（`main.js` 的 `focusDshWindow()`）
+- **单击通知条 → 把 DSH 窗口唤到前台**（`main.js` 的 `focusDshWindow()`）。DSH 是**另一个进程**的
+  Electron 应用，所以桌宠走 Win32 把它的窗口拉出来，三个要点都是实机踩出来的：
+  1. **按标题匹配，不能只按进程名** —— DSH 的窗口**不属于**那两个叫 `DeepSeek Harness` 的进程，
+     只按进程名匹配会一个都枚举不到（实测就是"点了没反应"的原因）。
+     现在按「PID 在名字集合里 **或** 标题含 `Harness|DSH|DeepSeek`」筛，再取**面积最大**的那个
+     （Electron 有多个窗口，挑错了会激活一个看不见的辅助窗）。
+  2. **要绕 Windows 前台锁** —— `SetForegroundWindow` 在调用方不是前台进程时会**返回 true
+     但只让任务栏闪一下**。所以先 `AllowSetForegroundWindow(-1)` + `AttachThreadInput` 再设置。
+  3. **结果写 `.state/focus-log.txt`** —— agent 读不到桌宠控制台，"点了没反应"只能靠这个文件定位。
 - 想手动看效果（不必真等一次审批积压）：
 
 ```powershell
@@ -630,6 +637,8 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **绝不能用 pwsh 改含中文的源码** | 注释变乱码、吞换行 | 一律用 edit/write 工具 |
 | **`Invoke-RestMethod -Body <字符串>` 发中文变 `?????`** | 通知 / 派活里的中文到了宿主就是问号 | PowerShell 5.1 对字符串 body 默认按 ASCII 编码 → 传**字节**：`-Body ([Text.Encoding]::UTF8.GetBytes($json))` + `charset=utf-8` |
 | **绝对定位 + flex 会把中文挤成一列** | 通知条变成"一个字一行"的高柱，几乎占满整个窗口（实测截图） | 绝对定位元素宽度是"收缩适应"，flex 文本项会被压到近 0 宽 → 改**固定宽度 + 块级布局** |
+| **只按进程名找 DSH 窗口找不到** | 点通知没反应：`detail=no-window pids=2` | DSH 的窗口**不属于**那两个同名进程 → 改成「PID 命中 **或** 标题含 `Harness/DSH/DeepSeek`」再取**面积最大**者。另：`Process.MainWindowHandle` 实测恒为 0，**别用它** |
+| **`SetForegroundWindow` 返回 true 却没到前台** | 点了只闪一下任务栏 | Windows 前台锁 → 先 `AllowSetForegroundWindow(-1)` + `AttachThreadInput` 再设置；用 `GetForegroundWindow()` **复核**，别信返回值 |
 
 ### 关于 `setIgnoreMouseEvents` 那个 bug（值得单独记）
 

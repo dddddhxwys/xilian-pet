@@ -13,7 +13,7 @@
 import { app, BrowserWindow, globalShortcut, ipcMain, protocol, screen } from 'electron'
 import { execFile } from 'node:child_process'
 import http from 'node:http'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs'
 import { hitTest } from './hit-test.js'
 import { readFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize } from 'node:path'
@@ -146,6 +146,20 @@ function showWindow(win) {
 const log = (...args) => console.log('[pet]', ...args)
 
 /**
+ * 把 A7「单击跳转」的结果写进 `.state/focus-log.txt`。
+ *
+ * 为什么落文件而不是只打控制台：agent 读不到桌宠的控制台，
+ * "点了没反应"就只能靠用户手动抄日志。写文件后我自己 tail 一下就知道卡在哪一步。
+ */
+function appendFocusLog(line) {
+  try {
+    appendFileSync(join(STATE_DIR, 'focus-log.txt'), `${new Date().toISOString()} ${line}\n`)
+  } catch {
+    /* 写不进去就算了，绝不能因此影响跳转本身 */
+  }
+}
+
+/**
  * A7「单击跳转」：把 DSH 窗口唤到前台。
  *
  * 为什么走 PowerShell：DSH 是**另一个进程**的 Electron 应用，桌宠无法直接操作它的窗口。
@@ -156,9 +170,15 @@ const log = (...args) => console.log('[pet]', ...args)
  *    base64(UTF-16LE) 完全免疫引号/换行问题。
  *
  * ⚠️ 也不能只靠 `Process.MainWindowHandle`：实测本机它一直是 **0**，不可靠。
- *    主路径是 **EnumWindows 枚举顶层窗口 → 按进程名匹配 PID → SetForegroundWindow**，
- *    再用 `AppActivate('DeepSeek Harness')` 兜一次。
- *    失败时把 `pids` / `visible` 一起报出来 —— 能区分"没找到进程"和"进程在但没窗口"。
+ *
+ * 实现要点（都是被实机问题逼出来的）：
+ *  1. **EnumWindows 枚举顶层窗口**，挑「属于 DSH 进程 **或** 标题像 DSH」里**面积最大**的那个
+ *     —— Electron 会有多个窗口，随便挑一个可能就是不可见的辅助窗，点了"没反应"。
+ *  2. **绕过 Windows 前台锁**：`SetForegroundWindow` 在调用方不是前台进程时会**返回 true
+ *     但只让任务栏闪一下**（实测就是这个症状）。所以先 `AllowSetForegroundWindow(-1)`，
+ *     再 `AttachThreadInput` 把自己的输入线程挂到当前前台线程上，然后才 SetForegroundWindow。
+ *  3. **结果写进 `.state/focus-log.txt`** —— agent 读不到桌宠的控制台，
+ *     写文件才能让我事后自己定位（这行日志就是为此存在）。
  *
  * @returns {Promise<{ok: boolean, detail: string}>} 供渲染端决定是否收掉通知
  */
@@ -168,22 +188,53 @@ function focusDshWindow() {
     "$names=@('DeepSeek Harness','DeepSeekHarness','deepseek-harness','dsh')",
     'Add-Type @"',
     'using System;',
+    'using System.Text;',
     'using System.Runtime.InteropServices;',
     'public class WinActivate {',
     '  public delegate bool EnumProc(IntPtr h, IntPtr l);',
+    '  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }',
     '  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);',
     '  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);',
     '  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);',
     '  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);',
+    '  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);',
     '  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);',
+    '  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();',
+    '  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool f);',
+    '  [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int pid);',
+    '  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);',
+    '  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);',
+    '  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();',
     '}',
     '"@',
     "$pids=@(Get-Process | Where-Object { $names -contains $_.ProcessName } | Select-Object -ExpandProperty Id)",
-    '$global:found=[IntPtr]::Zero',
-    '$global:visible=0',
-    '$cb=[WinActivate+EnumProc]{ param($h,$l) if(-not [WinActivate]::IsWindowVisible($h)){return $true}; $global:visible=$global:visible+1; $p=0; [void][WinActivate]::GetWindowThreadProcessId($h,[ref]$p); if($pids -contains $p){ $global:found=$h; return $false }; return $true }',
+    '$global:best=[IntPtr]::Zero; $global:bestArea=0; $global:bestTitle=""; $global:visible=0; $global:titled=0',
+    '$cb=[WinActivate+EnumProc]{ param($h,$l)',
+    '  if(-not [WinActivate]::IsWindowVisible($h)){ return $true }',
+    '  $global:visible=$global:visible+1',
+    '  $p=0; [void][WinActivate]::GetWindowThreadProcessId($h,[ref]$p)',
+    '  $sb=[System.Text.StringBuilder]::new(512); [void][WinActivate]::GetWindowTextW($h,$sb,512); $t=$sb.ToString()',
+    '  if($t.Length -gt 0){ $global:titled=$global:titled+1 }',
+    "  if(($pids -contains $p) -or ($t -match 'Harness|DSH|DeepSeek')){",
+    '    $r=[WinActivate+RECT]::new(); [void][WinActivate]::GetWindowRect($h,[ref]$r)',
+    '    $area=[math]::Abs(($r.R-$r.L)*($r.B-$r.T))',
+    '    if($area -gt $global:bestArea){ $global:bestArea=$area; $global:best=$h; $global:bestTitle=$t }',
+    '  }',
+    '  return $true }',
     '[void][WinActivate]::EnumWindows($cb,[IntPtr]::Zero)',
-    "if($global:found -ne [IntPtr]::Zero){ [void][WinActivate]::ShowWindow($global:found,9); $ok=[WinActivate]::SetForegroundWindow($global:found); Write-Output ('ok=' + $ok + ' hwnd=' + $global:found) } else { $s=New-Object -ComObject WScript.Shell; $ok=$s.AppActivate('DeepSeek Harness'); Write-Output ('ok=' + $ok + ' detail=no-window pids=' + $pids.Count + ' visible=' + $global:visible) }",
+    "if($global:best -eq [IntPtr]::Zero){ Write-Output ('ok=False detail=no-window pids=' + $pids.Count + ' visible=' + $global:visible + ' titled=' + $global:titled); exit }",
+    '$h=$global:best',
+    '[void][WinActivate]::AllowSetForegroundWindow(-1)',
+    '[void][WinActivate]::ShowWindow($h,9)',
+    '[void][WinActivate]::BringWindowToTop($h)',
+    '$fg=[WinActivate]::GetForegroundWindow()',
+    '$fgT=0; [void][WinActivate]::GetWindowThreadProcessId($fg,[ref]$fgT)',
+    '$cur=[WinActivate]::GetCurrentThreadId()',
+    '$att=[WinActivate]::AttachThreadInput($cur,$fgT,$true)',
+    '$ok=[WinActivate]::SetForegroundWindow($h)',
+    '[void][WinActivate]::AttachThreadInput($cur,$fgT,$false)',
+    '$now=[WinActivate]::GetForegroundWindow()',
+    "Write-Output ('ok=' + $ok + ' hwnd=' + $h + ' area=' + $global:bestArea + ' attach=' + $att + ' isForeground=' + ($now -eq $h) + ' title=' + $global:bestTitle)",
   ].join('\n')
   // UTF-16LE + base64 —— PowerShell 的 -EncodedCommand 约定
   const encoded = Buffer.from(script, 'utf16le').toString('base64')
@@ -197,6 +248,7 @@ function focusDshWindow() {
         const ok = /ok=True/.test(out)
         const detail = out !== '' ? out : String(error?.message ?? stderr ?? 'no-output').trim()
         log(`[focus-dsh] ${ok ? '已唤到前台' : '失败'}：${detail}`)
+        appendFocusLog(`${ok ? 'OK  ' : 'FAIL'} ${detail}`)
         resolve({ ok, detail })
       },
     )
