@@ -584,7 +584,7 @@ check('markRead：清未读并推一帧 state；没有未读时是空操作', ()
 console.log('\n[2] 插件契约（mock ctx）')
 
 /** 真实宿主里可注入的服务名（读 ctx.<名字> 受 inject 校验管辖） */
-const MOCK_SERVICES = new Set(['webServer', 'agents', 'sessions', 'sessionController'])
+const MOCK_SERVICES = new Set(['webServer', 'agents', 'sessions', 'sessionController', 'sessionProjections'])
 
 /**
  * 模拟 Cordis 的 ctx。
@@ -611,6 +611,7 @@ const MOCK_SERVICES = new Set(['webServer', 'agents', 'sessions', 'sessionContro
  * @param {Array}    [opts.liveAgents]     模拟 ctx.agents.list()（活着的 agent 列表）
  * @param {Array}    [opts.hostSessions]   模拟 ctx.sessions.list()（宿主已知的活会话）
  * @param {Function} [opts.resume]         async sessionId → { agent } | { error }（模拟 resolveAgent）
+ * @param {Function} [opts.tokenProjection] sessionId → 四桶 | undefined（模拟 sessionProjections.stateOf）
  * @param {string[]} [opts.declaredInject] 覆盖 inject 声明（仅用于负向对照）
  */
 function createMockCtx({
@@ -618,6 +619,7 @@ function createMockCtx({
   liveAgents = [],
   hostSessions = [],
   resume,
+  tokenProjection,
   declaredInject = pluginInject,
 } = {}) {
   const routes = new Map()
@@ -641,6 +643,15 @@ function createMockCtx({
     agents: { get: agents ?? (() => undefined), list: () => liveAgents },
     sessions: { list: () => hostSessions },
     sessionController: { agents: { resolveAgent } },
+    // 宿主的 session projections 注册表：`stateOf(session, key)` 返回 {totals, last}。
+    // 真实实现里 key 是 `tokenUsage`，且**以 session 对象为键**（WeakMap）。
+    sessionProjections: {
+      stateOf: (session, key) => {
+        if (key !== 'tokenUsage') return undefined
+        const totals = tokenProjection?.(session?.id)
+        return totals === undefined ? undefined : { totals, last: null }
+      },
+    },
   }
   const ctx = new Proxy(
     {
@@ -1300,6 +1311,81 @@ await checkAsync('POST /read → 真的清掉插件侧的未读并推 state 帧�
   // —— 实测就是这么把"观测到 turn/start → 推 running"那条测试带崩的。
   for (const fn of listeners.get('session/event') ?? []) {
     fn({ id: 's-read' }, { type: 'turn/start', seq: 21, data: { turn: 2 } })
+  }
+})
+
+await checkAsync('token 数据源：能读到宿主投影 → 以宿主为准（durable，DSH 重启不丢）', async () => {
+  // 宿主权威值刻意与"插件自算值"完全不同，用来证明用的确实是宿主那一份。
+  // 插件自算只会得到 10+20=30；宿主给的是 5000/7000/88000。
+  const hostTotals = { uncachedInputTokens: 5000, outputTokens: 7000, cacheReadTokens: 88_000, cacheWriteTokens: 0 }
+  const m = createMockCtx({ tokenProjection: () => hostTotals, agents: () => undefined })
+  const teardown = apply(m.ctx, { pathPrefix: '/xilian-pet', minHoldMs: 0, createUserMessage: stubCreateUserMessage })
+  const srv = http.createServer((req, res) => {
+    const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
+    if (route === undefined) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    route.handler(req, res)
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  try {
+    for (const fn of m.listeners.get('session/event') ?? []) {
+      fn({ id: 'sess-tok' }, { type: 'turn/start', seq: 1, data: { turn: 1 } })
+      fn(
+        { id: 'sess-tok' },
+        { type: 'assistant/message', seq: 2, data: { turn: 1, step: 1, usage: { inputTokens: 10, outputTokens: 20 } } },
+      )
+    }
+    const st = await (await fetch(`http://127.0.0.1:${srv.address().port}/xilian-pet/state`)).json()
+    const s = st.sessions.find((x) => x.sessionId === 'sess-tok')
+    assert.ok(s, '应有 sess-tok 会话')
+    assert.equal(s.tokenSource, 'host', '应切到宿主数据源')
+    assert.equal(s.spendTokens, 100_000, '以宿主四桶之和为准（5000+7000+88000），而不是自算的 30')
+    assert.equal(s.cacheHitRate, 88_000 / 93_000)
+  } finally {
+    await new Promise((resolve) => srv.close(resolve))
+    teardown()
+  }
+})
+
+await checkAsync('token 数据源：宿主读不到 → 退回插件自算（纯增强，不把宠物带崩）', async () => {
+  const m = createMockCtx({ tokenProjection: () => undefined, agents: () => undefined })
+  const teardown = apply(m.ctx, { pathPrefix: '/xilian-pet', minHoldMs: 0, createUserMessage: stubCreateUserMessage })
+  const srv = http.createServer((req, res) => {
+    const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
+    if (route === undefined) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    route.handler(req, res)
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  try {
+    for (const fn of m.listeners.get('session/event') ?? []) {
+      fn({ id: 'sess-own' }, { type: 'turn/start', seq: 1, data: { turn: 1 } })
+      fn(
+        { id: 'sess-own' },
+        {
+          type: 'assistant/message',
+          seq: 2,
+          data: {
+            turn: 1,
+            step: 1,
+            usage: { inputTokens: 10, outputTokens: 20, cacheReadTokens: 70, cacheWriteTokens: 0 },
+          },
+        },
+      )
+    }
+    const st = await (await fetch(`http://127.0.0.1:${srv.address().port}/xilian-pet/state`)).json()
+    const s = st.sessions.find((x) => x.sessionId === 'sess-own')
+    assert.equal(s.tokenSource, 'own', '读不到宿主投影时应保持自算')
+    assert.equal(s.spendTokens, 100, '自算：10+20+70')
+  } finally {
+    await new Promise((resolve) => srv.close(resolve))
+    teardown()
   }
 })
 

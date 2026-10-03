@@ -196,6 +196,38 @@ export function cacheHitRate(b) {
   return input > 0 ? b.cacheReadTokens / input : null
 }
 
+/**
+ * 把**宿主权威**的四桶写进会话状态（整体替换，不是累加）。
+ *
+ * 为什么需要它：插件自己累加出来的是"**自插件启动以来**"的数 —— DSH 一重启就归零。
+ * 宿主的 `ctx.sessionProjections.stateOf(session, 'tokenUsage')` 是 **durable projection**
+ * （从会话日志重放），重启不丢，才是"这个会话一共用了多少"。
+ *
+ * 写入后该会话标记为 `host` 源，插件**不再自己累加**（避免两边混着算）。
+ * 幂等：值没变就原样返回，免得每次 /state 都换一个新对象。
+ */
+export function setTokenTotals(state, sessionId, buckets, source = 'host') {
+  const prev = state.sessions[sessionId]
+  if (prev === undefined) return state
+  const clean = { ...zeroBuckets(), ...buckets }
+  if (prev.tokenSource === source && prev.tokenBuckets !== undefined && bucketsEqual(prev.tokenBuckets, clean)) {
+    return state
+  }
+  return {
+    ...state,
+    sessions: {
+      ...state.sessions,
+      [sessionId]: {
+        ...prev,
+        tokenBuckets: clean,
+        spendTokens: bucketsTotal(clean),
+        tokenSource: source,
+        tokenLast: undefined, // 权威值已整体覆盖，自己那套去重游标作废
+      },
+    },
+  }
+}
+
 export function createPetState(options = {}) {
   return {
     sessions: Object.create(null),
@@ -473,7 +505,11 @@ export function reducePetEvent(state, ev, now = 0) {
   const extraFrames = []
 
   // token 用量：四桶 + 按 (turn, step) 增量替换（口径与宿主一致，见文件上方注释）
-  if ((ev.kind === 'assistant/message' || ev.kind === 'assistant/attempt') && ev.data?.usage) {
+  // ⚠️ 一旦该会话已切到宿主的**权威**数据源（durable，重启不丢）就不要再自己累加，
+  //    否则两边混着算、数字会飘。自算只作兜底。
+  if (session.tokenSource === 'host') {
+    // 由 setTokenTotals() 整体覆盖，这里不做任何事
+  } else if ((ev.kind === 'assistant/message' || ev.kind === 'assistant/attempt') && ev.data?.usage) {
     const buckets = bucketsFrom(ev.data.usage)
     const { turn, step } = ev.data
     const sameStep =
@@ -633,6 +669,8 @@ export function snapshot(state) {
         spendTokens: bucketsTotal(buckets),
         tokenBuckets: buckets,
         cacheHitRate: cacheHitRate(buckets),
+        // 'host' = 来自宿主 durable projection（重启不丢）；否则是插件自算的兜底值
+        tokenSource: s.tokenSource ?? 'own',
         title: s.title,
         tail: s.tail,
       }

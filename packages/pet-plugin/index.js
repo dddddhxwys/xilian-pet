@@ -35,6 +35,7 @@ import {
   reducePetEvent,
   reduceStreamChunk,
   releaseHeld,
+  setTokenTotals,
   snapshot,
   spendBySession,
   unreadCount,
@@ -75,7 +76,7 @@ export const name = 'xilian-pet'
  * **DSH 刚重启时插件还没观测到任何会话**，那个空窗期里派活必然失败。
  * `ctx.sessions.list()`（官方："All live sessions, in creation order"）用来兜掉这个盲区。
  */
-export const inject = ['webServer', 'agents', 'sessions', 'sessionController']
+export const inject = ['webServer', 'agents', 'sessions', 'sessionController', 'sessionProjections']
 
 const PROTOCOL_VERSION = 1
 const HEARTBEAT_MS = 15_000
@@ -86,7 +87,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 14
+const CODE_REVISION = 15
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -203,6 +204,12 @@ export function apply(ctx, config = {}) {
 
   let state = createPetState({ minHoldMs })
   const connections = new Set()
+  /**
+   * sessionId → 宿主给的 session 对象。
+   * 读 tokenUsage 投影要用它当 key（投影内部是**以 session 对象为键的 WeakMap**，
+   * 拿 sessionId 字符串是查不到的）。
+   */
+  const sessionObjects = new Map()
   // 形状样本：**按 channel 分别限量**，不是全局环形缓冲。
   // 踩过的坑：全局环形会被高频通道刷爆 —— agent/assistant-stream 每个 token 一帧，
   // 实测 80 条样本全被它占满，session/event 与 agent/status 的样本全被挤出去，
@@ -258,6 +265,8 @@ export function apply(ctx, config = {}) {
   function observeSession(session, event) {
     try {
       noteRawShape('session/event', { sessionId: session?.id, event })
+      // 存一下 session 对象：读宿主 tokenUsage 投影要用它当 key（WeakMap 以对象为键）
+      if (typeof session?.id === 'string' && session.id !== '') sessionObjects.set(session.id, session)
       const ev = normalizeSessionEvent(session, event)
       if (ev === null) return
       const result = reducePetEvent(state, ev, Date.now())
@@ -266,6 +275,33 @@ export function apply(ctx, config = {}) {
       publishActivity(ev)
     } catch (error) {
       warn(`observe(session/event) failed: ${error?.message ?? error}`)
+    }
+  }
+
+  /**
+   * 读**宿主权威**的 tokenUsage 四桶（durable projection：从会话日志重放，DSH 重启不丢）。
+   *
+   * 读不到就返回 `undefined`，由调用方退回插件自己累加的值 —— 所以这是个**纯增强**：
+   * 宿主换了版本、投影没注册、或我们没拿到 session 对象，都不会把宠物带崩。
+   * `stateOf` 内部只是一次 WeakMap 查表，很便宜。
+   */
+  function authoritativeBuckets(sessionId) {
+    const session = sessionObjects.get(sessionId)
+    if (session === undefined) return undefined
+    try {
+      const cell = ctx.sessionProjections.stateOf(session, 'tokenUsage')
+      return cell?.totals ?? undefined
+    } catch (error) {
+      warn(`读宿主 tokenUsage 投影失败（本会话退回自算值）：${error?.message ?? error}`)
+      return undefined
+    }
+  }
+
+  /** 把宿主权威数字刷进 state（幂等）。在"数字要被用到"之前调用即可，不必每事件都刷。 */
+  function syncAuthoritativeTokens() {
+    for (const sessionId of Object.keys(state.sessions)) {
+      const buckets = authoritativeBuckets(sessionId)
+      if (buckets !== undefined) state = setTokenTotals(state, sessionId, buckets)
     }
   }
 
@@ -417,7 +453,10 @@ export function apply(ctx, config = {}) {
   register(
     'GET',
     `${pathPrefix}/state`,
-    (req, res) => sendJson(res, 200, snapshot(state)),
+    (req, res) => {
+      syncAuthoritativeTokens() // 数字要被用到了，先把宿主的权威值刷进来
+      return sendJson(res, 200, snapshot(state))
+    },
     `xilian-pet: GET ${pathPrefix}/state`,
   )
 
@@ -449,6 +488,7 @@ export function apply(ctx, config = {}) {
       })
       res.write(': connected\n\n')
       res.write(sseData({ type: 'hello', protocol: PROTOCOL_VERSION, pid: process.pid, startedAt }))
+      syncAuthoritativeTokens()
       res.write(sseData({ type: 'snapshot', ...snapshot(state) }))
       // 补发迟到的提醒（窗口没连时发出的那些），最多 5 条
       if (pendingNotices.length > 0) {
@@ -749,6 +789,7 @@ export function apply(ctx, config = {}) {
     ctx.effect(() => {
       const timer = setInterval(() => {
         try {
+          syncAuthoritativeTokens() // "花销"提醒要用到 token 数，先刷权威值
           const result = decideReminders({
             state: reminderState,
             now: Date.now(),

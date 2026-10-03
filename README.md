@@ -8,8 +8,8 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1815 行 / 外壳 9 文件 2761 行 / 工具 14 文件 3002 行，64 个提交 |
-| 自测 | `& $NODE tools\check-plugin.mjs` → **87 项全绿** |
+| 规模 | 插件 5 文件 1894 行 / 外壳 9 文件 2761 行 / 工具 14 文件 3088 行，65 个提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **89 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
 > 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
@@ -339,6 +339,22 @@ Invoke-RestMethod -Method Post http://127.0.0.1:19387/xilian-pet/debug/notice `
 - 同一 `(turn, step)` 重复上报要**替换**而不是累加；`llm/retry-started` 则取消去重
   （重试确实又消耗了一次）。这两条都与宿主逐字对齐。
 
+### 数据源：读宿主的 durable projection（不要自己算）
+
+插件自己累加出来的数是"**自插件启动以来**"的 —— **DSH 一重启就归零**。所以数字以宿主为准：
+
+```js
+ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四桶
+```
+
+- 宿主的 `tokenUsage` 是 **session projection**：从会话日志重放，**重启不丢** —— 这才是"这个会话一共用了多少"
+- 键必须是**宿主给的 session 对象**（投影内部是以对象为键的 `WeakMap`，拿 `sessionId` 字符串查不到）
+  → 插件在 `session/event` 里顺手把 session 对象存进 `sessionObjects`
+- 读不到（服务缺失 / key 未注册 / 没拿到 session 对象）**不报错**，退回插件自算的兜底值；
+  `/state` 里的 `tokenSource` 会告诉你是 `'host'` 还是 `'own'`
+- 刷新时机：**数字要被用到之前**（`/state`、SSE 的 snapshot、提醒引擎的定时 tick），
+  不必每个事件都刷 —— `stateOf` 只是一次 WeakMap 查表，但没必要浪费
+
 ### 三条特殊规则（都是实测踩出来的）
 
 1. **开场手势**：启动先演一次 `Scene[0]` 比嘘，**0.6x 慢放**，演完落待机。
@@ -575,7 +591,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | 慢放倍率 | 参数活动区间比值 1.67x ≈ 1/0.6 |
 | A5 逐字流（插件侧） | `/state` 的 `tail` 持续含真实正文 |
 | A7 提醒（插件侧） | 30s tick 触发 → `pendingNotices=1` → 重连经 `notices` 帧补发 |
-| token 用量 / 缓存命中 | 改用宿主 `tokenMeter` 的四桶口径（实测载荷：`input=664 / cacheRead=9600` → 命中率 93.5%），并按 `(turn, step)` 增量替换；自测 5 项覆盖 |
+| token 用量 / 缓存命中 | 口径改用宿主 `tokenMeter` 的四桶 + `(turn, step)` 增量替换；**数据源改读宿主的 durable projection `sessionProjections.stateOf(session,'tokenUsage')`**（重启不丢），读不到才退回自算（`tokenSource` 字段可见）；自测 7 项覆盖 |
 | A10 降级 | Live2D 失败时自动回退占位图，无白屏 |
 
 ### ✅ 用户已在实机确认（2026-10-02 重启后逐项核对）
@@ -752,7 +768,7 @@ docs/
   Live2D约稿单.md                    委托说明（已暂缓，将来换自研形象可启用）
   screenshots/                      实机自检截图（含第三方角色，默认 gitignore）
 tools/
-  check-plugin.mjs                  自测（87 项断言，含外壳命中测试，不需要 DSH）
+  check-plugin.mjs                  自测（89 项断言，含外壳命中测试，不需要 DSH）
   tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）
