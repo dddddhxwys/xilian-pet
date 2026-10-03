@@ -159,6 +159,8 @@ body {
   line-height: 24px;
   text-align: center;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  /* 可点击：点它 = 清未读 */
+  cursor: pointer;
 }
 
 /* 气泡 */

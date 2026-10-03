@@ -83,7 +83,7 @@ function visibleUiRects() {
   const rects = []
   // ⚠️ 只收**能接住点击**的控件。气泡是 pointer-events:none 的被动展示，
   // 把它算进来会在它覆盖的区域形成一个"点了没反应、也不穿透"的死区。
-  for (const el of [composer, notice]) {
+  for (const el of [composer, notice, badge]) {
     if (el.hidden) continue
     const r = el.getBoundingClientRect()
     if (r.width <= 0 || r.height <= 0) continue
@@ -185,11 +185,22 @@ function updateCursor(next) {
   document.body.style.cursor = next ? 'grab' : 'default'
 }
 
-// ── 鼠标：命中测试 + 拖拽 ───────────────────────────────────────────
+// ── 鼠标：命中测试 + 拖拽 + 点击 ───────────────────────────────────
+// ⚠️ 「点」和「拖」必须分开判 —— 以前是 mousedown 无条件 `dragging = true`，
+// 于是 mouseup 里的 `if (!dragging)` 永远不成立，**单击清未读从来没生效过**。
+// 现在的判据：按下后位移不超过 CLICK_SLOP_PX 就算"点击"。
+const CLICK_SLOP_PX = 4
+let pressX = 0
+let pressY = 0
+let movedFar = false
+
 window.addEventListener(
   'mousemove',
   (event) => {
     if (dragging) {
+      if (Math.abs(event.screenX - pressX) > CLICK_SLOP_PX || Math.abs(event.screenY - pressY) > CLICK_SLOP_PX) {
+        movedFar = true
+      }
       const dx = event.screenX - dragX
       const dy = event.screenY - dragY
       dragX = event.screenX
@@ -203,37 +214,47 @@ window.addEventListener(
 )
 
 window.addEventListener('mousedown', (event) => {
+  if (event.button !== 0) return // 右键留给后续的菜单，不参与拖拽
   if (!shouldBeInteractive(event.clientX, event.clientY)) return
   if (insideRect(composer, event.clientX, event.clientY)) return
   dragging = true
+  movedFar = false
   // 告诉主进程进入拖拽态：拖拽期间它会让窗口一直保持可交互，
   // 否则鼠标快速移出角色（超出不透明区域）的那一瞬间窗口就会变回穿透，拖拽被"甩掉"。
+  // （按下就先告诉它，是为了保住拖拽手感；是不是"点击"稍后用 movedFar 判。）
   api.setDragging(true)
   dragX = event.screenX
   dragY = event.screenY
+  pressX = event.screenX
+  pressY = event.screenY
   if (!live2dActive) img.classList.add('squish')
   document.body.style.cursor = 'grabbing'
 })
 
 window.addEventListener('mouseup', (event) => {
-  if (!dragging) {
-    // 未拖动 → 视为点击：清未读
-    if (shouldBeInteractive(event.clientX, event.clientY)) markRead()
-    return
-  }
+  if (!dragging) return
   dragging = false
   api.setDragging(false)
   if (!live2dActive) img.classList.remove('squish')
   document.body.style.cursor = 'grab'
+  // 没怎么移动 → 这一次是「单击」：清未读
+  if (!movedFar) markRead()
 })
 
 // 双击宠物 → 唤出 / 收起派活输入条
+// ⚠️ 暂时保留：右键菜单还没做，取消了就没有打开输入条的入口了（等菜单上线再让位给别的互动）
 window.addEventListener('dblclick', (event) => {
   if (!overOpaquePixel(event.clientX, event.clientY)) return
   const now = Date.now()
   if (now - lastClickAt < 400) return
   lastClickAt = now
   toggleComposer()
+})
+
+// 点右下角的未读徽标 = 清未读（徽标本身就是"未读"，直接点它最直观）
+badge.addEventListener('click', (event) => {
+  event.stopPropagation()
+  markRead()
 })
 
 // ── UI 状态 ─────────────────────────────────────────────────────────
@@ -258,9 +279,30 @@ function setBadge(count) {
   }
 }
 
-function markRead() {
-  if (unread === 0) return
-  setBadge(0)
+/**
+ * 清未读 —— **必须告诉插件**，不能只清本地显示。
+ *
+ * 以前这里只 `setBadge(0)`，是假清：插件的会话 `unread` 还是 true，
+ * 下一个 `state` 帧又把 `unread: N` 报回来，徽标立刻复原。
+ * 而且它原本还是**死代码** —— `mousedown` 无条件把 `dragging` 置 true，
+ * mouseup 里那个 `if (!dragging)` 分支永远走不到（见下面的点击判定）。
+ */
+async function markRead() {
+  const before = unread
+  if (before > 0) setBadge(0) // 先本地收掉，手感即时
+  try {
+    const result = await api.control('read', {})
+    if (result?.status === 200 && typeof result.body?.unread === 'number') {
+      setBadge(result.body.unread) // 以插件的数字为准
+      api.log(`已标记已读（未读剩 ${result.body.unread}）`)
+    } else {
+      api.log(`清未读失败：${result?.status} ${JSON.stringify(result?.body)}`)
+      if (before > 0) setBadge(before)
+    }
+  } catch (error) {
+    api.log(`清未读异常：${error?.message ?? error}`)
+    if (before > 0) setBadge(before)
+  }
 }
 
 function showBubble(text) {

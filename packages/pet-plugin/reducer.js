@@ -137,6 +137,65 @@ export function activityLabel(ev) {
   }
 }
 
+// ── token 用量：四桶口径（与宿主 `tokenMeter` 的 usage-projection.js 完全一致）──
+//
+// ⚠️ 这里踩过一个真坑：原来是把每次 `assistant/message` 的 `usage.totalTokens` **直接累加**，
+// 结果 `/state` 报出 **3390 万** tokens。原因是 `totalTokens` 里含 `cacheReadTokens`，
+// 而缓存命中读的是**整个上下文**。实测某一次的真实载荷：
+//     { inputTokens: 664, outputTokens: 153, cacheReadTokens: 9600, cacheWriteTokens: 0, totalTokens: 10417 }
+// 664 是新输入，9600 是重发的上下文 —— 逐轮累加等于把同一段上下文数了几十遍。
+//
+// 正解照抄宿主：四个桶分开记，并且**按 (turn, step) 增量替换**而不是累加
+// （同一轮同一步重复上报时，先减掉上一次再加新的；重试则把上一次作废）。
+export function zeroBuckets() {
+  return { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+}
+
+/** 由官方 `usage` 取四桶。注意 `inputTokens` 是**未命中缓存**的那部分。 */
+export function bucketsFrom(usage) {
+  const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
+  return {
+    uncachedInputTokens: n(usage?.inputTokens),
+    outputTokens: n(usage?.outputTokens),
+    cacheReadTokens: n(usage?.cacheReadTokens),
+    cacheWriteTokens: n(usage?.cacheWriteTokens),
+  }
+}
+
+function bucketsEqual(a, b) {
+  return (
+    a.uncachedInputTokens === b.uncachedInputTokens &&
+    a.outputTokens === b.outputTokens &&
+    a.cacheReadTokens === b.cacheReadTokens &&
+    a.cacheWriteTokens === b.cacheWriteTokens
+  )
+}
+
+/** totals - previous + next（previous 为 undefined 时即普通累加） */
+function addReplacing(totals, previous, next) {
+  const base = previous ?? zeroBuckets()
+  return {
+    uncachedInputTokens: totals.uncachedInputTokens - base.uncachedInputTokens + next.uncachedInputTokens,
+    outputTokens: totals.outputTokens - base.outputTokens + next.outputTokens,
+    cacheReadTokens: totals.cacheReadTokens - base.cacheReadTokens + next.cacheReadTokens,
+    cacheWriteTokens: totals.cacheWriteTokens - base.cacheWriteTokens + next.cacheWriteTokens,
+  }
+}
+
+/** 四桶合计 —— 即"这个会话一共用掉多少 token" */
+export function bucketsTotal(b) {
+  return b.uncachedInputTokens + b.outputTokens + b.cacheReadTokens + b.cacheWriteTokens
+}
+
+/**
+ * 缓存命中率（0~1）。分母只算**输入**（命中 + 未命中），不含输出 —— 输出与缓存无关。
+ * 没有任何输入时返回 `null`（而不是 0，免得显示成"0% 命中"误导人）。
+ */
+export function cacheHitRate(b) {
+  const input = b.cacheReadTokens + b.uncachedInputTokens
+  return input > 0 ? b.cacheReadTokens / input : null
+}
+
 export function createPetState(options = {}) {
   return {
     sessions: Object.create(null),
@@ -159,6 +218,34 @@ export function aggregate(state) {
 /** 未读计数：done / error 且未被查看的会话数（用于 +N 背板） */
 export function unreadCount(state) {
   return Object.values(state.sessions).filter((s) => s.unread).length
+}
+
+/**
+ * 标记已读：把会话的 `unread` 清掉（"我看过了"）。
+ *
+ * 为什么要插件来做：`unread` 是**插件侧**的状态 —— 渲染端自己把徽标设成 0 没用，
+ * 下一个 `state` 帧照样会把 `unread: N` 报回来（实测就是这个现象）。
+ *
+ * @param state 当前状态
+ * @param sessionId 只清这个会话；不传 = 全清
+ * @returns {{state, frames}} 与 commit() 同形；frames 带一帧 `state`，窗口立刻收掉徽标
+ */
+export function markRead(state, sessionId) {
+  let changed = false
+  const sessions = { ...state.sessions }
+  for (const [id, s] of Object.entries(sessions)) {
+    if (sessionId !== undefined && id !== sessionId) continue
+    if (s.unread) {
+      sessions[id] = { ...s, unread: false }
+      changed = true
+    }
+  }
+  if (!changed) return { state, frames: [] }
+  const next = { ...state, sessions }
+  return {
+    state: next,
+    frames: [{ type: 'state', seq: next.seq, state: aggregate(next), unread: unreadCount(next) }],
+  }
 }
 
 /** 待审批总数（A7 主动提醒的原料） */
@@ -364,6 +451,18 @@ export function reducePetEvent(state, ev, now = 0) {
   // turn/end 的落点取决于 reason.kind，交给专门的分支
   if (ev.kind === 'turn/end') return reduceTurnEnd(state, ev, now)
 
+  // ⚠️ `llm/retry-started` **不在 EVENT_STATE 里**，所以必须在这里先处理 ——
+  // 放到下面会被 `target === undefined` 提前 return 掉（我第一版就写错了，测试才发现）。
+  // 它的作用：把上一次上报作废，这样重试的那一次是"重新计"而不是"再加一遍"。
+  if (ev.kind === 'llm/retry-started') {
+    const prev = sessionOf(state, ev.sessionId, now)
+    const last = prev.tokenLast
+    if (!last) return { state, frames: [] }
+    const { turn, step } = ev.data ?? {}
+    if (last.turn !== turn || last.step !== step) return { state, frames: [] }
+    return commit(state, { ...prev, tokenLast: undefined }, ev.sessionId, now)
+  }
+
   const target = EVENT_STATE[ev.kind]
   if (target === undefined) return { state, frames: [] }
 
@@ -373,14 +472,20 @@ export function reducePetEvent(state, ev, now = 0) {
 
   const extraFrames = []
 
-  // 花销累计：assistant/message 带 usage（官方 TokenUsage：inputTokens/outputTokens/totalTokens…）
-  if (ev.kind === 'assistant/message' && ev.data?.usage !== null && typeof ev.data?.usage === 'object') {
-    const usage = ev.data.usage
-    const total =
-      typeof usage.totalTokens === 'number'
-        ? usage.totalTokens
-        : Number(usage.inputTokens ?? 0) + Number(usage.outputTokens ?? 0)
-    if (Number.isFinite(total) && total > 0) session.spendTokens = (prev.spendTokens ?? 0) + total
+  // token 用量：四桶 + 按 (turn, step) 增量替换（口径与宿主一致，见文件上方注释）
+  if ((ev.kind === 'assistant/message' || ev.kind === 'assistant/attempt') && ev.data?.usage) {
+    const buckets = bucketsFrom(ev.data.usage)
+    const { turn, step } = ev.data
+    const sameStep =
+      Number.isFinite(turn) && Number.isFinite(step) && session.tokenLast?.turn === turn && session.tokenLast?.step === step
+    const previous = sameStep ? session.tokenLast.buckets : undefined
+    if (previous === undefined || !bucketsEqual(previous, buckets)) {
+      const totals = addReplacing(session.tokenBuckets ?? zeroBuckets(), previous, buckets)
+      session.tokenBuckets = totals
+      // 只有带 turn/step 的上报才记 last —— 否则"替换"会退化成"只留最后一次"，反而不准
+      if (Number.isFinite(turn) && Number.isFinite(step)) session.tokenLast = { turn, step, buckets }
+      session.spendTokens = bucketsTotal(totals) // 兼容旧消费者（提醒引擎的"花销"、/state）
+    }
   }
 
   // 审批计数：A7 主动提醒的原料，也是 "+N 背板" 的来源之一
@@ -517,14 +622,20 @@ export function snapshot(state) {
     seq: state.seq,
     // 渲染端拿不到 sessionId 时的兜底目标（也是 /prompt、/interrupt 的兜底目标）
     primarySessionId: primarySessionId(state) ?? null,
-    sessions: Object.values(state.sessions).map((s) => ({
-      sessionId: s.sessionId,
-      state: s.state,
-      unread: s.unread,
-      pendingApprovals: s.pendingApprovals ?? 0,
-      spendTokens: s.spendTokens ?? 0,
-      title: s.title,
-      tail: s.tail,
-    })),
+    sessions: Object.values(state.sessions).map((s) => {
+      const buckets = s.tokenBuckets ?? zeroBuckets()
+      return {
+        sessionId: s.sessionId,
+        state: s.state,
+        unread: s.unread,
+        pendingApprovals: s.pendingApprovals ?? 0,
+        // 四桶口径（见文件上方注释）：spendTokens 只为兼容旧消费者而保留
+        spendTokens: bucketsTotal(buckets),
+        tokenBuckets: buckets,
+        cacheHitRate: cacheHitRate(buckets),
+        title: s.title,
+        tail: s.tail,
+      }
+    }),
   }
 }

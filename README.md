@@ -8,8 +8,8 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1680 行 / 外壳 9 文件 2712 行 / 工具 14 文件 2865 行，62 个提交 |
-| 自测 | `& $NODE tools\check-plugin.mjs` → **82 项全绿** |
+| 规模 | 插件 5 文件 1815 行 / 外壳 9 文件 2761 行 / 工具 14 文件 3002 行，64 个提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **87 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
 > 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
@@ -315,6 +315,30 @@ Invoke-RestMethod -Method Post http://127.0.0.1:19387/xilian-pet/debug/notice `
 | `POST /debug/notice` | 手动放一条通知（A7 显示侧的手动验证入口） |
 | `GET /debug/reminders` | 提醒引擎配置 / 免打扰判定 / 已发记录 |
 
+### token 用量与缓存命中率（口径照抄宿主）
+
+宿主 `tokenMeter` 的官方口径是**四个桶**（asar 里 `usage-projection.js`），我们照抄：
+
+```js
+{ uncachedInputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }
+//  ← usage.inputTokens / outputTokens / cacheReadTokens / cacheWriteTokens
+```
+
+实测某一次真实载荷：
+
+```json
+{ "inputTokens": 664, "outputTokens": 153, "cacheReadTokens": 9600,
+  "cacheWriteTokens": 0, "totalTokens": 10417 }
+```
+
+- **用量** = 四桶之和
+- **缓存命中率** = `cacheReadTokens / (cacheReadTokens + uncachedInputTokens)`（这里 = 93.5%）
+- ⚠️ **不能用 `totalTokens` 累加**：它已经把 `cacheReadTokens` 算进去了，
+  而那 9600 是**整个上下文被重发**。逐轮累加 = 把同一段上下文数几十遍
+  —— 实测就是这么报出 **3390 万** tokens 的。
+- 同一 `(turn, step)` 重复上报要**替换**而不是累加；`llm/retry-started` 则取消去重
+  （重试确实又消耗了一次）。这两条都与宿主逐字对齐。
+
 ### 三条特殊规则（都是实测踩出来的）
 
 1. **开场手势**：启动先演一次 `Scene[0]` 比嘘，**0.6x 慢放**，演完落待机。
@@ -382,6 +406,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:19387/xilian-pet/debug/notice `
 /xilian-pet/debug/notice        手动放一条通知（A7 显示侧的手动验证入口）
 /xilian-pet/prompt              反向操控：派活
 /xilian-pet/interrupt           反向操控：打断
+/xilian-pet/read                标记已读（清未读；body {sessionId?}，不传=全清）
 /xilian-pet/focus               会话聚焦（Phase 0 未实现，返回 501）
 ```
 
@@ -550,7 +575,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | 慢放倍率 | 参数活动区间比值 1.67x ≈ 1/0.6 |
 | A5 逐字流（插件侧） | `/state` 的 `tail` 持续含真实正文 |
 | A7 提醒（插件侧） | 30s tick 触发 → `pendingNotices=1` → 重连经 `notices` 帧补发 |
-| 花销累计 | `spendTokens` 随 `assistant/message` 的 `usage` 真实增长 |
+| token 用量 / 缓存命中 | 改用宿主 `tokenMeter` 的四桶口径（实测载荷：`input=664 / cacheRead=9600` → 命中率 93.5%），并按 `(turn, step)` 增量替换；自测 5 项覆盖 |
 | A10 降级 | Live2D 失败时自动回退占位图，无白屏 |
 
 ### ✅ 用户已在实机确认（2026-10-02 重启后逐项核对）
@@ -639,6 +664,9 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **绝对定位 + flex 会把中文挤成一列** | 通知条变成"一个字一行"的高柱，几乎占满整个窗口（实测截图） | 绝对定位元素宽度是"收缩适应"，flex 文本项会被压到近 0 宽 → 改**固定宽度 + 块级布局** |
 | **只按进程名找 DSH 窗口找不到** | 点通知没反应：`detail=no-window pids=2` | DSH 的窗口**不属于**那两个同名进程 → 改成「PID 命中 **或** 标题含 `Harness/DSH/DeepSeek`」再取**面积最大**者。另：`Process.MainWindowHandle` 实测恒为 0，**别用它** |
 | **`SetForegroundWindow` 返回 true 却没到前台** | 点了只闪一下任务栏 | Windows 前台锁 → 先 `AllowSetForegroundWindow(-1)` + `AttachThreadInput` 再设置；用 `GetForegroundWindow()` **复核**，别信返回值 |
+| **拿 `usage.totalTokens` 累加当用量** | `/state` 报出 **3390 万** tokens | `totalTokens` 含 `cacheReadTokens`（重发的整个上下文）→ 改**四桶**分别累加，并按 `(turn,step)` 增量替换（口径对齐宿主 `tokenMeter`） |
+| **清未读"假清"** | 点了徽标不消失，或过一会儿又冒出来 | 两层：① `markRead()` 是**死代码**（`mousedown` 无条件 `dragging=true`，`mouseup` 里 `if(!dragging)` 永远不成立）；② 它只 `setBadge(0)` 清本地显示，**没告诉插件**，下一个 `state` 帧就把 unread 报回来 → 必须加插件端点 `POST /read` |
+| **`llm/retry-started` 不在 `EVENT_STATE` 里** | 放在状态映射之后的处理分支变**死代码**，静默失效 | 该事件会被 `target === undefined` 提前 return → 必须在状态映射**之前**单独处理（自测里有专门一条覆盖它） |
 
 ### 关于 `setIgnoreMouseEvents` 那个 bug（值得单独记）
 
@@ -724,7 +752,7 @@ docs/
   Live2D约稿单.md                    委托说明（已暂缓，将来换自研形象可启用）
   screenshots/                      实机自检截图（含第三方角色，默认 gitignore）
 tools/
-  check-plugin.mjs                  自测（82 项断言，含外壳命中测试，不需要 DSH）
+  check-plugin.mjs                  自测（87 项断言，含外壳命中测试，不需要 DSH）
   tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）

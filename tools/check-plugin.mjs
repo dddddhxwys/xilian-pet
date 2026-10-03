@@ -20,8 +20,10 @@ import { hitTest, insideAnyRect } from '../packages/pet-shell/hit-test.js'
 import {
   activityLabel,
   aggregate,
+  cacheHitRate,
   createPetState,
   hasActivity,
+  markRead,
   normalizeAgentError,
   normalizeAgentStatus,
   normalizeSessionEvent,
@@ -271,11 +273,20 @@ check('turn/end 未知 reason 保守当 completed', () => {
 })
 
 // ── 花销与提醒引擎需要的视图 ────────────────────────────────────
-check('assistant/message 累积 usage（totalTokens 优先）', () => {
-  let s = emit(createPetState(), 'assistant/message', 's1', 0, { data: { usage: { totalTokens: 1500 } } })
+check('assistant/message 按四桶累计 usage（不再用 totalTokens）', () => {
+  // 口径与宿主 tokenMeter 一致：只认 input/output/cacheRead/cacheWrite。
+  // `totalTokens` **刻意忽略** —— 它含被重发的上下文，直接累加就是 /state 报 3390 万那次的原因。
+  let s = emit(createPetState(), 'assistant/message', 's1', 0, {
+    data: {
+      usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 900, cacheWriteTokens: 20, totalTokens: 1070 },
+    },
+  })
+  assert.equal(snapshot(s).sessions[0].spendTokens, 1070, '四桶之和')
+  assert.equal(snapshot(s).sessions[0].cacheHitRate, 0.9, '900 / (900+100)')
+  assert.equal(spendBySession(s).s1, 1070)
+  // 不带 turn/step 时无从去重 → 视为两次独立消耗（累加）
   s = emit(s, 'assistant/message', 's1', 1, { data: { usage: { inputTokens: 100, outputTokens: 50 } } })
-  assert.equal(snapshot(s).sessions[0].spendTokens, 1650)
-  assert.equal(spendBySession(s).s1, 1650)
+  assert.equal(snapshot(s).sessions[0].spendTokens, 1220)
 })
 
 check('hasActivity 只在运行/审批/提问时为真', () => {
@@ -477,6 +488,98 @@ check('activityLabel：把事件压成一句人话（气泡不再灌 AI 正文�
   )
 })
 
+check('token 四桶：同一 (turn, step) 重复上报是「替换」不是「累加」', () => {
+  // 这条治的就是"/state 报出 3390 万 tokens"那个 bug：
+  // totalTokens 里含 cacheReadTokens（重发的上下文），逐轮累加会数几十遍。
+  const usage = { inputTokens: 664, outputTokens: 153, cacheReadTokens: 9600, cacheWriteTokens: 0, totalTokens: 10417 }
+  const msg = (turn, step, u) =>
+    normalizeSessionEvent({ id: 's1' }, { type: 'assistant/message', data: { turn, step, usage: u } })
+  let s = createPetState()
+  s = reducePetEvent(s, msg(1, 1, usage), 1).state
+  assert.equal(s.sessions.s1.spendTokens, 10417, '一次请求 = 四桶之和')
+  s = reducePetEvent(s, msg(1, 1, usage), 2).state
+  assert.equal(s.sessions.s1.spendTokens, 10417, '同一 (turn,step) 重复上报必须替换，不能翻倍')
+  s = reducePetEvent(s, msg(1, 1, { ...usage, outputTokens: 200 }), 3).state
+  assert.equal(s.sessions.s1.spendTokens, 10464, '同一步报了新值 → 用新的替换旧的')
+  s = reducePetEvent(s, msg(1, 2, usage), 4).state
+  assert.equal(s.sessions.s1.spendTokens, 20881, '不同 step 才累加')
+})
+
+check('token 四桶：llm/retry-started 取消去重（重试确实又烧了一次）', () => {
+  // ⚠️ 这条同时测两件事：
+  //  a) `llm/retry-started` 不在 EVENT_STATE 里 —— 若把该分支写在 `target === undefined` 之后，
+  //     它会变成死代码（我第一版就是这么写的）
+  //  b) 语义要跟宿主一致：retry 之后**同样的桶值不再被去重**，而是再计一次
+  const usage = { inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 }
+  const msg = (turn, step) =>
+    normalizeSessionEvent({ id: 's1' }, { type: 'assistant/message', data: { turn, step, usage } })
+  const retry = normalizeSessionEvent({ id: 's1' }, { type: 'llm/retry-started', data: { turn: 1, step: 1 } })
+  assert.ok(retry !== null, 'retry 事件应能归一化')
+
+  // 对照：不发 retry → 同一 (turn, step) 的相同桶值被去重，不再累加
+  let a = createPetState()
+  a = reducePetEvent(a, msg(1, 1), 1).state
+  a = reducePetEvent(a, msg(1, 1), 2).state
+  assert.equal(a.sessions.s1.spendTokens, 110, '对照：相同桶值应被去重')
+
+  // 发了 retry → 这一次算"又消耗了一份"
+  let b = createPetState()
+  b = reducePetEvent(b, msg(1, 1), 1).state
+  assert.equal(b.sessions.s1.spendTokens, 110)
+  b = reducePetEvent(b, retry, 2).state
+  b = reducePetEvent(b, msg(1, 1), 3).state
+  assert.equal(b.sessions.s1.spendTokens, 220, '重试后又消耗了一次，不能被去重掉')
+})
+
+check('缓存命中率 = cacheRead / (cacheRead + uncachedInput)；无输入时为 null', () => {
+  assert.equal(
+    cacheHitRate({ uncachedInputTokens: 664, outputTokens: 153, cacheReadTokens: 9600, cacheWriteTokens: 0 }),
+    9600 / 10264,
+  )
+  assert.equal(
+    cacheHitRate({ uncachedInputTokens: 0, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 }),
+    null,
+    '没有输入时返回 null，而不是 0（免得显示成"0% 命中"误导人）',
+  )
+  const snap = snapshot({
+    current: 'idle',
+    seq: 0,
+    sessions: {
+      a: {
+        sessionId: 'a',
+        state: 'idle',
+        unread: false,
+        tokenBuckets: { uncachedInputTokens: 100, outputTokens: 0, cacheReadTokens: 300, cacheWriteTokens: 0 },
+      },
+    },
+  })
+  assert.equal(snap.sessions[0].cacheHitRate, 0.75)
+  assert.equal(snap.sessions[0].spendTokens, 400, 'spendTokens 现在由四桶推导，兼容旧消费者')
+})
+
+check('markRead：清未读并推一帧 state；没有未读时是空操作', () => {
+  const base = {
+    current: 'done',
+    currentSince: 0,
+    seq: 7,
+    minHoldMs: 0,
+    sessions: {
+      a: { sessionId: 'a', state: 'done', unread: true },
+      b: { sessionId: 'b', state: 'running', unread: false },
+    },
+  }
+  const noop = markRead(base, 'b')
+  assert.equal(noop.state, base, 'b 本来就没未读 → 原样返回')
+  assert.equal(noop.frames.length, 0)
+  const all = markRead(base)
+  assert.equal(all.state.sessions.a.unread, false)
+  assert.equal(all.frames.length, 1)
+  assert.equal(all.frames[0].type, 'state')
+  assert.equal(all.frames[0].unread, 0, '帧里必须带 unread=0，窗口才会把徽标收掉')
+  const one = markRead(base, 'a')
+  assert.equal(one.state.sessions.a.unread, false)
+})
+
 // ─────────────────────────────────────────────────────────────
 console.log('\n[2] 插件契约（mock ctx）')
 
@@ -657,8 +760,8 @@ check('负向对照：mock 确实会因缺 inject 而抛错（证明上面两条
   )
 })
 
-check('apply 注册了 10 条 exact 路由', () => {
-  assert.equal(routes.size, 10, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
+check('apply 注册了 11 条 exact 路由', () => {
+  assert.equal(routes.size, 11, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
 })
 
 check('所有路由都是 exact（避免被 /api 之类的前缀路由吞掉）', () => {
@@ -1164,6 +1267,40 @@ await checkAsync('POST /debug/notice → 推 notice 帧（A7 显示侧的手动�
     body: JSON.stringify({ urgent: false }),
   })).json()
   assert.equal(soft.frame.urgent, false, 'urgent:false 要能透传（低优先通知会自动消失）')
+})
+
+await checkAsync('POST /read → 真的清掉插件侧的未读并推 state 帧（徽标立刻收）', async () => {
+  // 先制造一个未读：turn/end completed → done + unread=true
+  for (const fn of listeners.get('session/event') ?? []) {
+    fn({ id: 's-read' }, { type: 'turn/end', seq: 20, data: { turn: 1, reason: { kind: 'completed' } } })
+  }
+  const before = await (await fetch(`${base}/xilian-pet/state`)).json()
+  assert.ok(before.unread >= 1, `应先有未读，实际 ${before.unread}`)
+
+  const sse = await openSse(`${base}/xilian-pet/events`)
+  await sse.readUntil((b) => b.includes('"snapshot"'), 3000)
+  const res = await fetch(`${base}/xilian-pet/read`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.equal(body.ok, true)
+  assert.equal(body.unread, 0, '响应里未读应已归零')
+  const text = await sse.readUntil((b) => /"unread":0/.test(b), 3000)
+  sse.close()
+  assert.match(text, /"unread":0/, '要推一帧 state 出去，窗口才能立刻收掉徽标')
+
+  const after = await (await fetch(`${base}/xilian-pet/state`)).json()
+  assert.equal(after.unread, 0, '插件侧的未读必须真的被清掉，否则下一个 state 帧又会把它报回来')
+
+  // 收尾：把 s-read 推回 running。
+  // 否则它停在 done（优先级 3 > running 1），会污染后面 SSE 测试的聚合状态
+  // —— 实测就是这么把"观测到 turn/start → 推 running"那条测试带崩的。
+  for (const fn of listeners.get('session/event') ?? []) {
+    fn({ id: 's-read' }, { type: 'turn/start', seq: 21, data: { turn: 2 } })
+  }
 })
 
 await checkAsync('SSE：连接即收到 connected 注释 + hello + snapshot', async () => {

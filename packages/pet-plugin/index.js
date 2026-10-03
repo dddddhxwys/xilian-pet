@@ -23,6 +23,7 @@ import {
   activityLabel,
   createPetState,
   hasActivity,
+  markRead,
   normalizeAgentError,
   normalizeAgentStatus,
   normalizeSessionEvent,
@@ -36,6 +37,7 @@ import {
   releaseHeld,
   snapshot,
   spendBySession,
+  unreadCount,
 } from './reducer.js'
 import {
   createReminderState,
@@ -84,7 +86,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 13
+const CODE_REVISION = 14
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -706,6 +708,28 @@ export function apply(ctx, config = {}) {
       return sendJson(res, 200, { ok: true, sessionId: target.sessionId, via: target.via, fallbackUsed: target.fallbackUsed === true })
     },
     `xilian-pet: POST ${pathPrefix}/interrupt`,
+  )
+
+  /**
+   * 标记已读（"清未读"）。
+   *
+   * 为什么必须由插件做：`unread` 是插件侧的状态。渲染端自己把徽标设 0 是假的 ——
+   * 下一个 `state` 帧照样把 `unread: N` 报回来，徽标立刻复原（实测）。
+   *
+   * body: `{ sessionId? }`（不传 = 全清）
+   */
+  register(
+    'POST',
+    `${pathPrefix}/read`,
+    async (req, res) => {
+      const body = await readJsonBody(req)
+      const sessionId = typeof body.sessionId === 'string' && body.sessionId !== '' ? body.sessionId : undefined
+      const result = markRead(state, sessionId)
+      state = result.state
+      publishFrames(result.frames)
+      return sendJson(res, 200, { ok: true, unread: unreadCount(state) })
+    },
+    `xilian-pet: POST ${pathPrefix}/read`,
   )
 
   // 聚焦会话：Phase 0 未实现（需要 GUI 侧配合），明确返回未实现而不是假装成功
