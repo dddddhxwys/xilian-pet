@@ -8,7 +8,7 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1680 行 / 外壳 9 文件 2660 行 / 工具 14 文件 2865 行，60 个提交 |
+| 规模 | 插件 5 文件 1680 行 / 外壳 9 文件 2660 行 / 工具 14 文件 2865 行，61 个提交 |
 | 自测 | `& $NODE tools\check-plugin.mjs` → **82 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
@@ -299,6 +299,15 @@ Invoke-RestMethod -Method Post http://127.0.0.1:19387/xilian-pet/debug/notice `
   -Body ([System.Text.Encoding]::UTF8.GetBytes($json))
 ```
 
+### 诊断端点
+
+| 端点 | 用途 |
+|---|---|
+| `GET /debug/shapes` | 原始事件形状样本。**判断消息来源**：桌宠派活发的 `user/message` 其 `source` 只有 `{kind:'user'}`；GUI 发的带 `rpcId` |
+| `GET /debug/agents` | 派活链路诊断（只读）：候选会话 / 活 agent / 各候选能否 `get()` |
+| `POST /debug/notice` | 手动放一条通知（A7 显示侧的手动验证入口） |
+| `GET /debug/reminders` | 提醒引擎配置 / 免打扰判定 / 已发记录 |
+
 ### 三条特殊规则（都是实测踩出来的）
 
 1. **开场手势**：启动先演一次 `Scene[0]` 比嘘，**0.6x 慢放**，演完落待机。
@@ -519,7 +528,8 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 
 | 项 | 证据 |
 |---|---|
-| 插件被加载 | `/health` → `{"ok":true,"code":10,...}`（A6 五处修复 + 诊断端点把修订号从 5 推到 **11**，待重启确认） |
+| 插件被加载 | `/health` → `{"ok":true,"code":13,...}`（`messageFactory` 报官方 `module:file:///…app.asar/…/dsh-llm/lib/index.js`） |
+| **A6 派活端到端** | 用户在派活框输入的文字**真的到达了 agent**。客观判据：桌宠发的 `user/message` 的 `source` 只有 `{kind:'user'}`，而 GUI 发的带 `rpcId` —— 在 `/debug/shapes` 里一眼可分（实测同一条文案两种来源对比过） |
 | 插件自测 82 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / **waterfall 回归 + 负向对照** / **inject 静态扫描 + 负向对照** / **派活兜底 + resolveAgent 恢复 + 宿主会话枚举 + 只读诊断** / **外壳命中测试** / **活动摘要 + 通知帧** / 清理注销 |
 | 版本兼容性 | Cubism Core `05.01.0000`，`MsvGetLatestMocVersion=5`，模型 moc3 版本号 5 |
 | 事件协议取自事实 | 59 个真实事件类型名、`SessionEventMap`、`StreamChunk`（正文在 `frame.chunk.text`）均来自 asar 类型清单 |
