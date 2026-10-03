@@ -568,6 +568,11 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cache
     state.log(`调试模式：指定动作 ${g}[${idx}]`)
     try {
       model.motion(g, idx, PIXI.live2d.MotionPriority.IDLE)
+      // ⚠️ 必须自己记一下 currentMotion：调试分支绕过了 startMotion()，而
+      // `applyBlink()` 靠 currentMotion 判断"这个动作要不要我们接管眨眼"。
+      // 漏了这一行的后果：用 PET_FORCE_MOTION=Scene:3 抓帧时待机眼睛是闭的
+      // —— 那是**截图假象**，不是产品行为（实机待机会眨眼）。
+      currentMotion = idx
     } catch (error) {
       state.log(`启动调试动作失败 ${g}[${idx}]：${error.message}`)
     }
