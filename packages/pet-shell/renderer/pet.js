@@ -536,6 +536,8 @@ async function startLive2D() {
   if (info.forceMenu) {
     setTimeout(() => {
       api.log('调试模式：自动弹出右键菜单小窗')
+      // 和真实右键路径保持一致（否则拍不到 poke 的效果）
+      live2d?.pokeExpression('question', 1700)
       api.openMenu({ tokens: tokensView }).catch(() => {})
     }, 2500)
   }

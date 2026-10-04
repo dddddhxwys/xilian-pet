@@ -383,8 +383,16 @@ function setExpression(name) {
  * 临时弹一个特效表情，过一会儿恢复（右键弹问号就靠它）。
  *
  * ⚠️ **恢复不能让"提问状态"的问号被误清**：agent 在等你回答时，状态就是 `question`，
- * 那个问号是**常驻**的。所以恢复的方式是"把当前状态该有的表情重新应用一遍" ——
+ * 那个问号是**常驻**的。所以恢复方式是"把当前状态该有的表情重新应用一遍" ——
  * 状态本来就是 question 时，等于再应用一次 question，问号留着。
+ *
+ * ⚠️ **但"一次性特效"不能被复活**（这个坑我踩了）：
+ * `done` 是 `{ once: true, expression: 'happy' }` —— 闭眼笑 + 星光，**演完就该撤**
+ * （用户明确要求过"从叉腰切换成待机后笑眼不再留存"）。如果恢复时照搬
+ * `STATE_MAP['done'].expression`，右键弹完问号后她就会**卡在闭眼笑**上，
+ * 而且不会再有东西来清它（实测反馈："右键之后一段时间，问号消失，出现如图表情"）。
+ * 所以：一次性且不带 keepEffect 的态，恢复成**基础表情**（idle 的 reset），
+ * 其余（idle/running/error/question，以及 keepEffect 的 approval）照搬自己的。
  *
  * ⚠️ 状态不是 question 时，额外**显式把 Param6 清 0**：`reset` 表情的参数表里
  * **没有** Param6（只有 惊喜/圈圈/开心/墨镜 四个），只靠"替换表情"不保险。
@@ -398,8 +406,9 @@ export function pokeExpression(name, ms = 1700) {
   setExpression(name)
   clearTimeout(pokeTimer)
   pokeTimer = setTimeout(() => {
-    const mapped = STATE_MAP[state.currentState] ?? STATE_MAP.idle
-    setExpression(mapped.expression)
+    const mapped = STATE_MAP[state.currentState]
+    const transient = mapped === undefined || (mapped.once === true && mapped.keepEffect !== true)
+    setExpression(transient ? STATE_MAP.idle.expression : mapped.expression)
     if (state.currentState !== 'question') setParams({ Param6: 0 })
   }, Math.max(200, ms))
   return true
