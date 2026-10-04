@@ -168,6 +168,20 @@ function applyBlink(now) {
 let oneShotTimer = null
 let lingerTimer = null
 let currentMotion = null
+/**
+ * 一次性动作的"预计结束时刻"。巡检靠它避开"正在演一次性动作"那段，
+ * 免得把叉腰/比嘘打断。
+ */
+let oneShotUntil = 0
+/**
+ * 动作巡检定时器 + 心跳计数。
+ *
+ * ⚠️ 为什么必须有巡检：实机日志显示"她退回默认坐姿"时**根本没有 motionFinish**
+ *    —— 库在某个路径上把动作停掉却不派事件，于是"等 motionFinish 再重开"永远等不到。
+ *    所以改成主动看"动作管理器是否已空闲"。
+ */
+let motionWatchdog = null
+let watchdogTicks = 0
 /** pokeExpression 的恢复定时器（连点右键时只保留最后一次） */
 let pokeTimer = null
 
@@ -619,6 +633,46 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cache
     }
   })
 
+  /**
+   * 动作巡检（每 3 秒）。
+   *
+   * ⚠️ 存在的理由：实机里她**退回默认坐姿**（双手空空、秋千消失）时，
+   *    日志里**根本没有 motionFinish** —— 库在某条路径上把动作停掉却不派事件。
+   *    所以"等 motionFinish 再重开"是等不到的，必须主动看动作管理器是否已空闲。
+   *
+   * 判空用 `motionManager.isFinished()`（库自己的语义：没有动作在播时为真）。
+   * 巡检只在"该有动作在播"时动手：开场手势期间、以及一次性动作的预计时长内都不插手。
+   *
+   * 另外每 5 次巡检（约 15 秒）记一行心跳 —— 出问题时能直接看到
+   * "动作是什么时候变成空闲的、当时是什么状态"。
+   */
+  clearInterval(motionWatchdog)
+  motionWatchdog = setInterval(() => {
+    try {
+      const mm = model.internalModel?.motionManager
+      if (mm === undefined) return
+      watchdogTicks += 1
+      const finished = mm.isFinished?.() === true
+      if (watchdogTicks % 5 === 0) {
+        state.log(
+          `心跳 动作=Scene[${currentMotion}] 管理器空闲=${finished} 状态=${state.currentState}` +
+            `${introPending ? '（开场手势中）' : ''}`,
+        )
+      }
+      if (introPending) return // 开场手势优先演完
+      if (Date.now() < oneShotUntil) return // 一次性动作的预计时长内不插手
+      if (!finished) return // 有动作在播，正常
+      const mapped = STATE_MAP[state.currentState] ?? STATE_MAP.idle
+      // 一次性状态的动作已经演完（oneShotUntil 已过）→ 回基础动作；
+      // 其余状态 → 重开它自己的动作。绝不让"空转"停留超过一个巡检周期。
+      const index = mapped.once ? BASE_MOTION : (mapped.motion ?? BASE_MOTION)
+      state.log(`⚠️ 动作管理器已空闲（没有 motionFinish 事件）→ 重开 Scene[${index}]（状态 ${state.currentState}）`)
+      startMotion(index, true)
+    } catch (error) {
+      state.log(`动作巡检出错：${error?.message ?? error}`)
+    }
+  }, 3000)
+
   // 起始动作：默认荡秋千。调试时可用 PET_FORCE_MOTION=Scene:N 指定。
   // 注意记下"实际启动了哪个动作" —— 采样日志要用它。
   // （这里曾经引用重构时已删掉的 group/index：一开采样就抛 ReferenceError，
@@ -860,6 +914,7 @@ function applyStateMotion(next, animate) {
   if (!animate) {
     state.log(`启动时状态已是 ${next}：不重放一次性入场动画，停在基础动作`)
     startMotion(BASE_MOTION, true)
+    oneShotUntil = 0
     return
   }
 
@@ -868,9 +923,13 @@ function applyStateMotion(next, animate) {
     // 兜底：即使 setLoop(false) 没生效，也按已知时长切回，避免一直循环。
     // 时长来自模型解析（Scene1=3s / Scene2=4s / Scene3=3s / Scene4=180s）。
     const wait = (mapped.durationMs ?? 4000) + 250
+    // 巡检要避开这一段，否则会把正在演的叉腰/比嘘打断
+    oneShotUntil = Date.now() + wait
     oneShotTimer = setTimeout(() => {
       if (state.currentState === next) returnToBaseMotion()
     }, wait)
+  } else {
+    oneShotUntil = 0
   }
 }
 
