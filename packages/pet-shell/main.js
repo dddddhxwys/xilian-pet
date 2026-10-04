@@ -12,8 +12,9 @@
 
 import { app, BrowserWindow, globalShortcut, ipcMain, protocol, screen } from 'electron'
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import http from 'node:http'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'node:fs'
 import { contentBand, hitTest } from './hit-test.js'
 import { readFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize } from 'node:path'
@@ -143,7 +144,58 @@ function showWindow(win) {
   log('窗口已显示')
 }
 
-const log = (...args) => console.log('[pet]', ...args)
+/**
+ * 日志：控制台 + **落盘**（`.state/pet.log`）。
+ *
+ * 为什么必须落盘：agent 读不到用户那边的控制台。没有这个文件，
+ * 用户报"还是有问题"时我只能靠猜 —— 已经因此**修错两轮**
+ * （第一轮复现用强制 idle，真实路径却是 done）。
+ * 现在渲染端的 console 也会被主进程转发进来（`[renderer]` 前缀），
+ * 所以 Live2D 那边 `state.log` 的内容也一并落盘。
+ */
+const LOG_FILE = join(STATE_DIR, 'pet.log')
+const LOG_MAX_BYTES = 2 * 1024 * 1024
+let logBytes = 0
+let logReady = false
+
+function initLogFile() {
+  try {
+    if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true })
+    // 超过上限就重开一个 —— 免得无限涨（一次长时间待机就能刷不少）
+    if (existsSync(LOG_FILE) && statSync(LOG_FILE).size > LOG_MAX_BYTES) writeFileSync(LOG_FILE, '')
+    logBytes = existsSync(LOG_FILE) ? statSync(LOG_FILE).size : 0
+    logReady = true
+    appendFileSync(LOG_FILE, `\n===== 启动 ${new Date().toISOString()} ${buildStamp()} =====\n`)
+  } catch {
+    logReady = false
+  }
+}
+
+/**
+ * 构建指纹：用来一眼确认"用户到底重启到新代码没有"。
+ * 排查时最怕的就是"修了但跑的还是旧代码"（这个也踩过）。
+ */
+function buildStamp() {
+  try {
+    const hash = (file) => createHash('sha1').update(readFileSync(join(here, file))).digest('hex').slice(0, 8)
+    return `main=${hash('main.js')} live2d=${hash('renderer/live2d.js')} motion=${hash('renderer/motion-policy.js')}`
+  } catch {
+    return 'build=?'
+  }
+}
+
+const log = (...args) => {
+  console.log('[pet]', ...args)
+  if (!logReady) return
+  try {
+    const text = `${new Date().toISOString()} [pet] ${args.join(' ')}\n`
+    appendFileSync(LOG_FILE, text)
+    logBytes += text.length
+    if (logBytes > LOG_MAX_BYTES) writeFileSync(LOG_FILE, '')
+  } catch {
+    // 落盘失败不该影响运行
+  }
+}
 
 /**
  * 把 A7「单击跳转」的结果写进 `.state/focus-log.txt`。
@@ -696,7 +748,9 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  initLogFile() // 必须最先：之后所有 log 都会同时落盘到 .state/pet.log
   log(`DSH=${DSH_URL} prefix=${ROUTE_PREFIX} state=${statePath}`)
+  log(`构建指纹 ${buildStamp()}（用来确认"到底重启到新代码没有"）`)
 
   registerModelProtocol()
   const settings = findModelSettings()
