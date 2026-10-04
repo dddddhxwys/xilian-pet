@@ -328,6 +328,7 @@ function startSse(win) {
           try {
             const frame = JSON.parse(line.slice(5).trim())
             if (frame.type === 'snapshot') lastSnapshot = frame
+            handleApprovalFrame(frame)
             send(win, 'pet:frame', frame)
           } catch (error) {
             log('frame parse failed:', error.message)
@@ -569,6 +570,12 @@ function maybeSnapshot(win) {
  *  比第一版大：现在它是**操作面板** —— 会话列表 + 多行输入 + 按钮 + 用量。 */
 const MENU_WIDTH = 300
 const MENU_HEIGHT = 320
+/** 审批小窗尺寸：要放下工具名 + 多行命令 + 理由（两行）+ 两个按钮 + 提示行 */
+const APPROVAL_WIDTH = 340
+const APPROVAL_HEIGHT = 218
+/** 审批小窗（第三个窗口）：审批来了自动弹，点完就关 */
+let approvalWin = null
+let lastApprovalFrame = null
 /** 会话列表最多列几个（用户要求"最近 3~5 个"） */
 const MENU_SESSION_LIMIT = 5
 /** 菜单小窗：复用一个实例（hide 而不是 close，避免每次重载闪一下） */
@@ -729,6 +736,24 @@ app.whenReady().then(async () => {
    */
   ipcMain.handle('pet:open-menu', (_event, payload) => openMenuWindow(payload))
   ipcMain.on('menu:close', () => closeMenuWindow())
+  // 审批小窗：渲染端就绪 → 补发内容（loadFile 是异步的）；点了决定 → 回审批链
+  ipcMain.on('approval:ready', (event) => {
+    if (approvalWin !== null && !approvalWin.isDestroyed() && event.sender === approvalWin.webContents) {
+      approvalWin.webContents.send('approval:data', lastApprovalFrame)
+    }
+  })
+  ipcMain.on('approval:decide', async (event, payload) => {
+    const id = typeof payload?.id === 'string' ? payload.id : ''
+    const decision = payload?.decision === 'allow' ? 'allow' : payload?.decision === 'deny' ? 'deny' : null
+    if (id === '' || decision === null) return
+    const result = await postControl('approval', { id, decision })
+    log(`审批决定 ${decision}（${id}）→ ${result.status}`)
+    if (approvalWin !== null && !approvalWin.isDestroyed() && event.sender === approvalWin.webContents) {
+      approvalWin.webContents.send('approval:result', { id, decision, status: result.status })
+    }
+    // 提交失败（多半是已经超时交棒给 GUI 了）→ 收起窗口，别让它杵在那儿误导人
+    if (result.status !== 200) closeApprovalWindow()
+  })
   // 渲染端就绪 → 补发数据（首次打开时 show() 那次 send 会因页面未加载而丢）
   ipcMain.on('menu:ready', (event) => {
     if (menuWin !== null && !menuWin.isDestroyed() && event.sender === menuWin.webContents) {
@@ -774,8 +799,32 @@ app.whenReady().then(async () => {
   }
 
   /**
+   * 审批帧 → **专用小窗**（第三个窗口）。
+   *
+   * ⚠️ 为什么不画在桌宠窗口里：她头顶只有约 87px 留白，审批卡（工具名 + 命令 + 两个按钮）
+   * 至少 100px 起 —— 必然遮住她本体（用户实测反馈"审批弹窗遮到角色了"）。
+   *
+   * ⚠️ 为什么不塞进操作面板：那要"先右键 → 再点允许"，手要动两次，
+   * 正好把"通过桌宠审批就是为了方便"这个初衷抵消掉（用户指出）。
+   * 审批是**突发**的，必须自己弹出来。
+   *
+   * 用 `showInactive()`：不抢你正在打字的窗口的焦点 —— 审批卡只需要"看得见、点得到"。
+   */
+  function handleApprovalFrame(frame) {
+    if (frame?.type === 'approval') {
+      log(`收到待审批：${frame.toolName ?? '?'}（弹出审批小窗）`)
+      openApprovalWindow(frame)
+      return
+    }
+    if (frame?.type === 'approval-resolved') {
+      closeApprovalWindow()
+    }
+  }
+
+  /**
    * 弹出操作面板。
-   * @param {{focusInput?:boolean}} payload focusInput=true 时让小窗把光标放进输入框（双击路径）
+   * @param {{focusInput?:boolean, inactive?:boolean}} payload
+   *        inactive=true 时用 showInactive()（不抢焦点）
    */
   async function openMenuWindow(payload) {
     // 打开时**现拉一次** /state：会话列表要按最近活跃排序、还要 token 用量。
@@ -834,12 +883,89 @@ app.whenReady().then(async () => {
         `会话 ${sessions.length} 个，目标 ${selectedSessionId ?? '（无）'}；` +
         `身体竖直范围 ${band === null ? '未知（退回窗口中心）' : `${Math.round(band.top)}..${Math.round(band.bottom)}，中心 ${Math.round(band.centerY)}`}`,
     )
-    if (process.env.PET_SNAPSHOT_MENU) captureMenuSnapshot(w)
+    if (process.env.PET_SNAPSHOT_MENU) captureWindowSnapshot(w, process.env.PET_SNAPSHOT_MENU)
     return { ok: true, bounds: w.getBounds() }
   }
 
   function closeMenuWindow() {
     if (menuWin !== null && !menuWin.isDestroyed() && menuWin.isVisible()) menuWin.hide()
+  }
+
+  // ── 审批小窗（第三个窗口）─────────────────────────────────────────
+
+  /**
+   * 弹出审批小窗：**在她旁边**，用 showInactive() 不抢焦点。
+   * 位置算法和操作面板一致（右优先 + 与她的身体竖直居中），只是尺寸不同。
+   */
+  function openApprovalWindow(frame) {
+    const pet = win.getBounds()
+    const center = { x: pet.x + Math.round(pet.width / 2), y: pet.y + Math.round(pet.height / 2) }
+    const area = screen.getDisplayNearestPoint(center).workArea
+
+    let x = pet.x + pet.width + 6
+    if (x + APPROVAL_WIDTH > area.x + area.width) x = pet.x - APPROVAL_WIDTH - 6
+    if (x < area.x) x = pet.x + Math.round((pet.width - APPROVAL_WIDTH) / 2)
+
+    const band = contentBand(alphaMask?.data, alphaMask?.width, alphaMask?.height, pet.height, HIT_ALPHA_THRESHOLD)
+    const bodyCenterY = pet.y + (band === null ? pet.height / 2 : band.centerY)
+    const y = Math.min(
+      Math.max(area.y + 4, Math.round(bodyCenterY - APPROVAL_HEIGHT / 2)),
+      area.y + area.height - APPROVAL_HEIGHT - 4,
+    )
+
+    const w = ensureApprovalWindow()
+    w.setBounds({ x: Math.round(x), y, width: APPROVAL_WIDTH, height: APPROVAL_HEIGHT })
+    lastApprovalFrame = frame
+    w.webContents.send('approval:data', frame)
+    // showInactive：审批只需要"看得见、点得到"，不该把你正在打字的窗口的焦点抢走
+    w.showInactive()
+    log(`审批小窗：桌宠(${pet.x},${pet.y}) → 审批(${Math.round(x)},${y})；${frame?.toolName ?? '?'}`)
+    return w
+  }
+
+  function closeApprovalWindow() {
+    if (approvalWin !== null && !approvalWin.isDestroyed() && approvalWin.isVisible()) approvalWin.hide()
+  }
+
+  function ensureApprovalWindow() {
+    if (approvalWin !== null && !approvalWin.isDestroyed()) return approvalWin
+    approvalWin = new BrowserWindow({
+      width: APPROVAL_WIDTH,
+      height: APPROVAL_HEIGHT,
+      transparent: true,
+      frame: false,
+      resizable: false,
+      hasShadow: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      show: false,
+      fullscreenable: false,
+      webPreferences: {
+        preload: join(here, 'approval-preload.cjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    })
+    approvalWin.setAlwaysOnTop(true, 'screen-saver')
+    approvalWin.setMenuBarVisibility?.(false)
+    approvalWin.loadFile(join(here, 'renderer', 'approval.html'))
+    approvalWin.on('closed', () => {
+      approvalWin = null
+    })
+    // ⚠️ 刻意**不做**"失焦即收起"：审批是突发的重要决定，
+    //    窗口一动就消失会让你根本来不及点（它只该在"已处理/超时交棒"时消失）。
+    approvalWin.webContents.on('console-message', (_event, ...rest) => {
+      if (rest.length === 1 && rest[0] !== null && typeof rest[0] === 'object' && 'message' in rest[0]) {
+        log(`[approval:${rest[0].level}] ${rest[0].message}`)
+      } else {
+        const [level, message] = rest
+        log(`[approval:${level}] ${message}`)
+      }
+    })
+    approvalWin.webContents.on('preload-error', (_event, path, error) => {
+      log(`[approval-preload-error] ${path}: ${error?.message ?? error}`)
+    })
+    return approvalWin
   }
 
   function ensureMenuWindow() {
@@ -887,29 +1013,44 @@ app.whenReady().then(async () => {
   }
 
   /**
-   * 调试：把菜单小窗也拍下来（PET_SNAPSHOT_MENU=<png>），用来核对布局。
+   * 调试：把**副窗口**（菜单/审批）拍下来核对布局。
    *
    * ⚠️ 必须重试：透明窗在屏幕外时 compositor 未必已经产出帧，
-   * `capturePage()` 会抛 `UnknownVizError`（实测踩到）。等一帧再来一次就好。
+   * `capturePage()` 会抛 `UnknownVizError` / `Current display surface not available`（实测踩到）。
    */
-  function captureMenuSnapshot(target) {
-    const file = process.env.PET_SNAPSHOT_MENU
+  function captureWindowSnapshot(target, file) {
+    if (typeof file !== 'string' || file === '') return
     let tries = 0
     const attempt = async () => {
       tries += 1
       try {
         const image = await target.webContents.capturePage()
         writeFileSync(file, image.toPNG())
-        log(`菜单小窗截图已写出：${file}`)
+        log(`副窗截图已写出：${file}`)
       } catch (error) {
-        if (tries < 5) {
+        if (tries < 6) {
           setTimeout(attempt, 500)
           return
         }
-        log(`菜单小窗截图失败（试了 ${tries} 次）：${error?.message ?? error}`)
+        log(`副窗截图失败（试了 ${tries} 次）：${error?.message ?? error}`)
       }
     }
     setTimeout(attempt, Number(process.env.PET_SNAPSHOT_MENU_DELAY_MS ?? 1200))
+  }
+
+  // 调试：PET_FORCE_APPROVAL=1 → 启动后弹一张**假的**审批小窗（核对布局用，不碰审批链）
+  if (process.env.PET_FORCE_APPROVAL === '1') {
+    setTimeout(() => {
+      log('调试模式：弹出假的审批小窗')
+      const w = openApprovalWindow({
+        id: 'debug-approval',
+        toolName: 'pwsh',
+        command: 'npm install --save-dev electron-builder\nnode tools/check-plugin.mjs --verbose',
+        reason: 'escalate sandbox to danger-full-access: 需要写工作区外的目录',
+        timeoutMs: 60000,
+      })
+      if (process.env.PET_SNAPSHOT_APPROVAL) captureWindowSnapshot(w, process.env.PET_SNAPSHOT_APPROVAL)
+    }, 2500)
   }
 
   ipcMain.handle('pet:model-info', () => {
@@ -931,8 +1072,8 @@ app.whenReady().then(async () => {
       // 不必让用户真的去点一下）
       forceMenu: process.env.PET_FORCE_MENU === '1',
       // 调试用：启动后显示一张**假的**审批卡（只为核对布局，不连审批链）
-      forceApproval: process.env.PET_FORCE_APPROVAL === '1',
-    }
+      // 注意：审批现在是**独立小窗**（openApprovalWindow），所以由主进程直接弹
+      forceApproval: process.env.PET_FORCE_APPROVAL === '1',    }
   })
   // 渲染端在动作跑到指定时刻时主动请求截图（见 maybeSnapshot 上方注释）
   ipcMain.on('pet:snapshot-now', () => captureSnapshot(win))

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      审批小窗（第三个窗口）。
+      为什么单独开一个，而不是画在桌宠窗口或操作面板里：
+        · 画在桌宠窗口 → 她头顶只有 ~87px 留白，审批卡（工具名+命令+两个按钮）塞不下，
+          必然遮住她本体（用户实测："审批弹窗遮到角色了"）
+        · 塞进操作面板 → 要"先右键开面板、再点允许"，手要动两次，
+          正好把"通过桌宠审批就是为了方便"这个初衷抵消掉（用户指出）
+      所以：**审批自己弹出来**，就在她旁边，点完即消失。
+      弹出时用 showInactive()，不抢你正在打字的窗口的焦点。
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'" />
+    <title>昔涟 · 审批</title>
+    <link rel="stylesheet" href="approval.css" />
+  </head>
+  <body>
+    <div id="card">
+      <div class="head">
+        <span class="dot"></span>
+        <span id="title">agent 想执行一个操作</span>
+      </div>
+      <pre id="command"></pre>
+      <div id="reason"></div>
+      <div class="actions">
+        <button type="button" id="allow">允许</button>
+        <button type="button" id="deny">拒绝</button>
+      </div>
+      <div id="hint">不处理的话，60 秒后会自动交回 DSH 界面</div>
+    </div>
+    <script src="approval.js"></script>
+  </body>
+</html>

@@ -27,11 +27,8 @@ const bubbleText = document.getElementById('bubbleText')
 const notice = document.getElementById('notice')
 const noticeText = document.getElementById('noticeText')
 const status = document.getElementById('status')
-const approval = document.getElementById('approval')
-const approvalTitle = document.getElementById('approvalTitle')
-const approvalTimer = document.getElementById('approvalTimer')
-const approvalCommand = document.getElementById('approvalCommand')
-const approvalReason = document.getElementById('approvalReason')
+// 审批不在本窗口里画 —— 她头顶只有 ~87px 留白，放不下审批卡（必然遮住她）。
+// 审批走**专用小窗**（main.js 的 openApprovalWindow），见 approval.js。
 
 const ALPHA_THRESHOLD = 24
 
@@ -88,7 +85,7 @@ function visibleUiRects() {
   const rects = []
   // ⚠️ 只收**能接住点击**的控件。气泡是 pointer-events:none 的被动展示，
   // 把它算进来会在它覆盖的区域形成一个"点了没反应、也不穿透"的死区。
-  for (const el of [notice, badge, approval]) {
+  for (const el of [notice, badge]) {
     if (el.hidden) continue
     const r = el.getBoundingClientRect()
     if (r.width <= 0 || r.height <= 0) continue
@@ -174,12 +171,7 @@ function insideRect(el, clientX, clientY) {
 /** 只有「落在不透明像素上」或「悬停在 UI 控件上」时才接管鼠标，其余保持穿透 */
 function shouldBeInteractive(clientX, clientY) {
   if (overOpaquePixel(clientX, clientY)) return true
-  return (
-    insideRect(bubble, clientX, clientY) ||
-    insideRect(notice, clientX, clientY) ||
-    insideRect(badge, clientX, clientY) ||
-    insideRect(approval, clientX, clientY)
-  )
+  return insideRect(bubble, clientX, clientY) || insideRect(notice, clientX, clientY) || insideRect(badge, clientX, clientY)
 }
 
 /**
@@ -226,8 +218,6 @@ window.addEventListener(
 window.addEventListener('mousedown', (event) => {
   if (event.button !== 0) return // 右键留给菜单小窗，不参与拖拽
   if (!shouldBeInteractive(event.clientX, event.clientY)) return
-  // 点审批卡（含两个按钮）不是"拖窗口"—— 否则点「允许」会把窗口也拖动
-  if (insideRect(approval, event.clientX, event.clientY)) return
   dragging = true
   movedFar = false
   // 告诉主进程进入拖拽态：拖拽期间它会让窗口一直保持可交互，
@@ -287,72 +277,8 @@ function openPanel() {
     .catch((error) => api.log(`操作面板打开失败：${error?.message ?? error}`))
 }
 
-// ── 审批卡 ─────────────────────────────────────────────────────────
-// 当前展示的审批（等你在桌宠上点允许/拒绝）；不点就等插件超时交棒给 GUI
-let currentApprovalId = null
-let approvalTicker = null
-
-/**
- * 显示一张审批卡。
- *
- * ⚠️ 一旦显示，就说明**审批链停在我们这里** —— DSH 界面的提示要等超时才出现，
- * 所以这张卡不能自动消失，只能靠你点、或者插件推 approval-resolved（超时/已处理）。
- */
-function showApproval(frame) {
-  currentApprovalId = typeof frame.id === 'string' ? frame.id : null
-  approvalTitle.textContent = frame.toolName ? `想执行 ${frame.toolName}` : 'agent 想执行一个操作'
-  const command = typeof frame.command === 'string' && frame.command !== '' ? frame.command : '（拿不到命令原文，谨慎放行）'
-  approvalCommand.textContent = command
-  approvalCommand.title = command // 截断时靠 tooltip 看全文
-  approvalReason.textContent = typeof frame.reason === 'string' ? frame.reason : ''
-  approvalReason.hidden = approvalReason.textContent === ''
-  approval.hidden = false
-  document.body.classList.add('has-approval')
-  startApprovalCountdown(Number(frame.timeoutMs) > 0 ? Number(frame.timeoutMs) : 60000)
-  api.log(`收到审批：${frame.toolName ?? '?'} / ${command.slice(0, 60)}`)
-}
-
-function hideApproval() {
-  currentApprovalId = null
-  approval.hidden = true
-  document.body.classList.remove('has-approval')
-  clearInterval(approvalTicker)
-  approvalTicker = null
-  approvalTimer.textContent = ''
-}
-
-/** 倒计时告诉你"还剩多久交棒给 DSH" */
-function startApprovalCountdown(timeoutMs) {
-  clearInterval(approvalTicker)
-  const deadline = Date.now() + timeoutMs
-  const tick = () => {
-    const left = Math.max(0, Math.round((deadline - Date.now()) / 1000))
-    approvalTimer.textContent = left > 0 ? `${left}s 后交给 DSH` : '正在交给 DSH…'
-    if (left === 0) clearInterval(approvalTicker)
-  }
-  tick()
-  approvalTicker = setInterval(tick, 1000)
-}
-
-/** 点允许/拒绝 → 交给插件去回审批链（POST /approval） */
-async function decideApproval(decision) {
-  const id = currentApprovalId
-  if (id === null) return
-  // 先收卡片：手感即时；插件那边成功与否都会推 approval-resolved
-  hideApproval()
-  const result = await api.control('approval', { id, decision })
-  api.log(`审批 ${decision} → ${result?.status} ${JSON.stringify(result?.body)}`)
-  if (result?.status !== 200) showBubble(`审批提交失败（${result?.status}）：可能已经超时交给 DSH 了`)
-}
-
-document.getElementById('approvalAllow').addEventListener('click', (event) => {
-  event.stopPropagation()
-  decideApproval('allow')
-})
-document.getElementById('approvalDeny').addEventListener('click', (event) => {
-  event.stopPropagation()
-  decideApproval('deny')
-})
+// 审批卡已移到**专用小窗**（approval.html/js）—— 本窗口里画必然遮住她。
+// 审批帧由主进程直接处理（见 main.js 的 handleApprovalFrame），本窗口不再参与。
 
 // ── UI 状态 ─────────────────────────────────────────────────────────
 function setState(state) {
@@ -475,21 +401,13 @@ api.onFrame((frame) => {
     case 'snapshot':
       setState(frame.state)
       setBadge(frame.unread ?? 0)
-      // 桌宠可能是在审批发生**之后**才连上的 → 插件把待决审批一起补发过来
-      if (Array.isArray(frame.approvals) && frame.approvals.length > 0) showApproval(frame.approvals[0])
       break
     case 'state':
       setState(frame.state)
       setBadge(frame.unread ?? 0)
       break
-    case 'approval':
-      // agent 在等你放行/拒绝（走桌宠审批时，审批链此刻停在我们这里）
-      showApproval(frame)
-      break
-    case 'approval-resolved':
-      // 已处理 or 超时交棒给 GUI —— 卡片收掉，别让它留在屏幕上误导人
-      if (currentApprovalId === null || frame.id === currentApprovalId) hideApproval()
-      break
+    // approval / approval-resolved 帧由**主进程**处理（handleApprovalFrame → 审批专用小窗），
+    // 本窗口刻意不显示任何审批 UI：她头顶只有 ~87px 留白，放不下，必然遮住她。
     case 'activity':
       // 活动摘要（"执行了命令""已完成分析"…）—— 气泡现在只显示这个，不显示 AI 正文
       showBubble(frame.text)
@@ -582,20 +500,8 @@ async function startLive2D() {
       openPanel()
     }, 2500)
   }
-  // 调试用：显示一张**假的**审批卡（PET_FORCE_APPROVAL=1）——
-  // 只为核对布局，不碰审批链，也不会放行任何东西。
-  if (info.forceApproval) {
-    setTimeout(() => {
-      api.log('调试模式：显示一张假的审批卡')
-      showApproval({
-        id: 'debug-approval',
-        toolName: 'pwsh',
-        command: 'npm install --save-dev electron-builder\nnode tools/check-plugin.mjs --verbose',
-        reason: 'escalate sandbox to danger-full-access: 需要写工作区外的目录',
-        timeoutMs: 60_000,
-      })
-    }, 2200)
-  }
+  // 审批的调试开关（PET_FORCE_APPROVAL）现在由**主进程**处理 ——
+  // 审批小窗是独立窗口，不归本渲染端管（见 main.js）。
   return true
 }
 ;(async () => {

@@ -1,0 +1,135 @@
+/* 审批小窗。窗口尺寸由 main.js 的 APPROVAL_WIDTH/HEIGHT 定死，这里 100% 铺满。 */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  user-select: none;
+}
+
+#card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(46, 28, 30, 0.97);
+  border: 1px solid rgba(255, 150, 120, 0.7);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
+  color: #fff;
+  animation: cardIn 120ms ease-out;
+}
+
+@keyframes cardIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffc9b3;
+}
+
+/* 小圆点跟着脉冲，表示"这个在等你" */
+.dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff8f70;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
+}
+
+#command {
+  flex: 1;
+  min-height: 40px;
+  margin: 8px 0 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.38);
+  color: #e8e8f0;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 11.5px;
+  line-height: 1.42;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-y: auto;
+  /* 命令要能选中复制 —— 上面 user-select:none 的概率栏单独放开 */
+  user-select: text;
+}
+
+#reason {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.7);
+  max-height: 32px;
+  overflow: hidden;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+button {
+  flex: 1;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 14px;
+  color: #fff;
+  cursor: pointer;
+}
+#allow {
+  background: #37a05a;
+}
+#allow:hover {
+  background: #43b167;
+}
+#deny {
+  background: rgba(226, 104, 106, 0.9);
+}
+#deny:hover {
+  background: #e2686a;
+}
+
+#hint {
+  margin-top: 6px;
+  font-size: 11px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.5);
+}
