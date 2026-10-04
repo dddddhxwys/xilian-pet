@@ -8,8 +8,8 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 2306 行 / 外壳 17 文件 3950 行 / 工具 14 文件 3397 行，85 个提交 |
-| 自测 | `& $NODE tools\check-plugin.mjs` → **103 项全绿** |
+| 规模 | 插件 5 文件 2306 行 / 外壳 17 文件 3960 行 / 工具 14 文件 3410 行，87 个提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **104 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
 > 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
@@ -795,6 +795,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **用 PowerShell 的 `WriteAllLines` 删代码块** | 整个文件的行尾被改成 CRLF（仓库约定是 LF）→ diff 噪声：pet.js 实际只改 114 行，git 显示 1206 行 | **改源文件用 edit/write 工具**，别用 PowerShell 写文件；已经栽过两次（上次是改提交信息）。用 `git diff --ignore-all-space` 能看出真实改动量 |
 | **`.sessions[hidden]` 必须显式写** | 折叠"没生效"：`hidden=true` 但列表照样显示（抓图才发现） | UA 的 `[hidden]{display:none}` 被自己写的 `.sessions{display:flex}` **覆盖**了 —— 本仓库为这个坑栽过两次（上一次是 `#composer` 默认显示出来） |
 | **审批卡画在桌宠窗口里** | 用户实测："审批弹窗遮到角色了" | 她头顶只有 ~87px 留白，审批卡（工具名+命令+按钮）≥100px → 必然遮住她。改成**第三个窗口**（`showInactive()` 不抢焦点）。中途还想塞进操作面板，被用户否掉："还要打开菜单才能审批，与初衷违背" |
+| **错误被 catch 吞掉 + 关键语句在同一个 try 里** | 用户实测："桌宠上没有弹请求框"；时间线却是 68 秒才放行（> 60s 超时）→ 是 GUI 处理的 | `startSse` 是模块级函数，却直接调了定义在 `createWindow` 里的 `handleApprovalFrame` → `ReferenceError` → 被外层 catch 吞掉，**连同一 try 里的 `send(win,'pet:frame')` 都没执行** → 桌宠收不到任何帧（整个冻住），表象却只是"审批框没弹"。**副作用必须单独 try，关键语句必须无条件执行** |
 | **以为会话标题在 `sessionController.list()` 里** | 面板显示成 `session-5f19636e-…`（用户两次反馈"标题有问题"） | 实测 `list()` 的 item keys 是 `["sessionId","updatedAt","agentAvailable","running","blank","cwd","projections"]`，**没有 title/displayTitle**。标题其实是 **key 为 `title` 的 session projection**（`apply: session/title → event.data.title`，状态就是字符串）→ 用 `sessionProjections.stateOf(session,'title')` |
 | **以为注册审批应答者就能由桌宠审批** | 探针 `seen=0`：审批真的发生了（`approval/asked` + `decided: allowed-once`），我们却一次都没被调用 | 链路里**前面是"转发给 GUI 的桥"**，它 await 用户在界面上的答复并返回决定 → **链路就此结束**。正解是 `ctx.on('approval/request', fn, { prepend: true })` 抢到最前面（实测：`asked` 与探针收到只差 **1ms**）。代价：我们"持着"时 GUI 不再弹提示 → 必须超时交棒 |
 | **以为 `approval/request` 里有命令原文** | 没法显示"你在批准什么"，等于盲批 | 实测字段只有 `agent, toolName, callId, reason, signal`。**命令要用 `callId` 去 `tool/call` 事件里关联**（我们本来就收这个事件，`data.arguments` 就是命令 JSON） |
