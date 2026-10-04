@@ -8,8 +8,8 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 2138 行 / 外壳 13 文件 3552 行 / 工具 14 文件 3291 行，79 个提交 |
-| 自测 | `& $NODE tools\check-plugin.mjs` → **98 项全绿** |
+| 规模 | 插件 5 文件 2306 行 / 外壳 13 文件 3765 行 / 工具 14 文件 3397 行，81 个提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **103 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
 > 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
@@ -412,6 +412,44 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
   诊断用 `GET /debug/agents` 的 `titles` 字段一眼可见
 - 动作执行后**面板留着**（用户要求），方便连发
 
+### 审批：由桌宠同意（**默认关闭**）
+
+开启后（`config.approval.viaPet: true`），agent 要执行需要审批的操作时，**桌宠上直接弹一张卡片**：
+
+```
+┌──────────────────────────────┐
+│ 想执行 pwsh        59s 后交给 DSH │
+│ ┌──────────────────────────┐ │
+│ │ npm install --save-dev …  │ │  ← 命令原文（三行截断，全文在 tooltip）
+│ └──────────────────────────┘ │
+│ escalate sandbox to …         │  ← 理由
+│  [   允许   ]  [   拒绝   ]    │
+└──────────────────────────────┘
+```
+
+**三种结局**（缺一不可，否则会把审批卡死）：
+
+| 情况 | 行为 |
+|---|---|
+| 桌宠点「允许」 | 返回 `'allowed-once'`（**唯一**的放行值） |
+| 桌宠点「拒绝」 | 返回 `'rejected'` |
+| 桌宠**没连上** / **超时**（默认 60s） | `next()` **交棒给 GUI** —— DSH 界面照常弹提示 |
+
+⚠️ **代价（必须知道）**：审批链是**顺序**的 —— 桌宠"持着"请求时，**DSH 界面的提示不会弹**，
+要等超时才交棒过去。所以"桌宠上也能审"和"GUI 立刻弹"只能二选一。这也是为什么：
+
+- 卡片**不会自动消失**（它一出现就说明链停在我们这儿）
+- 卡片带倒计时（`Ns 后交给 DSH`），让你知道还有多久会落到 GUI
+- 桌宠没连上时**立刻交棒**，行为与关闭该功能时**完全一致**
+
+**命令是怎么拿到的**（这是安全底线）：`approval/request` 里**没有命令原文**
+（只有 `agent, toolName, callId, reason, signal`），所以插件留存最近 50 条 `tool/call`，
+**按 `callId` 关联**出 `arguments.command` 再显示。拿不到就明写"（拿不到命令原文，谨慎放行）"，
+绝不假装。
+
+**怎么关**：把 profile 配置里的 `approval.viaPet` 改回 `false`（或整段删掉）→ 重启 DSH。
+此时插件**连 `ctx.on` 都不调**，审批链路一点不受影响（自测里专门有一条盯着这个）。
+
 ### 三条特殊规则（都是实测踩出来的）
 
 1. **开场手势**：启动先演一次 `Scene[0]` 比嘘，**0.6x 慢放**，演完落待机。
@@ -480,6 +518,7 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
 /xilian-pet/prompt              反向操控：派活
 /xilian-pet/interrupt           反向操控：打断
 /xilian-pet/read                标记已读（清未读；body {sessionId?}，不传=全清）
+/xilian-pet/approval            审批：桌宠点「允许/拒绝」（body {id, decision}）
 /xilian-pet/focus               会话聚焦（Phase 0 未实现，返回 501）
 ```
 
@@ -799,6 +838,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | `PET_FORCE_STATE=<state>` | 强制推一个状态（**不发真实快照**，避免干扰） |
 | `PET_FORCE_MOTION=Scene:<i>` | 指定播放哪个动作 |
 | `PET_FORCE_MENU=1` | 启动后自动弹出操作面板（配合 `PET_SNAPSHOT_MENU` 就能拍到面板，不必真的去点） |
+| `PET_FORCE_APPROVAL=1` | 启动后显示一张**假的**审批卡（只为核对布局，不碰审批链、不放行任何东西） |
 | `PET_SNAPSHOT_MENU=<png>` | 把菜单小窗拍下来（会自动重试，透明窗首帧可能没准备好） |
 | `PET_SAMPLE_PARAMS=1` + `PET_SAMPLE_MS` | **参数采样**：反推动作内容 / 验证时序 |
 | `PET_HIT_DEBUG=1` | 每秒打印命中判定（坐标换算逐项可见） |
@@ -837,7 +877,7 @@ docs/
   Live2D约稿单.md                    委托说明（已暂缓，将来换自研形象可启用）
   screenshots/                      实机自检截图（含第三方角色，默认 gitignore）
 tools/
-  check-plugin.mjs                  自测（96 项断言，含外壳命中测试，不需要 DSH）
+  check-plugin.mjs                  自测（103 项断言，含外壳命中测试，不需要 DSH）
   tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）
