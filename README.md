@@ -8,7 +8,7 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 2306 行 / 外壳 13 文件 3765 行 / 工具 14 文件 3397 行，82 个提交 |
+| 规模 | 插件 5 文件 2306 行 / 外壳 17 文件 3950 行 / 工具 14 文件 3397 行，85 个提交 |
 | 自测 | `& $NODE tools\check-plugin.mjs` → **103 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
@@ -414,18 +414,31 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
 
 ### 审批：由桌宠同意（**默认关闭**）
 
-开启后（`config.approval.viaPet: true`），agent 要执行需要审批的操作时，**桌宠上直接弹一张卡片**：
+开启后（`config.approval.viaPet: true`），agent 要执行需要审批的操作时，
+**一个审批小窗自己弹出来**（就在她旁边，第三个窗口）：
 
 ```
-┌──────────────────────────────┐
-│ 想执行 pwsh        59s 后交给 DSH │
-│ ┌──────────────────────────┐ │
-│ │ npm install --save-dev …  │ │  ← 命令原文（三行截断，全文在 tooltip）
-│ └──────────────────────────┘ │
-│ escalate sandbox to …         │  ← 理由
-│  [   允许   ]  [   拒绝   ]    │
-└──────────────────────────────┘
+┌──────────────────────────────────┐
+│ ● agent 想执行 pwsh                │
+│ ┌──────────────────────────────┐ │
+│ │ npm install --save-dev …      │ │  ← 命令原文（可选中复制）
+│ └──────────────────────────────┘ │
+│ escalate sandbox to …             │  ← 理由
+│   [   允许   ]   [   拒绝   ]      │
+│   不处理的话，60 秒后会自动交回 DSH  │
+└──────────────────────────────────┘
 ```
+
+**为什么是独立小窗，而不是画在她身上或塞进操作面板**：
+
+- **不能画在她身上**：她头顶只有约 87px 留白，审批卡（工具名 + 命令 + 两个按钮）
+  至少 100px 起 → 必然遮住她本体（用户实测："审批弹窗遮到角色了"）
+- **不能塞进操作面板**：那要"先右键开面板、再点允许"，手要动两次，
+  正好把"通过桌宠审批就是为了方便"这个初衷抵消掉（**用户指出**）。审批是**突发**的，
+  必须自己弹出来
+- 所以：**专用小窗 + `showInactive()`** —— 自动弹、不抢你正在打字的窗口的焦点
+- **刻意不做"失焦即收起"**：审批是突发的重要决定，窗口一动就来不及点了；
+  它只在"已处理 / 超时交棒"时消失
 
 **三种结局**（缺一不可，否则会把审批卡死）：
 
@@ -436,15 +449,15 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
 | 桌宠**没连上** / **超时**（默认 60s） | `next()` **交棒给 GUI** —— DSH 界面照常弹提示 |
 
 ⚠️ **代价（必须知道）**：审批链是**顺序**的 —— 桌宠"持着"请求时，**DSH 界面的提示不会弹**，
-要等超时才交棒过去。所以"桌宠上也能审"和"GUI 立刻弹"只能二选一。这也是为什么：
+要等超时才交棒过去。所以"桌宠上也能审"和"GUI 立刻弹"只能二选一。
+桌宠没连上时**立刻交棒**，行为与关闭该功能时**完全一致**。
 
-- 卡片**不会自动消失**（它一出现就说明链停在我们这儿）
-- 卡片带倒计时（`Ns 后交给 DSH`），让你知道还有多久会落到 GUI
-- 桌宠没连上时**立刻交棒**，行为与关闭该功能时**完全一致**
+**只放行一次**：宿主 API 里唯一的放行值就是 `allowed-once` ——
+**没有"以后这个工具都别再问我"**。每次都会问，这是设计如此。
 
-**命令是怎么拿到的**（这是安全底线）：`approval/request` 里**没有命令原文**
+**命令是怎么拿到的**（安全底线）：`approval/request` 里**没有命令原文**
 （只有 `agent, toolName, callId, reason, signal`），所以插件留存最近 50 条 `tool/call`，
-**按 `callId` 关联**出 `arguments.command` 再显示。拿不到就明写"（拿不到命令原文，谨慎放行）"，
+**按 `callId` 关联**出 `arguments.command` 再显示。拿不到就明写"（拿不到命令原文，放行前请谨慎）"，
 绝不假装。
 
 **怎么关**：把 profile 配置里的 `approval.viaPet` 改回 `false`（或整段删掉）→ 重启 DSH。
@@ -779,7 +792,9 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **拿 `usage.totalTokens` 累加当用量** | `/state` 报出 **3390 万** tokens | `totalTokens` 含 `cacheReadTokens`（重发的整个上下文）→ 改**四桶**分别累加，并按 `(turn,step)` 增量替换（口径对齐宿主 `tokenMeter`） |
 | **拿「已报数」当花销提醒的基线** | 总数换成 durable 之后，DSH 一重启就炸一条"本会话已用约 **247040k** tokens" | 总数 durable 了、提醒基线还是易失的 → 改**基线制**：首次看到该会话时把当时的值记成基线，之后只对**新增**部分提醒（实测踩到） |
 | **菜单竖直位置按窗口几何中心对齐** | 菜单比她的身体明显偏上 | 她头顶有 ~87px 留白 → 窗口中心比身体中心高 40px。改 `contentBand()`：从 alpha 掩码算内容竖直范围（实测 86..292 → 中心 189）再对齐 |
+| **用 PowerShell 的 `WriteAllLines` 删代码块** | 整个文件的行尾被改成 CRLF（仓库约定是 LF）→ diff 噪声：pet.js 实际只改 114 行，git 显示 1206 行 | **改源文件用 edit/write 工具**，别用 PowerShell 写文件；已经栽过两次（上次是改提交信息）。用 `git diff --ignore-all-space` 能看出真实改动量 |
 | **`.sessions[hidden]` 必须显式写** | 折叠"没生效"：`hidden=true` 但列表照样显示（抓图才发现） | UA 的 `[hidden]{display:none}` 被自己写的 `.sessions{display:flex}` **覆盖**了 —— 本仓库为这个坑栽过两次（上一次是 `#composer` 默认显示出来） |
+| **审批卡画在桌宠窗口里** | 用户实测："审批弹窗遮到角色了" | 她头顶只有 ~87px 留白，审批卡（工具名+命令+按钮）≥100px → 必然遮住她。改成**第三个窗口**（`showInactive()` 不抢焦点）。中途还想塞进操作面板，被用户否掉："还要打开菜单才能审批，与初衷违背" |
 | **以为会话标题在 `sessionController.list()` 里** | 面板显示成 `session-5f19636e-…`（用户两次反馈"标题有问题"） | 实测 `list()` 的 item keys 是 `["sessionId","updatedAt","agentAvailable","running","blank","cwd","projections"]`，**没有 title/displayTitle**。标题其实是 **key 为 `title` 的 session projection**（`apply: session/title → event.data.title`，状态就是字符串）→ 用 `sessionProjections.stateOf(session,'title')` |
 | **以为注册审批应答者就能由桌宠审批** | 探针 `seen=0`：审批真的发生了（`approval/asked` + `decided: allowed-once`），我们却一次都没被调用 | 链路里**前面是"转发给 GUI 的桥"**，它 await 用户在界面上的答复并返回决定 → **链路就此结束**。正解是 `ctx.on('approval/request', fn, { prepend: true })` 抢到最前面（实测：`asked` 与探针收到只差 **1ms**）。代价：我们"持着"时 GUI 不再弹提示 → 必须超时交棒 |
 | **以为 `approval/request` 里有命令原文** | 没法显示"你在批准什么"，等于盲批 | 实测字段只有 `agent, toolName, callId, reason, signal`。**命令要用 `callId` 去 `tool/call` 事件里关联**（我们本来就收这个事件，`data.arguments` 就是命令 JSON） |
@@ -838,7 +853,8 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | `PET_FORCE_STATE=<state>` | 强制推一个状态（**不发真实快照**，避免干扰） |
 | `PET_FORCE_MOTION=Scene:<i>` | 指定播放哪个动作 |
 | `PET_FORCE_MENU=1` | 启动后自动弹出操作面板（配合 `PET_SNAPSHOT_MENU` 就能拍到面板，不必真的去点） |
-| `PET_FORCE_APPROVAL=1` | 启动后显示一张**假的**审批卡（只为核对布局，不碰审批链、不放行任何东西） |
+| `PET_FORCE_APPROVAL=1` | 启动后弹出**假的**审批小窗（只为核对布局，不碰审批链、不放行任何东西） |
+| `PET_SNAPSHOT_APPROVAL=<png>` | 把审批小窗拍下来（副窗抓图会自动重试） |
 | `PET_SNAPSHOT_MENU=<png>` | 把菜单小窗拍下来（会自动重试，透明窗首帧可能没准备好） |
 | `PET_SAMPLE_PARAMS=1` + `PET_SAMPLE_MS` | **参数采样**：反推动作内容 / 验证时序 |
 | `PET_HIT_DEBUG=1` | 每秒打印命中判定（坐标换算逐项可见） |
