@@ -301,6 +301,17 @@ function pushLink(win, link) {
   send(win, 'pet:link', link)
 }
 
+/**
+ * 帧的"副作用"钩子（当前 = 审批小窗），由 createWindow() 在定义好处理函数后挂上。
+ *
+ * ⚠️ 为什么用这个间接层、而不是直接在 startSse 里调 handleApprovalFrame：
+ *    startSse 是**模块级**函数，而 handleApprovalFrame 定义在 createWindow 内部
+ *    （它要用 win / alphaMask / contentBand）。直接调 → ReferenceError。
+ *    实测踩到：报错被外层 catch 吞掉，**连后面那句 send(win,'pet:frame') 都执行不到**
+ *    → 桌宠收不到任何帧（状态/通知全冻住），而人眼只看到"审批框没弹"。
+ */
+let frameEffects = null
+
 function startSse(win) {
   const url = new URL(`${ROUTE_PREFIX}/events`, DSH_URL)
   sseRequest = http.get(url, (res) => {
@@ -328,7 +339,15 @@ function startSse(win) {
           try {
             const frame = JSON.parse(line.slice(5).trim())
             if (frame.type === 'snapshot') lastSnapshot = frame
-            handleApprovalFrame(frame)
+            // ⚠️ 副作用**单独 try**：它出错绝不能把下面那句 send 带走。
+            //    踩过：处理函数作用域不对 → ReferenceError → 外层 catch 吞掉整块
+            //    → 每一条帧都被丢弃，桌宠整个冻住（状态/通知/审批全都没了）。
+            try {
+              frameEffects?.(frame)
+            } catch (error) {
+              log('frame effect failed:', error?.message ?? error)
+            }
+            // 这一句必须**无条件**执行 —— 它是桌宠活着的前提
             send(win, 'pet:frame', frame)
           } catch (error) {
             log('frame parse failed:', error.message)
@@ -820,6 +839,10 @@ app.whenReady().then(async () => {
       closeApprovalWindow()
     }
   }
+
+  // 挂到模块级的帧副作用钩子上（startSse 在模块作用域，拿不到本函数的局部作用域）。
+  // ⚠️ 必须在这里赋值：上面那个函数定义完才能引用。
+  frameEffects = handleApprovalFrame
 
   /**
    * 弹出操作面板。

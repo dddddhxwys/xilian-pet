@@ -1784,6 +1784,35 @@ await new Promise((resolve) => server.close(resolve))
 // ─────────────────────────────────────────────────────────────
 console.log('\n[5] 命中测试（外壳纯函数，不需要 Electron）')
 
+check('外壳：帧转发不能被副作用吞掉 【实机 bug 回归】', () => {
+  // 真机症状：审批小窗死活不弹；一查时间线：用户等了 68 秒（> 60s 超时）才在 GUI 放行。
+  // 根因：startSse 是**模块级**函数，我却在里面直接调了定义在 createWindow 内部的
+  //   handleApprovalFrame → ReferenceError → 被外层 catch 吞掉，
+  //   **连后面那句 send(win,'pet:frame',frame) 都执行不到** → 桌宠收不到任何帧（整个冻住）。
+  // 这里静态盯住三件事：不许跨作用域直调、副作用必须单独 try、send 必须无条件执行。
+  const src = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+  const start = src.indexOf('function startSse(win)')
+  assert.ok(start > 0, '找不到 startSse')
+  const nextFn = src.indexOf('\nfunction ', start + 10)
+  const body = src.slice(start, nextFn === -1 ? undefined : nextFn)
+
+  for (const inner of [
+    'handleApprovalFrame(',
+    'openApprovalWindow(',
+    'closeApprovalWindow(',
+    'openMenuWindow(',
+    'ensureApprovalWindow(',
+  ]) {
+    assert.ok(!body.includes(inner), `startSse 里不能直接调 ${inner} —— 它定义在 createWindow 作用域内，会 ReferenceError`)
+  }
+  const sendIdx = body.indexOf("send(win, 'pet:frame', frame)")
+  assert.ok(sendIdx > 0, '必须无条件转发帧')
+  const before = body.slice(0, sendIdx)
+  const hookIdx = before.lastIndexOf('frameEffects?.(frame)')
+  assert.ok(hookIdx > 0, '副作用必须走模块级 frameEffects 钩子')
+  assert.ok(before.slice(Math.max(0, hookIdx - 200), hookIdx).includes('try {'), '副作用必须**单独** try，否则会带走 send')
+})
+
 check('UI 控件（输入条）即使在透明像素上也要可交互 【实机 bug 回归】', () => {
   // 真机症状：输入条右侧的「打断」点不到 —— 那里没有角色像素，
   // 而判定只看 alpha 掩码，于是被判成透明 → 穿透。
