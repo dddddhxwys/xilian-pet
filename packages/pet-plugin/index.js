@@ -35,6 +35,7 @@ import {
   reducePetEvent,
   reduceStreamChunk,
   releaseHeld,
+  setSessionTitle,
   setTokenTotals,
   snapshot,
   spendBySession,
@@ -87,7 +88,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 17
+const CODE_REVISION = 18
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -308,6 +309,30 @@ export function apply(ctx, config = {}) {
   }
 
   /**
+   * 从宿主拉**权威会话标题**。
+   *
+   * 为什么必须拉：插件原来只能从事件里捡 title，但实测 45 条 `session/event` 样本
+   * **一条都没带 title** —— 于是操作面板里显示成 `session-5f19636e-…`（用户实测反馈"标题有问题"）。
+   *
+   * 宿主的 `sessionController.list()` 返回的正是 GUI 列表用的那份摘要，字段是
+   * `displayTitle = displayTitleOf(title, cwd, sessionId)` —— 和 GUI 里看到的是同一个名字。
+   *
+   * 读不到**不报错**：标题保持原样（退回显示 sessionId，面板不能因此崩）。
+   */
+  async function refreshTitles() {
+    try {
+      const listed = await ctx.sessionController.list()
+      for (const item of listed?.items ?? []) {
+        const id = item?.id ?? item?.sessionId
+        const title = item?.displayTitle ?? item?.title
+        if (typeof id === 'string' && typeof title === 'string') state = setSessionTitle(state, id, title)
+      }
+    } catch (error) {
+      warn(`拉会话标题失败（面板退回显示 sessionId）：${error?.message ?? error}`)
+    }
+  }
+
+  /**
    * 把事件压成一句活动摘要推给气泡（`bubbleMode: 'activity'` 时）。
    * 去重：同一条摘要连着来（例如连续两次 tool/result）不重复推，省得刷屏。
    */
@@ -457,7 +482,11 @@ export function apply(ctx, config = {}) {
     `${pathPrefix}/state`,
     (req, res) => {
       syncAuthoritativeTokens() // 数字要被用到了，先把宿主的权威值刷进来
-      return sendJson(res, 200, snapshot(state))
+      // 标题也要现拉（异步）：面板里显示的是这个 title，不拉就只有 sessionId
+      refreshTitles()
+        .catch(() => {})
+        .then(() => sendJson(res, 200, snapshot(state)))
+      return undefined
     },
     `xilian-pet: GET ${pathPrefix}/state`,
   )
@@ -491,7 +520,12 @@ export function apply(ctx, config = {}) {
       res.write(': connected\n\n')
       res.write(sseData({ type: 'hello', protocol: PROTOCOL_VERSION, pid: process.pid, startedAt }))
       syncAuthoritativeTokens()
-      res.write(sseData({ type: 'snapshot', ...snapshot(state) }))
+      // 标题同样现拉（面板第一次打开就走这条）——失败也要把 snapshot 发出去
+      refreshTitles()
+        .catch(() => {})
+        .then(() => {
+          res.write(sseData({ type: 'snapshot', ...snapshot(state) }))
+        })
       // 补发迟到的提醒（窗口没连时发出的那些），最多 5 条
       if (pendingNotices.length > 0) {
         res.write(sseData({ type: 'notices', notices: pendingNotices.slice(-5) }))
@@ -882,6 +916,26 @@ export function apply(ctx, config = {}) {
           }
         } catch (error) {
           out.resolve = { id: wantResolve, ok: false, error: String(error?.message ?? error) }
+        }
+      }
+      // 会话列表摘要的**真实结构**（用来确认 displayTitle 字段名，别靠猜）。
+      // `/debug/agents?list=1` 才拉 —— list() 是异步且要读宿主状态，只读诊断默认不做副作用。
+      if (url.searchParams.get('list') === '1') {
+        try {
+          const listed = await ctx.sessionController.list()
+          out.list = {
+            count: Array.isArray(listed?.items) ? listed.items.length : 0,
+            keys: Array.isArray(listed?.items) && listed.items.length > 0 ? Object.keys(listed.items[0]) : [],
+            items: (listed?.items ?? []).slice(0, 5).map((it) => ({
+              id: it?.id ?? it?.sessionId ?? null,
+              displayTitle: it?.displayTitle ?? null,
+              title: it?.title ?? null,
+              running: it?.running ?? null,
+              updatedAt: it?.updatedAt ?? null,
+            })),
+          }
+        } catch (error) {
+          out.list = { error: String(error?.message ?? error) }
         }
       }
       return sendJson(res, 200, out)

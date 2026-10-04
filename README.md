@@ -8,8 +8,8 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1935 行 / 外壳 13 文件 3492 行 / 工具 14 文件 3182 行，72 个提交 |
-| 自测 | `& $NODE tools\check-plugin.mjs` → **94 项全绿** |
+| 规模 | 插件 5 文件 2004 行 / 外壳 13 文件 3492 行 / 工具 14 文件 3228 行，73 个提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **96 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
 > 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
@@ -362,7 +362,7 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
 
 | 区域 | 作用 |
 |---|---|
-| **派活目标** | 最近 5 个会话，点一行切换。**只切换"活派给谁"，不动 DSH 界面** |
+| **派活目标** | 最近 5 个会话，点一行切换。**只切换"活派给谁"，不动 DSH 界面**。标题取自宿主 `sessionController.list()` 的 `displayTitle` |
 | **输入框** | 多行；**Enter 发送 / Shift+Enter 换行** |
 | **派活 / 打断** | 动作在**主进程**执行（它持有 `postControl`），结果回报给面板 + 桌宠气泡 |
 | **本次会话 / 缓存命中** | token 用量（数据来自宿主 durable projection） |
@@ -394,6 +394,11 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
   否则会把已撤掉的闭眼笑**复活**（踩过，A/B 抓图验证）
 - **会话按 `lastActivityAt` 排序**（`snapshot` 里新暴露的字段）：不能靠插入顺序 ——
   那是"谁先出现"不是"谁最近活跃"
+- **会话标题必须从宿主拉**：插件原来只能从事件里捡 `title`，但实测 **45 条 `session/event` 样本一条都没带**，
+  于是面板里显示成 `session-5f19636e-…`（用户实测反馈"标题有问题"）。
+  正解是 `sessionController.list()` → `items[].displayTitle`
+  （宿主那行是 `displayTitleOf(entry.title, entry.cwd, entry.sessionId)`，**和 GUI 列表里是同一个名字**）。
+  读不到不报错，退回显示 sessionId。诊断用 `GET /debug/agents?list=1` 直接看宿主真实字段
 - 动作执行后**面板留着**（用户要求），方便连发
 
 ### 三条特殊规则（都是实测踩出来的）
@@ -619,7 +624,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 |---|---|
 | 插件被加载 | `/health` → `{"ok":true,"code":13,...}`（`messageFactory` 报官方 `module:file:///…app.asar/…/dsh-llm/lib/index.js`） |
 | **A6 派活端到端** | 用户在派活框输入的文字**真的到达了 agent**。客观判据：桌宠发的 `user/message` 的 `source` 只有 `{kind:'user'}`，而 GUI 发的带 `rpcId` —— 在 `/debug/shapes` 里一眼可分（实测同一条文案两种来源对比过） |
-| 插件自测 93 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / **waterfall 回归 + 负向对照** / **inject 静态扫描 + 负向对照** / **派活兜底 + resolveAgent 恢复 + 宿主会话枚举 + 只读诊断** / **外壳命中测试 + contentBand 身体对齐** / **活动摘要 + 通知帧** / **token 四桶 + 宿主数据源 + 花销基线 + 清未读** / 清理注销 |
+| 插件自测 96 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / **waterfall 回归 + 负向对照** / **inject 静态扫描 + 负向对照** / **派活兜底 + resolveAgent 恢复 + 宿主会话枚举 + 只读诊断** / **外壳命中测试 + contentBand 身体对齐** / **活动摘要 + 通知帧** / **token 四桶 + 宿主数据源 + 花销基线 + 清未读 + 会话标题** / 清理注销 |
 | 版本兼容性 | Cubism Core `05.01.0000`，`MsvGetLatestMocVersion=5`，模型 moc3 版本号 5 |
 | 事件协议取自事实 | 59 个真实事件类型名、`SessionEventMap`、`StreamChunk`（正文在 `frame.chunk.text`）均来自 asar 类型清单 |
 | Live2D 模型渲染 | 4200×3500 加载成功，截图见 `docs/screenshots/` |
@@ -723,7 +728,8 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **`SetForegroundWindow` 返回 true 却没到前台** | 点了只闪一下任务栏 | Windows 前台锁 → 先 `AllowSetForegroundWindow(-1)` + `AttachThreadInput` 再设置；用 `GetForegroundWindow()` **复核**，别信返回值 |
 | **拿 `usage.totalTokens` 累加当用量** | `/state` 报出 **3390 万** tokens | `totalTokens` 含 `cacheReadTokens`（重发的整个上下文）→ 改**四桶**分别累加，并按 `(turn,step)` 增量替换（口径对齐宿主 `tokenMeter`） |
 | **拿「已报数」当花销提醒的基线** | 总数换成 durable 之后，DSH 一重启就炸一条"本会话已用约 **247040k** tokens" | 总数 durable 了、提醒基线还是易失的 → 改**基线制**：首次看到该会话时把当时的值记成基线，之后只对**新增**部分提醒（实测踩到） |
-| **菜单竖直位置按窗口几何中心对齐** | 菜单比她的身体明显偏上 | 她头顶有 ~87px 留白 → 窗口中心比身体中心高 40px。改 `contentBand()`：从 alpha 掩码算内容竖直范围（实测 86..294 → 中心 190）再对齐 |
+| **菜单竖直位置按窗口几何中心对齐** | 菜单比她的身体明显偏上 | 她头顶有 ~87px 留白 → 窗口中心比身体中心高 40px。改 `contentBand()`：从 alpha 掩码算内容竖直范围（实测 86..292 → 中心 189）再对齐 |
+| **以为会话标题会跟着事件来** | 操作面板里显示成 `session-5f19636e-…`（用户反馈"标题有问题"） | 实测 **45 条 `session/event` 样本一条都没带 `title`** → 必须从 `sessionController.list()` 拉 `displayTitle`（宿主显示层派生，与 GUI 同一个名字） |
 | **菜单画在桌宠窗口里 → 遮住本体** | 用户实测："菜单的位置不对，会遮住桌宠本体" | 她占满 260×300，**只有头顶约 87px 是空的**，竖排四项菜单放不下 → 最终改成**独立小窗**在她旁边弹出。（中间的试错：先改紧凑两行塞进留白带能work，但样式受限） |
 | **`show()` 时 `send` 数据，渲染端监听还没注册** | 菜单里永远显示"—"（首次打开必现） | `loadFile()` 是异步的 → IPC 消息被丢。加 `menu:ready` 让主进程**补发**（与桌宠窗口 `pet:ready` 同一套路） |
 | **临时表情恢复时照搬"当前态"的表情** | 右键弹完问号后，她**卡在闭眼笑**上不再恢复（用户实测："问号消失，出现如图表情"） | `done` 是 `{once:true, expression:'happy'}`（闭眼笑，演完就该撤）。恢复时照搬 `STATE_MAP['done'].expression` 等于**把一次性特效复活**，而且不会再有人来清。→ 一次性且无 `keepEffect` 的态恢复成**基础表情**（A/B 抓图对照验证过） |
@@ -817,7 +823,7 @@ docs/
   Live2D约稿单.md                    委托说明（已暂缓，将来换自研形象可启用）
   screenshots/                      实机自检截图（含第三方角色，默认 gitignore）
 tools/
-  check-plugin.mjs                  自测（94 项断言，含外壳命中测试，不需要 DSH）
+  check-plugin.mjs                  自测（96 项断言，含外壳命中测试，不需要 DSH）
   tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）

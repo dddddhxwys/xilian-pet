@@ -265,6 +265,21 @@ export function aggregate(state) {
   return best
 }
 
+/**
+ * 写入会话标题。
+ *
+ * 标题有两个来源，优先级：**宿主 `sessionController.list()` 的 `displayTitle`**（权威，
+ * GUI 列表里显示的就是它）> 事件里带的 title（实测很少见：45 条事件样本一条都没带）。
+ *
+ * 不写空串；值没变就原样返回（幂等）—— 这个函数每次 /state 都会被调用。
+ */
+export function setSessionTitle(state, sessionId, title) {
+  const prev = state.sessions[sessionId]
+  if (prev === undefined) return state
+  if (typeof title !== 'string' || title === '' || prev.title === title) return state
+  return { ...state, sessions: { ...state.sessions, [sessionId]: { ...prev, title } } }
+}
+
 /** 未读计数：done / error 且未被查看的会话数（用于 +N 背板） */
 export function unreadCount(state) {
   return Object.values(state.sessions).filter((s) => s.unread).length

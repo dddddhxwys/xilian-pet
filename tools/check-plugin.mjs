@@ -36,6 +36,7 @@ import {
   reducePetEvent,
   reduceStreamChunk,
   releaseHeld,
+  setSessionTitle,
   setTokenTotals,
   snapshot,
   spendBySession,
@@ -644,6 +645,17 @@ check('snapshot 暴露 lastActivityAt：面板按它排「最近 N 个会话」'
   assert.equal(rows.slice().sort((a, b) => b.lastActivityAt - a.lastActivityAt)[0].sessionId, 's-new')
 })
 
+check('setSessionTitle：幂等；空标题与未知会话都不动', () => {
+  let s = createPetState()
+  s = emit(s, 'turn/start', 's1', 1)
+  const a = setSessionTitle(s, 's1', '读取文档完成交接')
+  assert.equal(a.sessions.s1.title, '读取文档完成交接')
+  assert.equal(setSessionTitle(a, 's1', '读取文档完成交接'), a, '同值原样返回（/state 每次都会调它）')
+  assert.equal(setSessionTitle(a, 's1', ''), a, '空串不写')
+  assert.equal(setSessionTitle(a, '不存在', 'x'), a, '未知会话不动')
+  assert.equal(setSessionTitle(a, 's1', undefined), a, '非字符串不写')
+})
+
 // ─────────────────────────────────────────────────────────────
 console.log('\n[2] 插件契约（mock ctx）')
 
@@ -676,6 +688,7 @@ const MOCK_SERVICES = new Set(['webServer', 'agents', 'sessions', 'sessionContro
  * @param {Array}    [opts.hostSessions]   模拟 ctx.sessions.list()（宿主已知的活会话）
  * @param {Function} [opts.resume]         async sessionId → { agent } | { error }（模拟 resolveAgent）
  * @param {Function} [opts.tokenProjection] sessionId → 四桶 | undefined（模拟 sessionProjections.stateOf）
+ * @param {Function} [opts.sessionList]    async () => { items: [...] }（模拟 sessionController.list）
  * @param {string[]} [opts.declaredInject] 覆盖 inject 声明（仅用于负向对照）
  */
 function createMockCtx({
@@ -684,6 +697,7 @@ function createMockCtx({
   hostSessions = [],
   resume,
   tokenProjection,
+  sessionList,
   declaredInject = pluginInject,
 } = {}) {
   const routes = new Map()
@@ -706,7 +720,7 @@ function createMockCtx({
     },
     agents: { get: agents ?? (() => undefined), list: () => liveAgents },
     sessions: { list: () => hostSessions },
-    sessionController: { agents: { resolveAgent } },
+    sessionController: { agents: { resolveAgent }, list: sessionList ?? (async () => ({ items: [] })) },
     // 宿主的 session projections 注册表：`stateOf(session, key)` 返回 {totals, last}。
     // 真实实现里 key 是 `tokenUsage`，且**以 session 对象为键**（WeakMap）。
     sessionProjections: {
@@ -1447,6 +1461,38 @@ await checkAsync('token 数据源：宿主读不到 → 退回插件自算（纯
     const s = st.sessions.find((x) => x.sessionId === 'sess-own')
     assert.equal(s.tokenSource, 'own', '读不到宿主投影时应保持自算')
     assert.equal(s.spendTokens, 100, '自算：10+20+70')
+  } finally {
+    await new Promise((resolve) => srv.close(resolve))
+    teardown()
+  }
+})
+
+await checkAsync('会话标题：/state 落上宿主 sessionController.list() 的 displayTitle', async () => {
+  // 为什么要从宿主拉：实测 45 条 session/event 样本**一条都没带 title**，
+  // 于是操作面板里显示成 session-5f19636e-…（用户实测反馈"标题有问题"）。
+  const m = createMockCtx({
+    agents: () => undefined,
+    sessionList: async () => ({ items: [{ id: 'sess-title', displayTitle: '读取文档完成交接', running: true }] }),
+  })
+  const teardown = apply(m.ctx, { pathPrefix: '/xilian-pet', minHoldMs: 0, createUserMessage: stubCreateUserMessage })
+  const srv = http.createServer((req, res) => {
+    const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
+    if (route === undefined) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    route.handler(req, res)
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  try {
+    // 先喂事件让插件知道这个会话存在（否则 setSessionTitle 找不到它）
+    for (const fn of m.listeners.get('session/event') ?? []) {
+      fn({ id: 'sess-title' }, { type: 'turn/start', seq: 1, data: { turn: 1 } })
+    }
+    const st = await (await fetch(`http://127.0.0.1:${srv.address().port}/xilian-pet/state`)).json()
+    const row = st.sessions.find((x) => x.sessionId === 'sess-title')
+    assert.equal(row.title, '读取文档完成交接', '面板显示的就该是宿主 GUI 列表里的同一个名字')
   } finally {
     await new Promise((resolve) => srv.close(resolve))
     teardown()
