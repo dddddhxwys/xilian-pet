@@ -293,20 +293,44 @@ function renderMenuStats() {
   menuTokens.title = `来源：${tokensView?.tokenSource === 'host' ? '宿主（重启不丢）' : '插件自算'}`
 }
 
+/**
+ * 她本体的最上沿（CSS px，相对窗口）—— 从上往下扫 alpha 掩码，第一行出现不透明像素的位置。
+ *
+ * 用途：菜单放在这条线**以上**就绝不会挡住本体。
+ * 实测构图：内容 233×207 / 舞台 260×300，上方留白 87px —— 那就是菜单唯一能待的地方。
+ * 用掩码算而不是写死 87：换模型、换窗口尺寸、用占位图降级时都自动跟着变。
+ */
+function contentTopY() {
+  if (alphaMap === null || !mapW || !mapH) return 0
+  const rect = maskSource().getBoundingClientRect()
+  for (let v = 0; v < mapH; v++) {
+    const row = v * mapW
+    for (let u = 0; u < mapW; u++) {
+      if (alphaMap[row + u] > ALPHA_THRESHOLD) return rect.top + (v / mapH) * rect.height
+    }
+  }
+  return 0
+}
+
 function openMenu(clientX, clientY) {
   renderMenuStats()
   menu.hidden = false
-  // 先量再定位：贴边时自动收进窗口内，免得菜单被 260×300 的窗口裁掉
   const w = menu.offsetWidth
   const h = menu.offsetHeight
   const left = Math.min(Math.max(4, clientX - w / 2), Math.max(4, window.innerWidth - w - 4))
-  const top = Math.min(Math.max(4, clientY + 10), Math.max(4, window.innerHeight - h - 4))
+  // 优先塞进"她头顶的留白带"里 —— 只有这样才能保证不挡本体。
+  // 留白不够（占位图以外的异常情况）才退回鼠标下方，并尽量贴边。
+  const bandBottom = contentTopY()
+  const top =
+    bandBottom - h - 4 >= 2
+      ? bandBottom - h - 4
+      : Math.min(Math.max(4, clientY + 10), Math.max(4, window.innerHeight - h - 4))
   menu.style.left = `${Math.round(left)}px`
   menu.style.top = `${Math.round(top)}px`
   menuOpen = true
+  api.log(`右键菜单已打开（顶部留白 ${Math.round(bandBottom)}px，菜单高 ${h}px）`)
   // 同时弹个问号 —— "你想干嘛？"
   live2d?.pokeExpression('question', 1700)
-  api.log('右键菜单已打开')
 }
 
 function closeMenu() {

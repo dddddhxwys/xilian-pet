@@ -45,15 +45,21 @@
 
       <!--
         右键菜单（右键昔涟 → 弹这个，同时她弹一个问号表情）。
-        为什么用 HTML 自绘而不是 Electron 原生 Menu：原生是 Windows 灰菜单，和桌宠风格完全不搭；
-        代价是要自己处理失焦关闭，并且**必须登记进 visibleUiRects**，否则会被点击穿透（踩过）。
+        两个刻意的选择：
+        · HTML 自绘而不是 Electron 原生 Menu —— 原生是 Windows 灰菜单，和桌宠风格完全不搭。
+          代价是要自己处理失焦关闭，并且**必须登记进 visibleUiRects**，否则会被点击穿透（踩过）。
+        · **紧凑两行**（动作一行 + 数字一行）—— 她本体占满窗口，唯一不压在她身上的地方
+          只有头顶那条约 87px 的留白（实测构图数据），竖排四项菜单必然挡住她的脸。
       -->
       <div id="menu" hidden>
-        <button type="button" class="menu-item" data-action="prompt">派活…</button>
-        <button type="button" class="menu-item danger" data-action="interrupt">打断当前回合</button>
-        <div class="menu-sep"></div>
-        <div class="menu-stat"><span>本次会话</span><b id="menuTokens">—</b></div>
-        <div class="menu-stat"><span>缓存命中</span><b id="menuCache">—</b></div>
+        <div class="menu-row">
+          <button type="button" class="menu-item" data-action="prompt">派活…</button>
+          <button type="button" class="menu-item danger" data-action="interrupt">打断当前回合</button>
+        </div>
+        <div class="menu-row menu-stats">
+          <span class="menu-stat"><i>本次会话</i><b id="menuTokens">—</b></span>
+          <span class="menu-stat"><i>缓存命中</i><b id="menuCache">—</b></span>
+        </div>
       </div>
 
       <form id="composer" hidden>
