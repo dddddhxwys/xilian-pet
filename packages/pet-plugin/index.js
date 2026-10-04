@@ -88,7 +88,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 19
+const CODE_REVISION = 20
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -260,6 +260,61 @@ export function apply(ctx, config = {}) {
     } catch {
       /* logger 不可用时静默，绝不让观测逻辑影响宿主 */
     }
+  }
+
+  /**
+   * ── 审批应答者实验（探针）──────────────────────────────────────────
+   *
+   * 目的：确认"**插件能不能在 `approval/request` waterfall 上注册应答者，而不挡住 GUI 的审批提示**"。
+   * 宿主那条链路（`ApprovalService.decide()`）是：
+   *     ctx.waterfall(scopeTarget(agent, agent), 'approval/request', req, () => 'unavailable')
+   * 结果 fail-closed：没人返回 `'allowed-once'` 就不放行。
+   *
+   * ⚠️ **探针永远只观察、永远 `next()` 交棒**，绝不返回任何决定 ——
+   *    所以它**不可能**放行/拒绝真实操作，也**不可能**改变 fail-closed 语义。
+   *    "真正通过桌宠同意"要等实验结论出来再谈。
+   *
+   * ⚠️ **默认完全不注册**（连 `ctx.on` 都不调）：只有显式打开才挂上去，
+   *    杜绝"实验代码常驻链路"这种最危险的情况。
+   */
+  const approvalProbe = { enabled: false, delayMs: 0, seen: [], disposer: null }
+
+  /** 探针应答者：记录 → 可选延迟 → **一律交棒** */
+  async function approvalProbeListener(req, next) {
+    const entry = {
+      at: Date.now(),
+      toolName: typeof req?.toolName === 'string' ? req.toolName : null,
+      reason: typeof req?.reason === 'string' ? req.reason : null,
+      callId: typeof req?.callId === 'string' ? req.callId : null,
+      delayMs: approvalProbe.delayMs,
+    }
+    approvalProbe.seen.push(entry)
+    if (approvalProbe.seen.length > 20) approvalProbe.seen.shift()
+    warn(`[审批探针] 收到 approval/request：${entry.toolName ?? '(无工具名)'}；${entry.delayMs}ms 后交棒`)
+    if (approvalProbe.delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, approvalProbe.delayMs))
+      entry.releasedAt = Date.now()
+      warn(`[审批探针] 延迟 ${entry.delayMs}ms 到期，交棒给下一个应答者`)
+    }
+    return next() // 关键：不返回任何决定，交给链路上的下一个应答者（GUI）
+  }
+
+  /** 开关探针：enable 才注册；disable 立刻注销，链路恢复原样。 */
+  function setApprovalProbe({ enabled, delayMs }) {
+    if (Number.isFinite(delayMs)) approvalProbe.delayMs = Math.max(0, Math.min(10_000, Math.round(delayMs)))
+    if (enabled === true && approvalProbe.disposer === null) {
+      // waterfall 的注册方式与普通事件一样是 ctx.on；
+      // 监听器收到 (…args, next)，调用 next() 即交棒。
+      approvalProbe.disposer = ctx.on('approval/request', approvalProbeListener)
+      approvalProbe.enabled = true
+      warn(`[审批探针] 已启用（延迟 ${approvalProbe.delayMs}ms 后交棒）；永远只观察、不做决定`)
+    } else if (enabled === false && approvalProbe.disposer !== null) {
+      approvalProbe.disposer()
+      approvalProbe.disposer = null
+      approvalProbe.enabled = false
+      warn('[审批探针] 已停用，链路恢复原样')
+    }
+    return { enabled: approvalProbe.enabled, delayMs: approvalProbe.delayMs, seen: approvalProbe.seen.length }
   }
 
   /** 观测 session/event。真实签名是 (session, event) 两个参数。 */
@@ -525,6 +580,27 @@ export function apply(ctx, config = {}) {
       })
     },
     `xilian-pet: GET ${pathPrefix}/debug/shapes`,
+  )
+
+  /**
+   * 审批应答者实验的开关（**只有显式打开才会注册到 `approval/request` 链路上**）。
+   *
+   * - `POST { enabled: true, delayMs?: 0..10000 }` → 挂上探针（只观察 + 交棒）
+   * - `POST { enabled: false }` → 立刻注销，链路恢复原样
+   * - 读状态走只读诊断 `GET /debug/agents` 的 `approvalProbe` 字段
+   *   （路由表按**路径**去重，所以同路径不能再注册一个 GET）
+   *
+   * 探针**永远不返回决定**，所以它不会放行/拒绝任何真实操作。
+   */
+  register(
+    'POST',
+    `${pathPrefix}/debug/approval-probe`,
+    async (req, res) => {
+      const body = await readJsonBody(req)
+      const out = setApprovalProbe({ enabled: body?.enabled === true, delayMs: Number(body?.delayMs) })
+      return sendJson(res, 200, { ok: true, ...out, seen: approvalProbe.seen })
+    },
+    `xilian-pet: POST ${pathPrefix}/debug/approval-probe`,
   )
 
   // SSE 事件流（照抄官方 dsh-client-hmr 的实现约定）
@@ -938,6 +1014,8 @@ export function apply(ctx, config = {}) {
       // 标题的**真实来源**：key 为 `title` 的 session projection（见 sessionTitleOf 注释）。
       // 这里顺便把每个会话读到的标题打出来 —— 标题不对时一眼能定位。
       out.titles = Object.fromEntries(observed.map((id) => [id, sessionTitleOf(id) ?? null]))
+      // 审批应答者实验的状态（开关走 POST /debug/approval-probe）
+      out.approvalProbe = { enabled: approvalProbe.enabled, delayMs: approvalProbe.delayMs, seen: approvalProbe.seen }
       // 会话列表摘要的**真实结构**（`?list=1` 才拉）。
       // 曾经以为标题在这里（items[].displayTitle），实测**没有这个字段** —— 留在这里备查。
       if (url.searchParams.get('list') === '1') {

@@ -851,8 +851,68 @@ check('负向对照：mock 确实会因缺 inject 而抛错（证明上面两条
   )
 })
 
-check('apply 注册了 11 条 exact 路由', () => {
-  assert.equal(routes.size, 11, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
+check('apply 注册了 12 条 exact 路由', () => {
+  assert.equal(routes.size, 12, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
+})
+
+check('审批探针默认完全不注册（连 ctx.on 都不调）', () => {
+  // ⚠️ 这是这个实验最重要的安全属性：不打开就一点链路都不碰。
+  // 用**新建的** mock 判定，别用模块级 listeners（那是另一套 harness 的）。
+  const m = createMockCtx({ agents: () => undefined })
+  apply(m.ctx, { pathPrefix: '/xilian-pet', minHoldMs: 0, createUserMessage: stubCreateUserMessage })
+  assert.equal(m.listeners.get('approval/request')?.length ?? 0, 0, '默认不该订阅 approval/request')
+})
+
+await checkAsync('审批探针：开启后只观察 + 交棒，从不返回决定', async () => {
+  const m = createMockCtx({ agents: () => undefined })
+  const teardown = apply(m.ctx, { pathPrefix: '/xilian-pet', minHoldMs: 0, createUserMessage: stubCreateUserMessage })
+  const srv = http.createServer((req, res) => {
+    const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
+    if (route === undefined) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    route.handler(req, res)
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${srv.address().port}/xilian-pet`
+  try {
+    const on = await (
+      await fetch(`${base}/debug/approval-probe`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: true, delayMs: 0 }),
+      })
+    ).json()
+    assert.equal(on.enabled, true)
+    assert.equal(m.listeners.get('approval/request')?.length, 1, '开启后应挂上 1 个应答者')
+
+    // 模拟 waterfall 链路：探针应答者收到 (req, next)，必须调用 next() 把链路交下去
+    let nextCalled = false
+    const decision = await runWaterfall(m.listeners, 'approval/request', () => 'unavailable', {
+      toolName: 'bash',
+      reason: '测试用',
+    })
+    assert.equal(decision, 'unavailable', '探针绝不能返回决定（否则会放行/拒绝真实操作）')
+    nextCalled = true
+    assert.ok(nextCalled)
+
+    const off = await (
+      await fetch(`${base}/debug/approval-probe`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: false }),
+      })
+    ).json()
+    assert.equal(off.enabled, false)
+    assert.equal(off.seen.length, 1, '应记录到刚才那次请求')
+    assert.equal(off.seen[0].toolName, 'bash')
+    assert.equal(m.listeners.get('approval/request')?.length ?? 0, 0, '停用后必须注销，链路恢复原样')
+  } finally {
+    await new Promise((resolve) => srv.close(resolve))
+    teardown()
+  }
 })
 
 check('所有路由都是 exact（避免被 /api 之类的前缀路由吞掉）', () => {
