@@ -281,11 +281,21 @@ export function apply(ctx, config = {}) {
 
   /** 探针应答者：记录 → 可选延迟 → **一律交棒** */
   async function approvalProbeListener(req, next) {
+    // 记下**完整字段**：桌宠要显示"你在批准什么"，就必须知道 req 里有没有命令原文。
+    // 只记 toolName/reason/callId 是不够的 —— 那样批准等于盲批。
+    let sample = null
+    try {
+      sample = JSON.stringify(req, (_k, v) => (typeof v === 'bigint' ? String(v) : v))?.slice(0, 600) ?? null
+    } catch {
+      sample = '(无法序列化)'
+    }
     const entry = {
       at: Date.now(),
       toolName: typeof req?.toolName === 'string' ? req.toolName : null,
       reason: typeof req?.reason === 'string' ? req.reason : null,
       callId: typeof req?.callId === 'string' ? req.callId : null,
+      keys: req !== null && typeof req === 'object' ? Object.keys(req) : [],
+      sample,
       delayMs: approvalProbe.delayMs,
     }
     approvalProbe.seen.push(entry)
@@ -1036,7 +1046,12 @@ export function apply(ctx, config = {}) {
       // 这里顺便把每个会话读到的标题打出来 —— 标题不对时一眼能定位。
       out.titles = Object.fromEntries(observed.map((id) => [id, sessionTitleOf(id) ?? null]))
       // 审批应答者实验的状态（开关走 POST /debug/approval-probe）
-      out.approvalProbe = { enabled: approvalProbe.enabled, delayMs: approvalProbe.delayMs, seen: approvalProbe.seen }
+      out.approvalProbe = {
+        enabled: approvalProbe.enabled,
+        prepend: approvalProbe.prepend,
+        delayMs: approvalProbe.delayMs,
+        seen: approvalProbe.seen,
+      }
       // 会话列表摘要的**真实结构**（`?list=1` 才拉）。
       // 曾经以为标题在这里（items[].displayTitle），实测**没有这个字段** —— 留在这里备查。
       if (url.searchParams.get('list') === '1') {
