@@ -88,7 +88,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 18
+const CODE_REVISION = 19
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -319,16 +319,40 @@ export function apply(ctx, config = {}) {
    *
    * 读不到**不报错**：标题保持原样（退回显示 sessionId，面板不能因此崩）。
    */
-  async function refreshTitles() {
+  /**
+   * 读**宿主投影**里的会话标题。
+   *
+   * 宿主把标题实现成一个 key 为 `title` 的 session projection：
+   *     const titleProjectionDefinition = {
+   *       key: "title",
+   *       stateSchema: z.string().min(1).nullable(),
+   *       apply: (state, event) => event.type === "session/title" ? event.data.title : state,
+   *     }
+   * 也就是**状态本身就是标题字符串**，与 tokenUsage 同一机制：从会话日志重放、重启不丢。
+   *
+   * ⚠️ **不要走 `sessionController.list()`**（第一版就是这么错的）：
+   * 它返回的 item 字段实测是
+   * `["sessionId","updatedAt","agentAvailable","running","blank","cwd","projections"]`
+   * —— **没有 title / displayTitle**，所以标题一直空、面板只能显示 sessionId。
+   * 宿主显示层的 `displayTitle` 是从 `projectionValues?.title` 派生的，不是 list() 给的。
+   */
+  function sessionTitleOf(sessionId) {
+    const session = sessionObjects.get(sessionId)
+    if (session === undefined) return undefined
     try {
-      const listed = await ctx.sessionController.list()
-      for (const item of listed?.items ?? []) {
-        const id = item?.id ?? item?.sessionId
-        const title = item?.displayTitle ?? item?.title
-        if (typeof id === 'string' && typeof title === 'string') state = setSessionTitle(state, id, title)
-      }
+      const title = ctx.sessionProjections.stateOf(session, 'title')
+      return typeof title === 'string' && title !== '' ? title : undefined
     } catch (error) {
-      warn(`拉会话标题失败（面板退回显示 sessionId）：${error?.message ?? error}`)
+      warn(`读宿主 title 投影失败（面板退回显示 sessionId）：${error?.message ?? error}`)
+      return undefined
+    }
+  }
+
+  /** 把所有已知会话的权威标题刷进 state（幂等；纯同步查表，很便宜） */
+  function syncTitles() {
+    for (const sessionId of Object.keys(state.sessions)) {
+      const title = sessionTitleOf(sessionId)
+      if (title !== undefined) state = setSessionTitle(state, sessionId, title)
     }
   }
 
@@ -482,11 +506,8 @@ export function apply(ctx, config = {}) {
     `${pathPrefix}/state`,
     (req, res) => {
       syncAuthoritativeTokens() // 数字要被用到了，先把宿主的权威值刷进来
-      // 标题也要现拉（异步）：面板里显示的是这个 title，不拉就只有 sessionId
-      refreshTitles()
-        .catch(() => {})
-        .then(() => sendJson(res, 200, snapshot(state)))
-      return undefined
+      syncTitles() // 标题同理（面板里显示的就是它；不刷就只有 sessionId）
+      return sendJson(res, 200, snapshot(state))
     },
     `xilian-pet: GET ${pathPrefix}/state`,
   )
@@ -520,12 +541,8 @@ export function apply(ctx, config = {}) {
       res.write(': connected\n\n')
       res.write(sseData({ type: 'hello', protocol: PROTOCOL_VERSION, pid: process.pid, startedAt }))
       syncAuthoritativeTokens()
-      // 标题同样现拉（面板第一次打开就走这条）——失败也要把 snapshot 发出去
-      refreshTitles()
-        .catch(() => {})
-        .then(() => {
-          res.write(sseData({ type: 'snapshot', ...snapshot(state) }))
-        })
+      syncTitles() // 标题同理（面板第一次打开就走这条）
+      res.write(sseData({ type: 'snapshot', ...snapshot(state) }))
       // 补发迟到的提醒（窗口没连时发出的那些），最多 5 条
       if (pendingNotices.length > 0) {
         res.write(sseData({ type: 'notices', notices: pendingNotices.slice(-5) }))
@@ -918,8 +935,11 @@ export function apply(ctx, config = {}) {
           out.resolve = { id: wantResolve, ok: false, error: String(error?.message ?? error) }
         }
       }
-      // 会话列表摘要的**真实结构**（用来确认 displayTitle 字段名，别靠猜）。
-      // `/debug/agents?list=1` 才拉 —— list() 是异步且要读宿主状态，只读诊断默认不做副作用。
+      // 标题的**真实来源**：key 为 `title` 的 session projection（见 sessionTitleOf 注释）。
+      // 这里顺便把每个会话读到的标题打出来 —— 标题不对时一眼能定位。
+      out.titles = Object.fromEntries(observed.map((id) => [id, sessionTitleOf(id) ?? null]))
+      // 会话列表摘要的**真实结构**（`?list=1` 才拉）。
+      // 曾经以为标题在这里（items[].displayTitle），实测**没有这个字段** —— 留在这里备查。
       if (url.searchParams.get('list') === '1') {
         try {
           const listed = await ctx.sessionController.list()

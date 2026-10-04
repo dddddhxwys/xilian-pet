@@ -687,8 +687,8 @@ const MOCK_SERVICES = new Set(['webServer', 'agents', 'sessions', 'sessionContro
  * @param {Array}    [opts.liveAgents]     模拟 ctx.agents.list()（活着的 agent 列表）
  * @param {Array}    [opts.hostSessions]   模拟 ctx.sessions.list()（宿主已知的活会话）
  * @param {Function} [opts.resume]         async sessionId → { agent } | { error }（模拟 resolveAgent）
- * @param {Function} [opts.tokenProjection] sessionId → 四桶 | undefined（模拟 sessionProjections.stateOf）
- * @param {Function} [opts.sessionList]    async () => { items: [...] }（模拟 sessionController.list）
+ * @param {Function} [opts.tokenProjection] sessionId → 四桶 | undefined（模拟 stateOf 'tokenUsage'）
+ * @param {Function} [opts.sessionTitle]   sessionId → 标题 | null（模拟 stateOf 'title'）
  * @param {string[]} [opts.declaredInject] 覆盖 inject 声明（仅用于负向对照）
  */
 function createMockCtx({
@@ -697,7 +697,7 @@ function createMockCtx({
   hostSessions = [],
   resume,
   tokenProjection,
-  sessionList,
+  sessionTitle,
   declaredInject = pluginInject,
 } = {}) {
   const routes = new Map()
@@ -720,11 +720,13 @@ function createMockCtx({
     },
     agents: { get: agents ?? (() => undefined), list: () => liveAgents },
     sessions: { list: () => hostSessions },
-    sessionController: { agents: { resolveAgent }, list: sessionList ?? (async () => ({ items: [] })) },
-    // 宿主的 session projections 注册表：`stateOf(session, key)` 返回 {totals, last}。
-    // 真实实现里 key 是 `tokenUsage`，且**以 session 对象为键**（WeakMap）。
+    sessionController: { agents: { resolveAgent }, list: async () => ({ items: [] }) },
+    // 宿主的 session projections 注册表：`stateOf(session, key)`。
+    // 真实实现里 key 有 `tokenUsage`（四桶）和 `title`（**状态就是标题字符串**），
+    // 且**以 session 对象为键**（WeakMap —— 拿 sessionId 字符串查不到）。
     sessionProjections: {
       stateOf: (session, key) => {
+        if (key === 'title') return sessionTitle?.(session?.id) ?? null
         if (key !== 'tokenUsage') return undefined
         const totals = tokenProjection?.(session?.id)
         return totals === undefined ? undefined : { totals, last: null }
@@ -1467,12 +1469,13 @@ await checkAsync('token 数据源：宿主读不到 → 退回插件自算（纯
   }
 })
 
-await checkAsync('会话标题：/state 落上宿主 sessionController.list() 的 displayTitle', async () => {
-  // 为什么要从宿主拉：实测 45 条 session/event 样本**一条都没带 title**，
-  // 于是操作面板里显示成 session-5f19636e-…（用户实测反馈"标题有问题"）。
+await checkAsync('会话标题：/state 落上宿主 title 投影的值', async () => {
+  // 标题的真实来源是 key 为 `title` 的 session projection（状态就是字符串）。
+  // ⚠️ 曾经走 sessionController.list() 的 items[].displayTitle —— **实测没有那个字段**，
+  // 所以标题一直是空、面板只能显示 sessionId（用户实测反馈"还是这种标题"）。
   const m = createMockCtx({
     agents: () => undefined,
-    sessionList: async () => ({ items: [{ id: 'sess-title', displayTitle: '读取文档完成交接', running: true }] }),
+    sessionTitle: (id) => (id === 'sess-title' ? '读取文档完成交接' : null),
   })
   const teardown = apply(m.ctx, { pathPrefix: '/xilian-pet', minHoldMs: 0, createUserMessage: stubCreateUserMessage })
   const srv = http.createServer((req, res) => {
