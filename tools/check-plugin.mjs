@@ -851,8 +851,8 @@ check('负向对照：mock 确实会因缺 inject 而抛错（证明上面两条
   )
 })
 
-check('apply 注册了 12 条 exact 路由', () => {
-  assert.equal(routes.size, 12, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
+check('apply 注册了 13 条 exact 路由', () => {
+  assert.equal(routes.size, 13, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
 })
 
 check('审批探针默认完全不注册（连 ctx.on 都不调）', () => {
@@ -1560,6 +1560,112 @@ await checkAsync('会话标题：/state 落上宿主 title 投影的值', async 
     await new Promise((resolve) => srv.close(resolve))
     teardown()
   }
+})
+
+check('审批：默认关闭 —— 不配 approval.viaPet 就完全不碰审批链路', () => {
+  const m = createMockCtx({ agents: () => undefined })
+  const teardown = apply(m.ctx, { pathPrefix: '/xilian-pet', minHoldMs: 0, createUserMessage: stubCreateUserMessage })
+  assert.equal(m.listeners.get('approval/request')?.length ?? 0, 0, '默认不该注册审批应答者')
+  teardown()
+})
+
+await checkAsync('审批：没连桌宠 → 立刻交棒（行为与启用前一致，绝不卡住审批）', async () => {
+  const m = createMockCtx({ agents: () => undefined })
+  const teardown = apply(m.ctx, {
+    pathPrefix: '/xilian-pet',
+    minHoldMs: 0,
+    createUserMessage: stubCreateUserMessage,
+    approval: { viaPet: true, timeoutMs: 60_000 },
+  })
+  try {
+    assert.equal(m.listeners.get('approval/request')?.length, 1, '开启后应挂上应答者')
+    // 没有任何 SSE 连接 → 必须立刻交棒
+    const outcome = await runWaterfall(m.listeners, 'approval/request', () => 'unavailable', {
+      toolName: 'pwsh',
+      callId: 'c-none',
+    })
+    assert.equal(outcome, 'unavailable', '没连桌宠必须立刻交棒')
+  } finally {
+    teardown()
+  }
+})
+
+/** 审批端到端：开 SSE + 喂 tool/call + 等帧 + POST 决定 → 看 waterfall 收到什么 */
+async function approvalRoundTrip(decision, { timeoutMs = 60_000 } = {}) {
+  const m = createMockCtx({ agents: () => undefined })
+  const teardown = apply(m.ctx, {
+    pathPrefix: '/xilian-pet',
+    minHoldMs: 0,
+    createUserMessage: stubCreateUserMessage,
+    approval: { viaPet: true, timeoutMs },
+  })
+  const srv = http.createServer((req, res) => {
+    const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
+    if (route === undefined) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    route.handler(req, res)
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${srv.address().port}/xilian-pet`
+  const sse = await openSse(`${base}/events`)
+  await sse.readUntil((b) => b.includes('"snapshot"'), 3000)
+  // 桌宠在场（SSE 已连）→ 应答者不会再立刻交棒
+  for (const fn of m.listeners.get('session/event') ?? []) {
+    fn(
+      { id: 'sess-ap' },
+      {
+        type: 'tool/call',
+        seq: 1,
+        data: { turn: 1, step: 1, callId: 'c-ap', name: 'pwsh', arguments: '{"command":"rm -rf /tmp/危险目录"}' },
+      },
+    )
+  }
+  // 发起 waterfall（它会挂起等桌宠点）
+  const pending = runWaterfall(m.listeners, 'approval/request', () => 'unavailable', {
+    toolName: 'pwsh',
+    callId: 'c-ap',
+    reason: '测试用理由',
+  })
+  // 等推给桌宠的那一帧
+  const text = await sse.readUntil((b) => b.includes('"type":"approval"'), 3000)
+  const frame = JSON.parse(text.split('data: ').find((l) => l.includes('"type":"approval"')).trim())
+  if (decision !== null) {
+    const res = await fetch(`${base}/approval`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: frame.id, decision }),
+    })
+    assert.equal(res.status, 200, 'POST /approval 应成功')
+  }
+  const outcome = await pending
+  sse.close()
+  await new Promise((resolve) => srv.close(resolve))
+  teardown()
+  return { frame, outcome }
+}
+
+await checkAsync('审批：桌宠点「允许」→ allowed-once，帧里带着 callId 关联出来的命令', async () => {
+  const { frame, outcome } = await approvalRoundTrip('allow')
+  assert.equal(outcome, 'allowed-once', '放行必须返回 allowed-once（唯一的放行值）')
+  assert.equal(frame.toolName, 'pwsh')
+  // 命令不在 approval/request 里，是靠 callId 去 tool/call 事件关联出来的 —— 这条就是验证它
+  assert.match(String(frame.command), /rm -rf/, '帧里必须带上真正的命令，否则等于盲批')
+  assert.equal(frame.reason, '测试用理由')
+})
+
+await checkAsync('审批：桌宠点「拒绝」→ rejected', async () => {
+  const { outcome } = await approvalRoundTrip('deny')
+  assert.equal(outcome, 'rejected')
+})
+
+await checkAsync('审批：超时 → 交棒给 GUI（不返回决定，也不卡住）', async () => {
+  const started = Date.now()
+  const { outcome } = await approvalRoundTrip(null, { timeoutMs: 1000 })
+  assert.equal(outcome, 'unavailable', '超时必须交棒（fallback），绝不能让 agent 干等')
+  assert.ok(Date.now() - started >= 900, '应该在超时时间之后才交棒')
 })
 
 await checkAsync('SSE：连接即收到 connected 注释 + hello + snapshot', async () => {

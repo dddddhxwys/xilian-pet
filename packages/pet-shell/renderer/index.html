@@ -43,6 +43,25 @@
         <span id="noticeHint">点击回到 DSH</span>
       </div>
 
+      <!--
+        审批：agent 想执行某个操作，等你在**桌宠上**决定。
+        为什么这么显眼：开了"由桌宠同意"之后，审批链会**停在我们这里**，
+        DSH 界面的提示要等超时（默认 60 秒）才会出现 —— 所以这张卡片必须一眼能看到。
+        ⚠️ 按钮要能点：必须登记进 visibleUiRects（否则会被点击穿透）。
+      -->
+      <div id="approval" hidden>
+        <div class="approval-head">
+          <span id="approvalTitle">agent 想执行一个操作</span>
+          <span id="approvalTimer"></span>
+        </div>
+        <div id="approvalCommand"></div>
+        <div id="approvalReason"></div>
+        <div class="approval-actions">
+          <button type="button" id="approvalAllow">允许</button>
+          <button type="button" id="approvalDeny">拒绝</button>
+        </div>
+      </div>
+
       <div id="status" title="SSE 连接状态"></div>
     </div>
 

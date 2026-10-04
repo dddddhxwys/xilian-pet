@@ -88,7 +88,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 21
+const CODE_REVISION = 22
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -344,6 +344,134 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  // ── 审批：由桌宠同意 ────────────────────────────────────────────────
+  //
+  // 实机实验结论（见 docs/交接说明.md 的"审批实验"一节）：
+  //  · 宿主 `ApprovalService.decide()` 走 `approval/request` waterfall，fail-closed，
+  //    `'allowed-once'` 是唯一的放行值；
+  //  · **plain 注册轮不到我们** —— 链路前面是"转发给 GUI 的桥"，它 await 用户答复就结束了；
+  //    必须 `{ prepend: true }` 抢到最前面（实测 approval/asked 与探针收到只差 1ms）；
+  //  · 链路是**顺序**的：我们"持着"请求时 GUI 不会弹提示 → 所以必须能交棒。
+  //
+  // ⚠️ 默认**关闭**（`config.approval.viaPet`）：不主动改变 DSH 原本的审批行为。
+  const approvalConfig = config.approval ?? {}
+  const approvalViaPet = approvalConfig.viaPet === true
+  const approvalTimeoutMs = Math.max(
+    1_000,
+    Math.min(300_000, Number.isFinite(approvalConfig.timeoutMs) ? approvalConfig.timeoutMs : 60_000),
+  )
+
+  /** 最近 tool/call 的留存（callId → 命令）——审批请求里**没有命令原文**，只能这样关联 */
+  const recentToolCalls = new Map()
+  const TOOLCALL_KEEP = 50
+
+  /** 待决审批（id → 交卷函数）。桌宠点"允许/拒绝"或超时后从这里 resolve。 */
+  const pendingApprovals = new Map()
+  let approvalSeq = 0
+
+  function rememberToolCall(ev) {
+    if (ev.kind !== 'tool/call') return
+    const callId = ev.data?.callId
+    if (typeof callId !== 'string' || callId === '') return
+    recentToolCalls.set(callId, {
+      name: typeof ev.data?.name === 'string' ? ev.data.name : undefined,
+      // arguments 是 JSON 字符串，形如 {"command": "…"}
+      arguments: typeof ev.data?.arguments === 'string' ? ev.data.arguments : undefined,
+      at: Date.now(),
+    })
+    // 只留最近若干个，别无限涨
+    while (recentToolCalls.size > TOOLCALL_KEEP) {
+      const oldest = recentToolCalls.keys().next().value
+      recentToolCalls.delete(oldest)
+    }
+  }
+
+  /** 用 callId 反查"这条审批到底要执行什么" */
+  function commandOf(callId) {
+    const rec = recentToolCalls.get(callId)
+    if (rec === undefined) return { toolName: undefined, command: undefined }
+    let command
+    if (typeof rec.arguments === 'string') {
+      try {
+        const parsed = JSON.parse(rec.arguments)
+        // 常见字段名；取不到就把整串原样（截断后）显示，总比不给看好
+        const picked = parsed?.command ?? parsed?.cmd ?? parsed?.script
+        command = typeof picked === 'string' ? picked : rec.arguments
+      } catch {
+        command = rec.arguments
+      }
+    }
+    return { toolName: rec.name, command }
+  }
+
+  /**
+   * 审批应答者。返回值必须是 `'allowed-once'` / `'rejected'` 之一，
+   * 或者 `next()` 交棒给下一个应答者（GUI）。
+   */
+  async function approvalAnswerer(req, next) {
+    // ① 功能没开 / 桌宠没连上 → **立刻交棒**：行为与启用前完全一致，绝不把审批卡死
+    if (!approvalViaPet || connections.size === 0) return next()
+
+    const id = `ap-${(approvalSeq += 1)}`
+    const { toolName, command } = commandOf(req?.callId)
+    const frame = {
+      type: 'approval',
+      id,
+      sessionId: typeof req?.agent?.session?.id === 'string' ? req.agent.session.id : null,
+      toolName: toolName ?? (typeof req?.toolName === 'string' ? req.toolName : null),
+      command: typeof command === 'string' ? command : null,
+      reason: typeof req?.reason === 'string' ? req.reason : null,
+      timeoutMs: approvalTimeoutMs,
+    }
+    warn(`[审批] 交给桌宠决定：${frame.toolName ?? '(未知工具)'}（${approvalTimeoutMs}ms 后超时交棒给 GUI）`)
+    publish(frame)
+
+    // ② 等桌宠点"允许/拒绝"；到点没点 → 超时
+    const decision = await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingApprovals.delete(id)
+        warn(`[审批] ${id} 超时（${approvalTimeoutMs}ms）→ 交棒给 GUI`)
+        resolve('timeout')
+      }, approvalTimeoutMs)
+      pendingApprovals.set(id, {
+        frame, // 留着：桌宠晚连上时要能补发（见 pendingApprovalFrames）
+        settle: (value) => {
+          clearTimeout(timer)
+          pendingApprovals.delete(id)
+          resolve(value)
+        },
+      })
+    })
+
+    publish({ type: 'approval-resolved', id, decision })
+    if (decision === 'allow') {
+      warn(`[审批] ${id} 桌宠放行 → allowed-once`)
+      return 'allowed-once'
+    }
+    if (decision === 'deny') {
+      warn(`[审批] ${id} 桌宠拒绝 → rejected`)
+      return 'rejected'
+    }
+    return next() // 超时/无人应答：交棒，让 GUI 的提示接管
+  }
+
+  if (approvalViaPet) {
+    // ⚠️ 注册在下面的 disposers 区（这里只留注释，避免重复注册 + TDZ）
+  }
+
+  /** 桌宠点了"允许/拒绝" → POST /approval 走这里 */
+  function resolveApproval(id, decision) {
+    const entry = pendingApprovals.get(id)
+    if (entry === undefined) return false
+    entry.settle(decision)
+    return true
+  }
+
+  /** 当前待决的审批帧 —— 桌宠晚连上时和 snapshot 一起补发，否则它会一直看不到 */
+  function pendingApprovalFrames() {
+    return [...pendingApprovals.values()].map((entry) => entry.frame)
+  }
+
   /** 观测 session/event。真实签名是 (session, event) 两个参数。 */
   function observeSession(session, event) {
     try {
@@ -352,6 +480,8 @@ export function apply(ctx, config = {}) {
       if (typeof session?.id === 'string' && session.id !== '') sessionObjects.set(session.id, session)
       const ev = normalizeSessionEvent(session, event)
       if (ev === null) return
+      // 审批要用 callId 反查命令，所以 tool/call 得留一份（请求里没有命令原文）
+      rememberToolCall(ev)
       const result = reducePetEvent(state, ev, Date.now())
       state = result.state
       // 状态帧里带 token 数字（右键菜单要用），所以发之前先刷一次宿主的权威值
@@ -524,6 +654,13 @@ export function apply(ctx, config = {}) {
   // （实测：插件挂上后 state 卡在 "running" 长达 16 小时）。
   disposers.push(ctx.on('agent/status', (payload) => observeAgentStatus(payload)))
   disposers.push(ctx.on('agent/error', (payload) => observeAgentError(payload)))
+  // "由桌宠同意"的审批应答者。⚠️ 注册写在这里而不是定义处 —— `disposers` 在下面才声明，
+  // 定义处直接 push 会踩 TDZ（实测报 Cannot access 'disposers' before initialization）。
+  if (approvalViaPet) {
+    // prepend：必须抢在"转发给 GUI 的桥"前面，否则永远轮不到我们（实机实验结论）
+    disposers.push(ctx.on('approval/request', approvalAnswerer, { prepend: true }))
+    warn(`[审批] 已启用"由桌宠同意"（超时 ${approvalTimeoutMs}ms；没连桌宠时立刻交棒给 GUI）`)
+  }
 
   // ── 2. 路由注册 ────────────────────────────────────────────────────
   function register(method, path, handler, label) {
@@ -589,7 +726,7 @@ export function apply(ctx, config = {}) {
     (req, res) => {
       syncAuthoritativeTokens() // 数字要被用到了，先把宿主的权威值刷进来
       syncTitles() // 标题同理（面板里显示的就是它；不刷就只有 sessionId）
-      return sendJson(res, 200, snapshot(state))
+      return sendJson(res, 200, { ...snapshot(state), approvals: pendingApprovalFrames() })
     },
     `xilian-pet: GET ${pathPrefix}/state`,
   )
@@ -607,6 +744,26 @@ export function apply(ctx, config = {}) {
       })
     },
     `xilian-pet: GET ${pathPrefix}/debug/shapes`,
+  )
+
+  /**
+   * 桌宠点了「允许 / 拒绝」→ 这里交卷。
+   *
+   * body: `{ id, decision: 'allow' | 'deny' }`
+   * - 找不到 id（超时了、或 DSH 重启过）→ 404，桌宠那边把卡片收掉即可
+   */
+  register(
+    'POST',
+    `${pathPrefix}/approval`,
+    async (req, res) => {
+      const body = await readJsonBody(req)
+      const id = typeof body?.id === 'string' ? body.id : ''
+      const decision = body?.decision === 'allow' ? 'allow' : body?.decision === 'deny' ? 'deny' : null
+      if (id === '' || decision === null) return sendJson(res, 400, { error: 'bad-request' })
+      if (!resolveApproval(id, decision)) return sendJson(res, 404, { error: 'no-pending-approval', id })
+      return sendJson(res, 200, { ok: true, id, decision })
+    },
+    `xilian-pet: POST ${pathPrefix}/approval`,
   )
 
   /**
@@ -649,7 +806,8 @@ export function apply(ctx, config = {}) {
       res.write(sseData({ type: 'hello', protocol: PROTOCOL_VERSION, pid: process.pid, startedAt }))
       syncAuthoritativeTokens()
       syncTitles() // 标题同理（面板第一次打开就走这条）
-      res.write(sseData({ type: 'snapshot', ...snapshot(state) }))
+      // 待决审批也一起补发：桌宠可能是审批发生之后才连上的
+      res.write(sseData({ type: 'snapshot', ...snapshot(state), approvals: pendingApprovalFrames() }))
       // 补发迟到的提醒（窗口没连时发出的那些），最多 5 条
       if (pendingNotices.length > 0) {
         res.write(sseData({ type: 'notices', notices: pendingNotices.slice(-5) }))

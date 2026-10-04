@@ -930,6 +930,8 @@ app.whenReady().then(async () => {
       // 调试用：启动后自动展开右键菜单（配合 PET_SNAPSHOT 就能拍到菜单长什么样，
       // 不必让用户真的去点一下）
       forceMenu: process.env.PET_FORCE_MENU === '1',
+      // 调试用：启动后显示一张**假的**审批卡（只为核对布局，不连审批链）
+      forceApproval: process.env.PET_FORCE_APPROVAL === '1',
     }
   })
   // 渲染端在动作跑到指定时刻时主动请求截图（见 maybeSnapshot 上方注释）
