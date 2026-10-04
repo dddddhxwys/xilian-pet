@@ -50,6 +50,9 @@
  *   Scene[3] 180s → Param13/14 秋千1/2 + Param31 秋千特殊 + Param32 秋千开关
  *                    画面：秋千明显倾斜摆动、腿鞋摇晃满量程（±30°）
  */
+// 动作播完后的决策（纯函数，便于自测脱离 Electron 盯住"待机动作停住"那个 bug）
+import { decideOnMotionFinish } from './motion-policy.js'
+
 const STATE_MAP = {
   // 待机：默认就荡秋千。180 秒长循环，最像"自己待着"
   idle: { motion: 3, expression: 'reset' },
@@ -589,22 +592,31 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cache
       finishIntro()
       return
     }
-    const mapped = STATE_MAP[state.currentState]
-    if (mapped?.once) {
-      returnToBaseMotion()
+
+    // 决策抽在 motion-policy.js（纯函数）里，理由与踩坑见那个文件 ——
+    // 关键点：**不能只看 state.currentState**。一次性状态（尤其 done）刻意保留
+    // currentState 不切走（未读背板要一直显示），此时实际在播的已是待机动作；
+    // 只看状态会走进 returnToBaseMotion()，而它那句
+    // `if (currentMotion === BASE_MOTION) return` 会直接返回、**没人重开**
+    // → 永远停在最后一帧（用户报的"长时间待机之后退出待机动作"）。
+    const decision = decideOnMotionFinish({
+      currentMotion,
+      currentState: state.currentState,
+      stateMap: STATE_MAP,
+      baseMotion: BASE_MOTION,
+    })
+
+    if (decision.action === 'restart') {
+      // ⚠️ setIsLoop(true) 在这个模型上**不生效**：标志设得上（日志可见），
+      //    但库照样在时长结束后派发 motionFinish。待机动作 Scene[3] 长 180 秒，
+      //    所以必须由我们重开 —— 否则"待机几分钟后就不动了"。
+      state.log(`⚠️ 动作 Scene[${decision.index}] 播完（setIsLoop 未生效，${decision.why}）→ 重开`)
+      startMotion(decision.index, true)
       return
     }
-    // ⚠️ 非一次性状态（idle / running / question / error）本该**一直循环**，
-    //    正常永远不会收到 motionFinish。收到了就说明循环没生效
-    //    （setIsLoop 没设上、被别的动作打断、或库把循环当成一次播放）。
-    //
-    //    这里必须**重开**，否则她会停在最后一帧完全不动 ——
-    //    实机症状就是"长时间待机之后退出待机动作"：
-    //    待机用的是 Scene[3]（荡秋千），模型里它的时长是 **180 秒**，
-    //    所以表现为"待机几分钟后就不动了"，而不是"一看就坏"。
-    const index = mapped?.motion ?? BASE_MOTION
-    state.log(`⚠️ 非一次性动作 Scene[${index}] 收到 motionFinish（循环未生效）→ 重新开始`)
-    startMotion(index, true)
+    if (decision.action === 'base') {
+      returnToBaseMotion()
+    }
   })
 
   // 起始动作：默认荡秋千。调试时可用 PET_FORCE_MOTION=Scene:N 指定。
@@ -747,7 +759,11 @@ function setMotionLoop(index, loop) {
 
 /** 一次性动作结束后回到基础动作。
  *  ⚠️ 刻意**不**改 state.currentState —— 桌宠仍是 done（未读背板继续显示），
- *     只是动作不再重复播放。状态与动作是两件事。 */
+ *     只是动作不再重复播放。状态与动作是两件事。
+ *  ⚠️ 但正因为 currentState 停在 done，这里的 `currentMotion === BASE_MOTION`
+ *     判断**必须**保留 —— 它表示"此刻已经在播待机动作了，别重复开"。
+ *     而"待机动作播完停住了"那种情况由 motionFinish 里的分支处理（见那里注释），
+ *     不能指望这个函数兜底。 */
 function returnToBaseMotion() {
   if (currentMotion === BASE_MOTION) return
   state.log(`一次性动作播完 → 回到基础动作 Scene[${BASE_MOTION}]（状态仍是 ${state.currentState}）`)

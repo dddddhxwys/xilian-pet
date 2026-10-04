@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs'
 
 import { apply, inject as pluginInject } from '../packages/pet-plugin/index.js'
 import { contentBand, hitTest, insideAnyRect } from '../packages/pet-shell/hit-test.js'
+import { decideOnMotionFinish } from '../packages/pet-shell/renderer/motion-policy.js'
 import {
   activityLabel,
   aggregate,
@@ -1780,6 +1781,41 @@ check('dispose() 后路由与监听器全部注销', () => {
 })
 
 await new Promise((resolve) => server.close(resolve))
+
+check('动作播完的决策：done 状态下待机动作播完必须重开 【实机 bug 回归】', () => {
+  // 实机症状：用户报"昔涟在长时间待机之后会退出待机动作"。
+  // 根因：待机动作 Scene[3]（荡秋千）时长 **180 秒**，而 setIsLoop(true) 在这个模型上
+  //   不生效 —— 库照样派发 motionFinish。此时 currentState 往往仍是 `done`
+  //   （一次性状态刻意保留、未读背板要一直显示），于是走进
+  //   "一次性动作演完 → 回待机" → 而 returnToBaseMotion() 开头
+  //   `if (currentMotion === BASE_MOTION) return` 直接返回 → **没人重开** → 停住。
+  // 所以决策必须**先看 currentMotion**，不能只看状态。
+  const sm = { idle: { motion: 3 }, done: { motion: 1, once: true }, running: { motion: 0 }, question: { motion: 2 } }
+  const base = 3
+
+  // ① 核心场景：状态是 done，但刚播完的是待机动作 → 必须重开待机动作
+  const a = decideOnMotionFinish({ currentMotion: base, currentState: 'done', stateMap: sm, baseMotion: base })
+  assert.equal(a.action, 'restart', 'done 状态下待机动作播完必须重开，否则永远停在最后一帧')
+  assert.equal(a.index, base)
+
+  // ② 待机状态同理
+  assert.equal(
+    decideOnMotionFinish({ currentMotion: base, currentState: 'idle', stateMap: sm, baseMotion: base }).action,
+    'restart',
+  )
+
+  // ③ 真正的一次性动作播完（叉腰 Scene[1]）→ 回待机
+  const c = decideOnMotionFinish({ currentMotion: 1, currentState: 'done', stateMap: sm, baseMotion: base })
+  assert.equal(c.action, 'base', '一次性动作演完才该回待机')
+
+  // ④ 开着工的动作播完 → 重开它自己的（别一律回待机）
+  const d = decideOnMotionFinish({ currentMotion: 0, currentState: 'running', stateMap: sm, baseMotion: base })
+  assert.equal(d.action, 'restart')
+  assert.equal(d.index, 0, 'running 应重开 Scene[0]，不是回待机')
+
+  // ⑤ 反向盯着最原始的那个坑：状态是 done 且 currentMotion 已是待机时，**绝不能**判成"什么都不做"
+  assert.notEqual(a.action, 'none')
+})
 
 // ─────────────────────────────────────────────────────────────
 console.log('\n[5] 命中测试（外壳纯函数，不需要 Electron）')
