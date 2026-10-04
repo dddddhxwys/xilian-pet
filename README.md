@@ -8,7 +8,7 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 2138 行 / 外壳 13 文件 3552 行 / 工具 14 文件 3291 行，78 个提交 |
+| 规模 | 插件 5 文件 2138 行 / 外壳 13 文件 3552 行 / 工具 14 文件 3291 行，79 个提交 |
 | 自测 | `& $NODE tools\check-plugin.mjs` → **98 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
@@ -742,6 +742,8 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **菜单竖直位置按窗口几何中心对齐** | 菜单比她的身体明显偏上 | 她头顶有 ~87px 留白 → 窗口中心比身体中心高 40px。改 `contentBand()`：从 alpha 掩码算内容竖直范围（实测 86..292 → 中心 189）再对齐 |
 | **`.sessions[hidden]` 必须显式写** | 折叠"没生效"：`hidden=true` 但列表照样显示（抓图才发现） | UA 的 `[hidden]{display:none}` 被自己写的 `.sessions{display:flex}` **覆盖**了 —— 本仓库为这个坑栽过两次（上一次是 `#composer` 默认显示出来） |
 | **以为会话标题在 `sessionController.list()` 里** | 面板显示成 `session-5f19636e-…`（用户两次反馈"标题有问题"） | 实测 `list()` 的 item keys 是 `["sessionId","updatedAt","agentAvailable","running","blank","cwd","projections"]`，**没有 title/displayTitle**。标题其实是 **key 为 `title` 的 session projection**（`apply: session/title → event.data.title`，状态就是字符串）→ 用 `sessionProjections.stateOf(session,'title')` |
+| **以为注册审批应答者就能由桌宠审批** | 探针 `seen=0`：审批真的发生了（`approval/asked` + `decided: allowed-once`），我们却一次都没被调用 | 链路里**前面是"转发给 GUI 的桥"**，它 await 用户在界面上的答复并返回决定 → **链路就此结束**。正解是 `ctx.on('approval/request', fn, { prepend: true })` 抢到最前面（实测：`asked` 与探针收到只差 **1ms**）。代价：我们"持着"时 GUI 不再弹提示 → 必须超时交棒 |
+| **以为 `approval/request` 里有命令原文** | 没法显示"你在批准什么"，等于盲批 | 实测字段只有 `agent, toolName, callId, reason, signal`。**命令要用 `callId` 去 `tool/call` 事件里关联**（我们本来就收这个事件，`data.arguments` 就是命令 JSON） |
 | **菜单画在桌宠窗口里 → 遮住本体** | 用户实测："菜单的位置不对，会遮住桌宠本体" | 她占满 260×300，**只有头顶约 87px 是空的**，竖排四项菜单放不下 → 最终改成**独立小窗**在她旁边弹出。（中间的试错：先改紧凑两行塞进留白带能work，但样式受限） |
 | **`show()` 时 `send` 数据，渲染端监听还没注册** | 菜单里永远显示"—"（首次打开必现） | `loadFile()` 是异步的 → IPC 消息被丢。加 `menu:ready` 让主进程**补发**（与桌宠窗口 `pet:ready` 同一套路） |
 | **临时表情恢复时照搬"当前态"的表情** | 右键弹完问号后，她**卡在闭眼笑**上不再恢复（用户实测："问号消失，出现如图表情"） | `done` 是 `{once:true, expression:'happy'}`（闭眼笑，演完就该撤）。恢复时照搬 `STATE_MAP['done'].expression` 等于**把一次性特效复活**，而且不会再有人来清。→ 一次性且无 `keepEffect` 的态恢复成**基础表情**（A/B 抓图对照验证过） |
