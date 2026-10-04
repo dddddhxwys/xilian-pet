@@ -88,7 +88,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 20
+const CODE_REVISION = 21
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -277,7 +277,7 @@ export function apply(ctx, config = {}) {
    * ⚠️ **默认完全不注册**（连 `ctx.on` 都不调）：只有显式打开才挂上去，
    *    杜绝"实验代码常驻链路"这种最危险的情况。
    */
-  const approvalProbe = { enabled: false, delayMs: 0, seen: [], disposer: null }
+  const approvalProbe = { enabled: false, delayMs: 0, prepend: false, seen: [], disposer: null }
 
   /** 探针应答者：记录 → 可选延迟 → **一律交棒** */
   async function approvalProbeListener(req, next) {
@@ -300,21 +300,38 @@ export function apply(ctx, config = {}) {
   }
 
   /** 开关探针：enable 才注册；disable 立刻注销，链路恢复原样。 */
-  function setApprovalProbe({ enabled, delayMs }) {
+  function setApprovalProbe({ enabled, delayMs, prepend }) {
     if (Number.isFinite(delayMs)) approvalProbe.delayMs = Math.max(0, Math.min(10_000, Math.round(delayMs)))
+    if (typeof prepend === 'boolean') approvalProbe.prepend = prepend
     if (enabled === true && approvalProbe.disposer === null) {
-      // waterfall 的注册方式与普通事件一样是 ctx.on；
-      // 监听器收到 (…args, next)，调用 next() 即交棒。
-      approvalProbe.disposer = ctx.on('approval/request', approvalProbeListener)
+      // waterfall 的注册方式与普通事件一样是 ctx.on；监听器收到 (…args, next)，next() 交棒。
+      //
+      // ⚠️ `prepend: true` 是**本实验的关键**：实测（code 20, delayMs=0）发现
+      //    我们的应答者**一次都没被调用** —— 因为排在链路上前面的是"转发给 GUI 的桥"，
+      //    它 await 用户在界面上的答复并返回决定，**链路就此结束**，轮不到后面的我们。
+      //    真实事件为证：approval/asked(seq 7333) → approval/decided(seq 7334, allowed-once)，
+      //    而探针 seen=0。只有抢到最前面，才谈得上"由桌宠来答"。
+      approvalProbe.disposer = ctx.on(
+        'approval/request',
+        approvalProbeListener,
+        approvalProbe.prepend ? { prepend: true } : undefined,
+      )
       approvalProbe.enabled = true
-      warn(`[审批探针] 已启用（延迟 ${approvalProbe.delayMs}ms 后交棒）；永远只观察、不做决定`)
+      warn(
+        `[审批探针] 已启用（prepend=${approvalProbe.prepend}，延迟 ${approvalProbe.delayMs}ms 后交棒）；永远只观察、不做决定`,
+      )
     } else if (enabled === false && approvalProbe.disposer !== null) {
       approvalProbe.disposer()
       approvalProbe.disposer = null
       approvalProbe.enabled = false
       warn('[审批探针] 已停用，链路恢复原样')
     }
-    return { enabled: approvalProbe.enabled, delayMs: approvalProbe.delayMs, seen: approvalProbe.seen.length }
+    return {
+      enabled: approvalProbe.enabled,
+      delayMs: approvalProbe.delayMs,
+      prepend: approvalProbe.prepend,
+      seen: approvalProbe.seen.length,
+    }
   }
 
   /** 观测 session/event。真实签名是 (session, event) 两个参数。 */
@@ -597,7 +614,11 @@ export function apply(ctx, config = {}) {
     `${pathPrefix}/debug/approval-probe`,
     async (req, res) => {
       const body = await readJsonBody(req)
-      const out = setApprovalProbe({ enabled: body?.enabled === true, delayMs: Number(body?.delayMs) })
+      const out = setApprovalProbe({
+        enabled: body?.enabled === true,
+        delayMs: Number(body?.delayMs),
+        prepend: typeof body?.prepend === 'boolean' ? body.prepend : undefined,
+      })
       return sendJson(res, 200, { ok: true, ...out, seen: approvalProbe.seen })
     },
     `xilian-pet: POST ${pathPrefix}/debug/approval-probe`,
