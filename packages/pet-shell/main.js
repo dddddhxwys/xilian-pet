@@ -725,8 +725,12 @@ app.whenReady().then(async () => {
     if (x + MENU_WIDTH > area.x + area.width) x = pet.x - MENU_WIDTH - 6
     if (x < area.x) x = pet.x + Math.round((pet.width - MENU_WIDTH) / 2)
 
-    const anchorY = Number.isFinite(payload?.y) ? payload.y - 24 : center.y - Math.round(MENU_HEIGHT / 2)
-    const y = Math.min(Math.max(area.y + 4, Math.round(anchorY)), area.y + area.height - MENU_HEIGHT - 4)
+    // 竖直：与桌宠窗口**垂直居中**，而不是跟着右键的高度走。
+    // 用户实测反馈"菜单的位置有点歪"：跟着鼠标走时，点得低菜单就吊在她脚下、
+    // 点得高又顶到她头上，看着像跟桌宠脱开了。桌宠窗口本来就小（260×300），
+    // 固定"贴着她"才稳。
+    const centered = pet.y + (pet.height - MENU_HEIGHT) / 2
+    const y = Math.min(Math.max(area.y + 4, Math.round(centered)), area.y + area.height - MENU_HEIGHT - 4)
 
     const w = ensureMenuWindow()
     w.setBounds({ x: Math.round(x), y, width: MENU_WIDTH, height: MENU_HEIGHT })
