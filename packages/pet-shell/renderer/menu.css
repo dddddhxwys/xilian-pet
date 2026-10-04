@@ -49,13 +49,50 @@ body {
   color: rgba(255, 255, 255, 0.55);
 }
 
-/* ── 会话列表 ───────────────────────────────────────────────────── */
+/* ── 会话选择（可折叠）───────────────────────────────────────────
+   折叠态只占一行：当前目标 + 箭头；点开才出列表（用户要求折叠起来）。 */
+.target {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 7px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(120, 170, 255, 0.22);
+  color: inherit;
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.target:hover {
+  background: rgba(120, 170, 255, 0.32);
+}
+.target .chevron {
+  flex: none;
+  font-size: 11px;
+  opacity: 0.75;
+  transition: transform 120ms ease-out;
+}
+.target[aria-expanded="true"] .chevron {
+  transform: rotate(180deg);
+}
+
 .sessions {
   display: flex;
   flex-direction: column;
   gap: 2px;
   max-height: 116px;
+  margin-top: 3px;
   overflow-y: auto;
+}
+
+/* ⚠️ 这一条**必须显式写**：UA 样式表的 `[hidden] { display:none }` 会被上面那句
+   `display: flex` 覆盖掉 —— 后果是"折叠"根本没生效（抓图才发现）。
+   本仓库为此踩过两次（上一次是 #composer 默认显示了出来）。 */
+.sessions[hidden] {
+  display: none;
 }
 
 .session {
@@ -79,24 +116,25 @@ body {
   background: rgba(120, 170, 255, 0.26);
 }
 
-/* 状态点：颜色沿用桌宠窗口里的 halo 语义 */
-.session .dot {
+/* 状态点：颜色沿用桌宠窗口里的 halo 语义。
+   注意选择器不带 .session —— 折叠态的 header 里也有一个 .dot */
+.dot {
   flex: none;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: #8c9bb5;
 }
-.session[data-state="running"] .dot {
+[data-state="running"] .dot {
   background: #4a90e2;
 }
-.session[data-state="approval"] .dot {
+[data-state="approval"] .dot {
   background: #f0b429;
 }
-.session[data-state="question"] .dot {
+[data-state="question"] .dot {
   background: #b06ce2;
 }
-.session[data-state="done"] .dot {
+[data-state="done"] .dot {
   background: #37c46a;
 }
 .session[data-state="error"] .dot {

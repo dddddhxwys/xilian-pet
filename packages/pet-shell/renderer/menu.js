@@ -3,6 +3,8 @@
 // 真正的动作（派活/打断）由主进程执行（它有 postControl），见 main.js。
 const api = window.xilianMenu
 
+const targetEl = document.getElementById('target')
+const targetTitle = document.getElementById('targetTitle')
 const sessionsEl = document.getElementById('sessions')
 const inputEl = document.getElementById('input')
 const hintEl = document.getElementById('hint')
@@ -10,6 +12,7 @@ const tokensEl = document.getElementById('tokens')
 const cacheEl = document.getElementById('cache')
 
 let selectedSessionId = null
+let sessionRows = []
 let hintTimer = null
 
 /** 大数字用人话显示：2.85 亿 比 285000000 好读得多 */
@@ -34,18 +37,31 @@ function reportDirty() {
   api?.dirty(inputEl.value.trim() !== '')
 }
 
+/** 展开/折叠会话列表。折叠态只留一行当前目标（用户要求"折叠起来"）。 */
+function setExpanded(expanded) {
+  sessionsEl.hidden = !expanded
+  targetEl.setAttribute('aria-expanded', String(expanded))
+  // 把**实际计算样式**打出来：透明窗抓图不稳定（Current display surface not available），
+  // 而"折叠到底有没有生效"恰恰是踩过的坑（[hidden] 被 display:flex 覆盖）——
+  // 日志里的 display 值比截图更可靠。
+  console.log(`会话列表 ${expanded ? '展开' : '折叠'} → hidden=${sessionsEl.hidden} display=${getComputedStyle(sessionsEl).display}`)
+}
+
+/** 折叠态那一行显示的是**当前选中的目标** */
+function renderTarget() {
+  const row = sessionRows.find((s) => s.sessionId === selectedSessionId) ?? sessionRows[0]
+  targetTitle.textContent = row?.title || row?.sessionId || '（还没有会话）'
+  targetTitle.title = row?.sessionId ?? ''
+  // 状态点颜色靠 data-state（CSS 里是 [data-state="running"] .dot）
+  targetEl.dataset.state = row?.state ?? 'idle'
+}
+
 function renderSessions(data) {
-  const list = Array.isArray(data?.sessions) ? data.sessions : []
+  sessionRows = Array.isArray(data?.sessions) ? data.sessions : []
   selectedSessionId = data?.selectedSessionId ?? null
   sessionsEl.replaceChildren()
-  if (list.length === 0) {
-    const empty = document.createElement('div')
-    empty.className = 'section-label'
-    empty.textContent = '（还没有会话）'
-    sessionsEl.append(empty)
-    return
-  }
-  for (const s of list) {
+
+  for (const s of sessionRows) {
     const row = document.createElement('button')
     row.type = 'button'
     row.className = 'session'
@@ -68,6 +84,9 @@ function renderSessions(data) {
     }
     sessionsEl.append(row)
   }
+
+  renderTarget()
+  setExpanded(false) // 每次打开都是折叠态：列表只在你要切的时候才展开
 }
 
 if (api === undefined) {
@@ -90,6 +109,9 @@ if (api === undefined) {
   // 监听已注册 → 让主进程补发数据（loadFile 是异步的，它先前发的那次会丢）
   api.ready()
 
+  // 点折叠态那一行 = 展开 / 收起列表
+  targetEl.addEventListener('click', () => setExpanded(sessionsEl.hidden))
+
   sessionsEl.addEventListener('click', (event) => {
     const row = event.target.closest?.('.session')
     if (!row) return
@@ -97,6 +119,8 @@ if (api === undefined) {
     for (const el of sessionsEl.children) {
       if (el.classList?.contains('session')) el.setAttribute('aria-current', String(el === row))
     }
+    renderTarget()
+    setExpanded(false) // 选完就收起来，别一直占地方
     api.selectSession(selectedSessionId)
     showHint('已切换派活目标')
   })

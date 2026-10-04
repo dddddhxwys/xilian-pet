@@ -37,7 +37,6 @@ let interactive = null
 let dragging = false
 let dragX = 0
 let dragY = 0
-let lastClickAt = 0
 let bubbleTimer = null
 let noticeTimer = null
 let latestSessionId = undefined
@@ -259,26 +258,19 @@ window.addEventListener('contextmenu', (event) => {
   event.preventDefault()
   if (!overOpaquePixel(event.clientX, event.clientY)) return
   live2d?.pokeExpression('question', 1700) // "你想干嘛？"
-  openPanel(false)
+  openPanel()
 })
 
-// 双击她 = 弹面板并且**直接把光标放进输入框**（替代原来的"双击开输入条"）
-// （双击的事件序列是 click, click, dblclick —— 单击只做"清未读"，不冲突）
-window.addEventListener('dblclick', (event) => {
-  if (!overOpaquePixel(event.clientX, event.clientY)) return
-  const now = Date.now()
-  if (now - lastClickAt < 400) return
-  lastClickAt = now
-  openPanel(true)
-})
+// 双击她 = **不做任何事**（用户要求去掉"双击唤起面板"）。
+// 双击的事件序列是 click, click, dblclick —— 单击仍然是"清未读"。
 
 // 面板执行完动作后的提示，走气泡显示（派活/打断都在主进程执行，那边回报过来）
 api.onBubble((text) => showBubble(text))
 
-/** 请求弹出操作面板；withInput=true 时把光标放进输入框 */
-function openPanel(withInput) {
+/** 请求弹出操作面板（**只有右键这一条路** —— 双击已按用户要求去掉） */
+function openPanel() {
   api
-    .openMenu({ tokens: tokensView, focusInput: withInput })
+    .openMenu({ tokens: tokensView })
     .then((result) => api.log(`操作面板：${result?.ok ? '已弹出' : JSON.stringify(result)}`))
     .catch((error) => api.log(`操作面板打开失败：${error?.message ?? error}`))
 }
@@ -498,7 +490,7 @@ async function startLive2D() {
       api.log('调试模式：自动弹出操作面板')
       // 和真实右键路径保持一致（否则拍不到 poke 的效果）
       live2d?.pokeExpression('question', 1700)
-      openPanel(false)
+      openPanel()
     }, 2500)
   }
   return true

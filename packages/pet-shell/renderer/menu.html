@@ -24,7 +24,13 @@
   <body>
     <div id="menu">
       <div class="section-label">派活目标</div>
-      <div id="sessions" class="sessions"></div>
+      <!-- 折叠态：只显示当前目标 + 箭头；点它才展开列表（用户要求折叠起来） -->
+      <button type="button" id="target" class="target" aria-expanded="false">
+        <span class="dot" id="targetDot"></span>
+        <span class="title" id="targetTitle">—</span>
+        <span class="chevron" id="targetChevron">▾</span>
+      </button>
+      <div id="sessions" class="sessions" hidden></div>
 
       <div class="sep"></div>
 

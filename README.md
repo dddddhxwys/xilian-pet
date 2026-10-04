@@ -8,7 +8,7 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 2024 行 / 外壳 13 文件 3492 行 / 工具 14 文件 3231 行，74 个提交 |
+| 规模 | 插件 5 文件 2024 行 / 外壳 13 文件 3552 行 / 工具 14 文件 3231 行，75 个提交 |
 | 自测 | `& $NODE tools\check-plugin.mjs` → **96 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
@@ -148,8 +148,9 @@ cd "C:\Users\怒C大伟出奇迹\dsh-projects\xilian pet"
 | 悬停在角色不透明处 | 窗口接管鼠标（透明区域鼠标**穿过去**，不挡下层） |
 | 按住角色拖动 | 移动位置，位置自动记住 |
 | **右键角色** | 唤出**操作面板**（独立小窗：会话切换 / 派活 / 打断 / 用量） |
-| **双击角色** | 同上，但**光标直接落进输入框**（原来双击是开底部输入条，那条已删除） |
 | 单击角色 | 清未读标记（也可以点右下角徽标） |
+
+> 双击曾经也是"唤出面板"，**已按用户要求去掉**（只剩右键一条路）。
 
 ---
 
@@ -362,7 +363,7 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
 
 | 区域 | 作用 |
 |---|---|
-| **派活目标** | 最近 5 个会话，点一行切换。**只切换"活派给谁"，不动 DSH 界面**。标题取自宿主 `sessionController.list()` 的 `displayTitle` |
+| **派活目标** | **可折叠**：折叠态只占一行（当前目标 + 状态点 + 箭头），点它展开最近 5 个会话，选完自动收起。**只切换"活派给谁"，不动 DSH 界面**。标题取自宿主 `title` 投影 |
 | **输入框** | 多行；**Enter 发送 / Shift+Enter 换行** |
 | **派活 / 打断** | 动作在**主进程**执行（它持有 `postControl`），结果回报给面板 + 桌宠气泡 |
 | **本次会话 / 缓存命中** | token 用量（数据来自宿主 durable projection） |
@@ -374,7 +375,7 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
 这跟右键菜单当初的问题是同一个：**260×300 里没有多余的地方**。所以：
 
 - 输入条、派活、打断**全部搬进面板** → 桌宠窗口只剩她 + 通知/气泡/徽标，**脚不再被压**
-- 双击行为从"开输入条"改成"开面板并聚焦输入框"
+- 面板**只由右键唤出**（双击曾是第二条路，已按用户要求去掉）
 - 面板是独立窗口，尺寸自由（300×320），会话列表才放得下
 
 #### 几个刻意的选择
@@ -739,6 +740,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **拿 `usage.totalTokens` 累加当用量** | `/state` 报出 **3390 万** tokens | `totalTokens` 含 `cacheReadTokens`（重发的整个上下文）→ 改**四桶**分别累加，并按 `(turn,step)` 增量替换（口径对齐宿主 `tokenMeter`） |
 | **拿「已报数」当花销提醒的基线** | 总数换成 durable 之后，DSH 一重启就炸一条"本会话已用约 **247040k** tokens" | 总数 durable 了、提醒基线还是易失的 → 改**基线制**：首次看到该会话时把当时的值记成基线，之后只对**新增**部分提醒（实测踩到） |
 | **菜单竖直位置按窗口几何中心对齐** | 菜单比她的身体明显偏上 | 她头顶有 ~87px 留白 → 窗口中心比身体中心高 40px。改 `contentBand()`：从 alpha 掩码算内容竖直范围（实测 86..292 → 中心 189）再对齐 |
+| **`.sessions[hidden]` 必须显式写** | 折叠"没生效"：`hidden=true` 但列表照样显示（抓图才发现） | UA 的 `[hidden]{display:none}` 被自己写的 `.sessions{display:flex}` **覆盖**了 —— 本仓库为这个坑栽过两次（上一次是 `#composer` 默认显示出来） |
 | **以为会话标题在 `sessionController.list()` 里** | 面板显示成 `session-5f19636e-…`（用户两次反馈"标题有问题"） | 实测 `list()` 的 item keys 是 `["sessionId","updatedAt","agentAvailable","running","blank","cwd","projections"]`，**没有 title/displayTitle**。标题其实是 **key 为 `title` 的 session projection**（`apply: session/title → event.data.title`，状态就是字符串）→ 用 `sessionProjections.stateOf(session,'title')` |
 | **菜单画在桌宠窗口里 → 遮住本体** | 用户实测："菜单的位置不对，会遮住桌宠本体" | 她占满 260×300，**只有头顶约 87px 是空的**，竖排四项菜单放不下 → 最终改成**独立小窗**在她旁边弹出。（中间的试错：先改紧凑两行塞进留白带能work，但样式受限） |
 | **`show()` 时 `send` 数据，渲染端监听还没注册** | 菜单里永远显示"—"（首次打开必现） | `loadFile()` 是异步的 → IPC 消息被丢。加 `menu:ready` 让主进程**补发**（与桌宠窗口 `pet:ready` 同一套路） |
