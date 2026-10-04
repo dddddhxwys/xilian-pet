@@ -411,6 +411,32 @@ function postControl(action, payload) {
   })
 }
 
+/**
+ * GET 一个 JSON 端点（插件的 /state 等）。
+ * 打开操作面板时要现拉一次会话列表 —— 渲染端的状态帧只带"当前会话"的用量，没有完整列表。
+ * 失败不抛：面板照常弹出，只是列表空着（`status: 0` / 非 200 都走这里）。
+ */
+function getJson(path) {
+  return new Promise((resolve) => {
+    const req = http.request(new URL(path, DSH_URL), { method: 'GET' }, (res) => {
+      let text = ''
+      res.setEncoding('utf8')
+      res.on('data', (c) => (text += c))
+      res.on('end', () => {
+        let parsed
+        try {
+          parsed = JSON.parse(text)
+        } catch {
+          parsed = { raw: text }
+        }
+        resolve({ status: res.statusCode, body: parsed })
+      })
+    })
+    req.on('error', (error) => resolve({ status: 0, error: error.message }))
+    req.end()
+  })
+}
+
 // ── 点击穿透的命中测试（主进程轮询光标）────────────────────────────
 //
 // ⚠️ 为什么不用 `setIgnoreMouseEvents(true, { forward: true })` + 渲染端 mousemove：
@@ -539,13 +565,20 @@ function maybeSnapshot(win) {
 }
 
 // ── 窗口 ────────────────────────────────────────────────────────────
-/** 右键菜单小窗的固定尺寸（窗口 resizable:false，菜单内容按 100% 铺满） */
-const MENU_WIDTH = 236
-const MENU_HEIGHT = 172
+/** 右键菜单小窗的固定尺寸（窗口 resizable:false，菜单内容按 100% 铺满）。
+ *  比第一版大：现在它是**操作面板** —— 会话列表 + 多行输入 + 按钮 + 用量。 */
+const MENU_WIDTH = 300
+const MENU_HEIGHT = 320
+/** 会话列表最多列几个（用户要求"最近 3~5 个"） */
+const MENU_SESSION_LIMIT = 5
 /** 菜单小窗：复用一个实例（hide 而不是 close，避免每次重载闪一下） */
 let menuWin = null
 /** 最近一次要显示的数据 —— menu:ready 补发用（首次打开时页面还没加载完） */
-let lastMenuData = { tokens: null }
+let lastMenuData = { tokens: null, sessions: [] }
+/** 派活目标：用户在菜单里选的那个会话。null = 跟着插件算的主会话 */
+let selectedSessionId = null
+/** 输入框里有没有没发出去的内容 —— 有的话失焦不收起窗口，免得字丢了 */
+let menuDirty = false
 
 function createWindow() {
   const saved = loadWindowState()
@@ -689,33 +722,79 @@ app.whenReady().then(async () => {
   ipcMain.handle('pet:focus-dsh', () => focusDshWindow())
 
   /**
-   * 右键菜单：**独立小窗**，在桌宠旁边弹出。
+   * 操作面板（独立小窗）：右键她 / 双击她都弹这个。
    *
-   * 为什么不画在桌宠窗口里：她本体占满 260×300，窗口内唯一不压在她身上的地方
-   * 只有头顶约 87px 的留白，而竖排四项菜单约 141px —— 用户实测反馈"会遮住桌宠本体"。
-   * 独立小窗可以在她旁边弹出，完全不相交。
+   * 为什么是独立窗口：她本体占满 260×300，在里面放输入条必然压住她的裙摆和脚
+   * （实测重叠 28px），更没地方放会话列表。
    */
   ipcMain.handle('pet:open-menu', (_event, payload) => openMenuWindow(payload))
-  ipcMain.on('pet:menu-close', () => closeMenuWindow())
-  // 小窗选了某一项 → 收起小窗，把动作交回**桌宠窗口**执行（动作都在它那边有上下文）
-  ipcMain.on('menu:choose', (_event, action) => {
-    closeMenuWindow()
-    if (!win.isDestroyed()) win.webContents.send('pet:menu-action', String(action))
-  })
   ipcMain.on('menu:close', () => closeMenuWindow())
-  // 菜单小窗渲染端就绪 → 补发数据（首次打开时 show() 那次 send 会因页面未加载而丢）
+  // 渲染端就绪 → 补发数据（首次打开时 show() 那次 send 会因页面未加载而丢）
   ipcMain.on('menu:ready', (event) => {
     if (menuWin !== null && !menuWin.isDestroyed() && event.sender === menuWin.webContents) {
       menuWin.webContents.send('menu:data', lastMenuData)
     }
   })
+  // 输入框有未发送内容 → 失焦不收起
+  ipcMain.on('menu:dirty', (_event, value) => {
+    menuDirty = Boolean(value)
+  })
+  // 切换**派活目标**（只决定"派给谁"，不动 DSH 界面 —— 宿主没有切会话的 API，
+  // sessionController 里 focus/switch/activateSession 全是 0 命中，/focus 因此是 501）
+  ipcMain.on('menu:select-session', (_event, sessionId) => {
+    selectedSessionId = String(sessionId)
+    log(`派活目标 → ${selectedSessionId}`)
+  })
+  // 派活 / 打断：动作在主进程执行（这里才有 postControl），结果同时回报给小窗和桌宠
+  ipcMain.handle('menu:prompt', async (_event, payload) => {
+    const target = selectedSessionId ?? lastMenuData?.primarySessionId ?? undefined
+    const result = await postControl('prompt', { text: payload?.text, sessionId: target })
+    reportMenuResult({ action: 'prompt', status: result.status, message: result.body?.message ?? result.error })
+    return result
+  })
+  ipcMain.handle('menu:interrupt', async () => {
+    const target = selectedSessionId ?? lastMenuData?.primarySessionId ?? undefined
+    const result = await postControl('interrupt', { sessionId: target })
+    reportMenuResult({ action: 'interrupt', status: result.status, message: result.body?.message ?? result.error })
+    return result
+  })
+
+  /** 执行结果两处都要知道：小窗显示提示，桌宠冒个气泡 */
+  function reportMenuResult(result) {
+    if (menuWin !== null && !menuWin.isDestroyed()) menuWin.webContents.send('menu:result', result)
+    if (win.isDestroyed()) return
+    const what = result.action === 'prompt' ? '派活' : '打断'
+    const text =
+      result.status === 200
+        ? result.action === 'prompt'
+          ? '收到，正在派活…'
+          : '已打断'
+        : `${what}失败（${result.status}）${result.message === undefined ? '' : `：${result.message}`}`
+    win.webContents.send('pet:bubble', text)
+  }
 
   /**
-   * 弹出菜单小窗。
-   * @param {{x?:number, y?:number, tokens?:object}} payload
-   *        x/y 是**屏幕坐标**的右键位置；缺省时贴着桌宠竖直居中
+   * 弹出操作面板。
+   * @param {{focusInput?:boolean}} payload focusInput=true 时让小窗把光标放进输入框（双击路径）
    */
-  function openMenuWindow(payload) {
+  async function openMenuWindow(payload) {
+    // 打开时**现拉一次** /state：会话列表要按最近活跃排序、还要 token 用量。
+    // 渲染端的状态帧只带"当前会话"的用量，没有完整列表（见 reducer 的 primaryTokens）。
+    const state = await getJson(`${ROUTE_PREFIX}/state`)
+    const body = state.body
+    const sessions = (Array.isArray(body?.sessions) ? body.sessions : [])
+      .slice()
+      .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))
+      .slice(0, MENU_SESSION_LIMIT)
+
+    // 之前选的目标没了（会话结束/DSH 重启）就退回主会话 ——
+    // 否则会一直把活派给一个不存在的会话
+    if (selectedSessionId !== null && !sessions.some((s) => s.sessionId === selectedSessionId)) {
+      selectedSessionId = null
+    }
+    const primary = body?.primarySessionId ?? null
+    if (selectedSessionId === null) selectedSessionId = primary
+
     const pet = win.getBounds()
     const center = { x: pet.x + Math.round(pet.width / 2), y: pet.y + Math.round(pet.height / 2) }
     const area = screen.getDisplayNearestPoint(center).workArea
@@ -738,14 +817,21 @@ app.whenReady().then(async () => {
 
     const w = ensureMenuWindow()
     w.setBounds({ x: Math.round(x), y, width: MENU_WIDTH, height: MENU_HEIGHT })
-    // 先发数据再 show，避免"先闪一个空面板再填上数字"。
+    // 先发数据再 show，避免"先闪一个空面板再填上数字/列表"。
     // 但**首次**打开时页面可能还没加载完 → 那次会丢，靠 menu:ready 补发（见 menu-preload.cjs）。
-    lastMenuData = { tokens: payload?.tokens ?? null }
+    lastMenuData = {
+      sessions,
+      primarySessionId: primary,
+      selectedSessionId,
+      tokens: body?.tokens ?? payload?.tokens ?? null,
+      focusInput: payload?.focusInput === true,
+    }
     w.webContents.send('menu:data', lastMenuData)
     w.show()
-    w.focus() // 要焦点才能靠 blur 自动收起（Esc 也才好用）
+    w.focus() // 要焦点才能打字、靠 blur 自动收起（Esc 也才好用）
     log(
-      `右键菜单小窗：桌宠(${pet.x},${pet.y} ${pet.width}×${pet.height}) → 菜单(${Math.round(x)},${y})；` +
+      `操作面板：桌宠(${pet.x},${pet.y} ${pet.width}×${pet.height}) → 面板(${Math.round(x)},${y})；` +
+        `会话 ${sessions.length} 个，目标 ${selectedSessionId ?? '（无）'}；` +
         `身体竖直范围 ${band === null ? '未知（退回窗口中心）' : `${Math.round(band.top)}..${Math.round(band.bottom)}，中心 ${Math.round(band.centerY)}`}`,
     )
     if (process.env.PET_SNAPSHOT_MENU) captureMenuSnapshot(w)
@@ -778,8 +864,11 @@ app.whenReady().then(async () => {
     menuWin.setAlwaysOnTop(true, 'screen-saver')
     menuWin.setMenuBarVisibility?.(false)
     menuWin.loadFile(join(here, 'renderer', 'menu.html'))
-    // 失焦即收起 —— 原生菜单也是这个行为
-    menuWin.on('blur', () => closeMenuWindow())
+    // 失焦即收起 —— 原生菜单也是这个行为。
+    // ⚠️ 但输入框**非空时不收**：字打了一半、鼠标点到别处就关掉，内容全没了（用户明确要求留着）。
+    menuWin.on('blur', () => {
+      if (!menuDirty) closeMenuWindow()
+    })
     menuWin.on('closed', () => {
       menuWin = null
     })

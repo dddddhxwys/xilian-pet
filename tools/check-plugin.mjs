@@ -632,6 +632,18 @@ check('setTokenTotals：整体覆盖不累加；切到 host 源后 reducer 不�
   assert.equal(s, before, '同值写入应原样返回（幂等，免得每次 /state 都换新对象）')
 })
 
+check('snapshot 暴露 lastActivityAt：面板按它排「最近 N 个会话」', () => {
+  let s = createPetState()
+  s = emit(s, 'turn/start', 's-old', 100)
+  s = emit(s, 'turn/start', 's-new', 900)
+  const rows = snapshot(s).sessions
+  const byId = Object.fromEntries(rows.map((r) => [r.sessionId, r]))
+  assert.equal(byId['s-old'].lastActivityAt, 100)
+  assert.equal(byId['s-new'].lastActivityAt, 900)
+  // 面板要的正是这个顺序：谁最近活跃谁在上面（而不是 Object.values 的插入顺序）
+  assert.equal(rows.slice().sort((a, b) => b.lastActivityAt - a.lastActivityAt)[0].sessionId, 's-new')
+})
+
 // ─────────────────────────────────────────────────────────────
 console.log('\n[2] 插件契约（mock ctx）')
 

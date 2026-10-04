@@ -693,6 +693,9 @@ export function snapshot(state) {
         cacheHitRate: cacheHitRate(buckets),
         // 'host' = 来自宿主 durable projection（重启不丢）；否则是插件自算的兜底值
         tokenSource: s.tokenSource ?? 'own',
+        // 最近活跃时间：右键菜单要按它排"最近 3~5 个会话"，
+        // 否则只能靠 Object.values 的插入顺序 —— 那是"谁先出现"不是"谁最近活跃"。
+        lastActivityAt: s.lastActivityAt ?? s.since ?? 0,
         title: s.title,
         tail: s.tail,
       }

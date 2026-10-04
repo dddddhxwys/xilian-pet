@@ -3,12 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <!--
-      独立小窗（右键菜单）。
-      为什么单独开一个窗口而不是画在桌宠窗口里：
-        她本体占满 260×300，窗口内唯一不压在她身上的地方只有头顶 ~87px 的留白，
-        竖排四项菜单（约 141px）根本放不下 —— 实测用户反馈"会遮住桌宠本体"。
-        独立小窗可以在她**旁边**弹出，完全不相交，空间也自由。
-      CSP：只有本地文件，不需要 eval（这里不加载 PixiJS/Live2D）。
+      独立小窗 = 桌宠的**操作面板**（右键她 / 双击她都弹这个）。
+      为什么都塞在这里：桌宠窗口只有 260×300，她本体占满，
+      在里面放输入条必然压住她的裙摆和脚（实测 28px 重叠），也没地方放会话列表。
+      所以：底部那条输入条整个删掉，操作全搬到这里。
+
+      内容：
+        · 派活目标 —— 最近 3~5 个会话，点一行切换（**只切换"派活发给谁"，不是切 DSH 界面**：
+          宿主没有 focus/switch session 的 API，sessionController 里 0 命中）
+        · 多行输入（Enter 发送 / Shift+Enter 换行）
+        · 派活 / 打断
+        · tokens 用量 / 缓存命中
+
+      CSP：只有本地文件，不加载 PixiJS/Live2D，所以不需要 eval 相关放行。
     -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'" />
     <title>昔涟 · 菜单</title>
@@ -16,11 +23,22 @@
   </head>
   <body>
     <div id="menu">
-      <button type="button" class="item" data-action="prompt">派活…</button>
-      <button type="button" class="item danger" data-action="interrupt">打断当前回合</button>
+      <div class="section-label">派活目标</div>
+      <div id="sessions" class="sessions"></div>
+
+      <div class="sep"></div>
+
+      <textarea id="input" rows="3" placeholder="给 agent 派个活…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <div class="actions">
+        <button type="button" id="send" class="item primary">派活</button>
+        <button type="button" id="interrupt" class="item danger">打断</button>
+      </div>
+
       <div class="sep"></div>
       <div class="stat"><span>本次会话</span><b id="tokens">—</b></div>
       <div class="stat"><span>缓存命中</span><b id="cache">—</b></div>
+
+      <div id="hint" class="hint" hidden></div>
     </div>
     <script src="menu.js"></script>
   </body>

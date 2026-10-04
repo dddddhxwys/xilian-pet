@@ -1,6 +1,6 @@
-/* 独立菜单小窗：整个窗口是透明的，只有面板本身可点。
-   尺寸由 main.js 的 MENU_WIDTH/MENU_HEIGHT 定死（窗口 resizable:false），
-   所以这里用 100% 铺满、不设自身尺寸，免得两边对不上。 */
+/* 独立菜单小窗 = 桌宠的操作面板。
+   窗口尺寸由 main.js 的 MENU_WIDTH/MENU_HEIGHT 定死（resizable:false），
+   所以这里 100% 铺满、不设自身尺寸，免得两边对不上。 */
 
 * {
   margin: 0;
@@ -18,23 +18,24 @@ body {
 }
 
 #menu {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
-  padding: 6px;
+  padding: 8px;
   border-radius: 14px;
-  background: rgba(38, 32, 52, 0.94);
+  background: rgba(38, 32, 52, 0.95);
   border: 1px solid rgba(255, 255, 255, 0.18);
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
   color: #fff;
   user-select: none;
-  /* 弹出时轻微放大淡入；窗口刚 show 就位，动画只是视觉润色 */
   animation: menuIn 110ms ease-out;
 }
 
 @keyframes menuIn {
   from {
     opacity: 0;
-    transform: scale(0.94);
+    transform: scale(0.96);
   }
   to {
     opacity: 1;
@@ -42,43 +43,169 @@ body {
   }
 }
 
-.item {
-  display: block;
-  width: 100%;
-  padding: 7px 10px;
+.section-label {
+  padding: 0 4px 5px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* ── 会话列表 ───────────────────────────────────────────────────── */
+.sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 116px;
+  overflow-y: auto;
+}
+
+.session {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px;
   border: 0;
-  border-radius: 9px;
+  border-radius: 8px;
   background: transparent;
   color: inherit;
   font: inherit;
-  font-size: 15px;
+  font-size: 13.5px;
   text-align: left;
   cursor: pointer;
 }
-.item:hover {
-  background: rgba(255, 255, 255, 0.14);
+.session:hover {
+  background: rgba(255, 255, 255, 0.12);
 }
-.item.danger {
-  color: #ffb3b3;
+.session[aria-current="true"] {
+  background: rgba(120, 170, 255, 0.26);
+}
+
+/* 状态点：颜色沿用桌宠窗口里的 halo 语义 */
+.session .dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #8c9bb5;
+}
+.session[data-state="running"] .dot {
+  background: #4a90e2;
+}
+.session[data-state="approval"] .dot {
+  background: #f0b429;
+}
+.session[data-state="question"] .dot {
+  background: #b06ce2;
+}
+.session[data-state="done"] .dot {
+  background: #37c46a;
+}
+.session[data-state="error"] .dot {
+  background: #e2686a;
+}
+
+.session .title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session .unread {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: rgba(255, 96, 96, 0.95);
+  font-size: 11px;
+  line-height: 17px;
 }
 
 .sep {
+  flex: none;
   height: 1px;
-  margin: 6px 8px;
+  margin: 7px 4px;
   background: rgba(255, 255, 255, 0.16);
 }
 
+/* ── 输入区 ─────────────────────────────────────────────────────── */
+#input {
+  flex: 1;
+  min-height: 54px;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.07);
+  color: #fff;
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.4;
+  resize: none;
+  outline: none;
+  user-select: text;
+}
+#input::placeholder {
+  color: rgba(255, 255, 255, 0.38);
+}
+#input:focus {
+  border-color: rgba(120, 170, 255, 0.85);
+}
+
+.actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.item {
+  border: 0;
+  border-radius: 9px;
+  padding: 7px 10px;
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.12);
+}
+.item:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+.item.primary {
+  flex: 2;
+  background: #4a90e2;
+}
+.item.primary:hover {
+  background: #5a9bea;
+}
+.item.danger {
+  flex: 1;
+  background: rgba(226, 104, 106, 0.85);
+}
+.item.danger:hover {
+  background: rgba(226, 104, 106, 1);
+}
+
+/* ── 用量 ───────────────────────────────────────────────────────── */
 .stat {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  gap: 12px;
-  padding: 3px 10px;
-  font-size: 13px;
-  color: rgba(255, 255, 255, 0.72);
+  gap: 10px;
+  padding: 2px 4px;
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.7);
 }
 .stat b {
   color: #fff;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+
+/* 一行反馈（"已派活" / "派活失败(503)"），成功后自动淡出 */
+.hint {
+  padding: 4px 4px 0;
+  font-size: 12px;
+  color: #8fd6a8;
+}
+.hint[data-kind="error"] {
+  color: #ffb3b3;
 }

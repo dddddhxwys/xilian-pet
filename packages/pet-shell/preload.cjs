@@ -37,13 +37,14 @@ contextBridge.exposeInMainWorld('xilianPet', {
   /** A7：把 DSH 窗口唤到前台（点击通知时用） */
   focusDsh: () => ipcRenderer.invoke('pet:focus-dsh'),
   /**
-   * 右键菜单：请主进程在桌宠**旁边**弹出独立的菜单小窗。
-   * 为什么不在本窗口里画：她本体占满 260×300，画在里面必然遮住她（用户实测反馈）。
-   * @param {{x?:number, y?:number, tokens?:object}} payload x/y 为屏幕坐标（右键位置）
+   * 操作面板：请主进程在桌宠**旁边**弹出独立小窗（含会话切换 + 多行输入 + 派活/打断 + 用量）。
+   * 为什么不在本窗口里画：她本体占满 260×300，画在里面必然遮住她 ——
+   * 原来的底部输入条就压着她的裙摆和脚（实测重叠 28px），已整个删除。
+   * @param {{focusInput?:boolean, tokens?:object}} payload focusInput=true 时把光标放进输入框
    */
   openMenu: (payload) => ipcRenderer.invoke('pet:open-menu', payload ?? {}),
-  /** 菜单小窗里选了某一项 → 主进程转回来，由这边执行（动作的上下文都在这边） */
-  onMenuAction: (callback) => ipcRenderer.on('pet:menu-action', (_event, action) => callback(String(action))),
+  /** 面板执行完动作后的提示文案 → 用气泡显示（动作在主进程执行，它回报过来） */
+  onBubble: (callback) => ipcRenderer.on('pet:bubble', (_event, text) => callback(String(text))),
   /** Live2D 模型信息：{ dir, exists, url } —— url 走 pet:// 协议，避开 file:// 的 fetch 限制 */
   modelInfo: () => ipcRenderer.invoke('pet:model-info'),
   /** 请主进程立刻截一张自检截图（用于精确捕捉动作的关键帧） */

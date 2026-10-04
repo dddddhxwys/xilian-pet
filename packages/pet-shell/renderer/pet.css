@@ -85,7 +85,6 @@ body {
 #badge,
 #bubble,
 #notice,
-#composer,
 #status {
   z-index: 2;
 }
@@ -266,48 +265,6 @@ body {
    让位距离由 JS 量出通知实际高度（--notice-h），通知 1 行 / 2 行都能对得上。 */
 body.has-notice #bubble {
   top: calc(var(--notice-h, 56px) + 10px);
-}
-
-/* 派活输入条（双击宠物唤出） */
-#composer {
-  position: absolute;
-  bottom: 0;
-  left: 8px;
-  right: 8px;
-  display: flex;
-  gap: 5px;
-  padding: 5px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.97);
-  box-shadow: 0 4px 14px rgba(20, 40, 70, 0.28);
-}
-
-#composer input {
-  flex: 1;
-  min-width: 0;
-  border: 1px solid rgba(120, 150, 190, 0.5);
-  border-radius: 6px;
-  padding: 4px 7px;
-  font-size: 12.5px;
-  outline: none;
-}
-
-#composer input:focus {
-  border-color: #4a90e2;
-}
-
-#composer button {
-  border: 0;
-  border-radius: 6px;
-  padding: 4px 9px;
-  background: #4a90e2;
-  color: #fff;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-
-#composer button#interruptBtn {
-  background: #e2686a;
 }
 
 /* 连接状态小点 */

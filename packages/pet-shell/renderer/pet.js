@@ -22,9 +22,8 @@ const halo = document.getElementById('halo')
 const badge = document.getElementById('badge')
 const bubble = document.getElementById('bubble')
 const bubbleText = document.getElementById('bubbleText')
-const composer = document.getElementById('composer')
-const composerInput = document.getElementById('composerInput')
-const interruptBtn = document.getElementById('interruptBtn')
+// 原底部输入条（#composer）已**整个删除** —— 它压着裙摆和脚（实测重叠 28px），
+// 派活/打断现在都在独立操作面板里（见 main.js 的 openMenuWindow）。
 const notice = document.getElementById('notice')
 const noticeText = document.getElementById('noticeText')
 const status = document.getElementById('status')
@@ -85,7 +84,7 @@ function visibleUiRects() {
   const rects = []
   // ⚠️ 只收**能接住点击**的控件。气泡是 pointer-events:none 的被动展示，
   // 把它算进来会在它覆盖的区域形成一个"点了没反应、也不穿透"的死区。
-  for (const el of [composer, notice, badge]) {
+  for (const el of [notice, badge]) {
     if (el.hidden) continue
     const r = el.getBoundingClientRect()
     if (r.width <= 0 || r.height <= 0) continue
@@ -171,12 +170,7 @@ function insideRect(el, clientX, clientY) {
 /** 只有「落在不透明像素上」或「悬停在 UI 控件上」时才接管鼠标，其余保持穿透 */
 function shouldBeInteractive(clientX, clientY) {
   if (overOpaquePixel(clientX, clientY)) return true
-  return (
-    insideRect(composer, clientX, clientY) ||
-    insideRect(bubble, clientX, clientY) ||
-    insideRect(notice, clientX, clientY) ||
-    insideRect(badge, clientX, clientY)
-  )
+  return insideRect(bubble, clientX, clientY) || insideRect(notice, clientX, clientY) || insideRect(badge, clientX, clientY)
 }
 
 /**
@@ -223,7 +217,6 @@ window.addEventListener(
 window.addEventListener('mousedown', (event) => {
   if (event.button !== 0) return // 右键留给菜单小窗，不参与拖拽
   if (!shouldBeInteractive(event.clientX, event.clientY)) return
-  if (insideRect(composer, event.clientX, event.clientY)) return
   dragging = true
   movedFar = false
   // 告诉主进程进入拖拽态：拖拽期间它会让窗口一直保持可交互，
@@ -248,53 +241,47 @@ window.addEventListener('mouseup', (event) => {
   if (!movedFar) markRead()
 })
 
-// 双击宠物 → 唤出 / 收起派活输入条
-// ⚠️ 暂时保留：右键菜单还没做，取消了就没有打开输入条的入口了（等菜单上线再让位给别的互动）
-window.addEventListener('dblclick', (event) => {
-  if (!overOpaquePixel(event.clientX, event.clientY)) return
-  const now = Date.now()
-  if (now - lastClickAt < 400) return
-  lastClickAt = now
-  toggleComposer()
-})
-
 // 点右下角的未读徽标 = 清未读（徽标本身就是"未读"，直接点它最直观）
 badge.addEventListener('click', (event) => {
   event.stopPropagation()
   markRead()
 })
 
-// ── 右键菜单 ───────────────────────────────────────────────────────
-// 菜单是**独立小窗**（main.js 的 openMenuWindow），不在本窗口里画 ——
-// 她本体占满 260×300，画在里面必然遮住她（实测反馈"会遮住桌宠本体"）。
-// 这边只负责：把数据和右键位置交给主进程 + 收到选择后执行动作。
+// ── 操作面板（独立小窗）─────────────────────────────────────────────
+// 面板是**独立窗口**（main.js 的 openMenuWindow），不在本窗口里画 ——
+// 她本体占满 260×300，画在里面必然遮住她；原来的底部输入条就压着她的裙摆和脚（实测重叠 28px），
+// 所以那条输入条**整个删掉了**，操作全搬到面板里。
+// 这边只负责：请求弹出面板、把气泡提示显示出来。
 
-// 右键昔涟 → 弹菜单小窗 + 问号表情。
+// 右键昔涟 → 弹面板 + 问号表情。
 // 注意 mousedown 里已按 `event.button !== 0` 挡掉右键，所以右键不会触发拖拽。
 window.addEventListener('contextmenu', (event) => {
   event.preventDefault()
   if (!overOpaquePixel(event.clientX, event.clientY)) return
   live2d?.pokeExpression('question', 1700) // "你想干嘛？"
-  api
-    .openMenu({ x: event.screenX, y: event.screenY, tokens: tokensView })
-    .then((result) => api.log(`右键菜单小窗：${result?.ok ? '已弹出' : JSON.stringify(result)}`))
-    .catch((error) => api.log(`右键菜单小窗打开失败：${error?.message ?? error}`))
+  openPanel(false)
 })
 
-// 菜单里的动作在**这边**执行：派活要用输入条、打断要用 latestSessionId，上下文都在这边
-api.onMenuAction((action) => {
-  if (action === 'prompt') {
-    if (composer.hidden) toggleComposer()
-    else composerInput.focus()
-    return
-  }
-  if (action === 'interrupt') {
-    const payload = typeof latestSessionId === 'string' && latestSessionId !== '' ? { sessionId: latestSessionId } : {}
-    api.control('interrupt', payload).then((result) => {
-      api.log(`菜单打断：${result?.status} ${JSON.stringify(result?.body)}`)
-    })
-  }
+// 双击她 = 弹面板并且**直接把光标放进输入框**（替代原来的"双击开输入条"）
+// （双击的事件序列是 click, click, dblclick —— 单击只做"清未读"，不冲突）
+window.addEventListener('dblclick', (event) => {
+  if (!overOpaquePixel(event.clientX, event.clientY)) return
+  const now = Date.now()
+  if (now - lastClickAt < 400) return
+  lastClickAt = now
+  openPanel(true)
 })
+
+// 面板执行完动作后的提示，走气泡显示（派活/打断都在主进程执行，那边回报过来）
+api.onBubble((text) => showBubble(text))
+
+/** 请求弹出操作面板；withInput=true 时把光标放进输入框 */
+function openPanel(withInput) {
+  api
+    .openMenu({ tokens: tokensView, focusInput: withInput })
+    .then((result) => api.log(`操作面板：${result?.ok ? '已弹出' : JSON.stringify(result)}`))
+    .catch((error) => api.log(`操作面板打开失败：${error?.message ?? error}`))
+}
 
 // ── UI 状态 ─────────────────────────────────────────────────────────
 function setState(state) {
@@ -354,14 +341,6 @@ function showBubble(text) {
   }, 6000)
 }
 
-function toggleComposer() {
-  composer.hidden = !composer.hidden
-  if (!composer.hidden) {
-    composerInput.focus()
-    api.log('派活输入条已打开')
-  }
-}
-
 // ── A7 主动提醒 ─────────────────────────────────────────────────────
 /**
  * 显示一条主动提醒（审批积压 / 久坐 / 花销）。
@@ -397,25 +376,6 @@ notice.addEventListener('click', async () => {
   const result = await api.focusDsh()
   api.log(`focus-dsh → ${JSON.stringify(result)}`)
   if (result?.ok !== false) hideNotice()
-})
-
-composer.addEventListener('submit', async (event) => {
-  event.preventDefault()
-  const text = composerInput.value.trim()
-  if (text === '') return
-  composerInput.value = ''
-  showBubble('收到，正在派活…')
-  const result = await api.control('prompt', { text, sessionId: latestSessionId })
-  api.log(`prompt → ${result.status} ${JSON.stringify(result.body)}`)
-  if (result.status !== 200) {
-    showBubble(`派活失败（${result.status}）：${result.body?.message ?? result.error ?? '未知原因'}`)
-  }
-})
-
-interruptBtn.addEventListener('click', async () => {
-  const result = await api.control('interrupt', { sessionId: latestSessionId })
-  api.log(`interrupt → ${result.status} ${JSON.stringify(result.body)}`)
-  showBubble(result.status === 200 ? '已打断' : `打断失败（${result.status}）`)
 })
 
 // ── 与主进程的帧通道 ────────────────────────────────────────────────
@@ -531,14 +491,14 @@ async function startLive2D() {
       api.snapshotNow()
     }, info.snapshotAtMs)
   }
-  // 调试用：启动后自动展开右键菜单小窗（PET_FORCE_MENU=1），配合 PET_SNAPSHOT_MENU 拍菜单。
+  // 调试用：启动后自动弹出操作面板（PET_FORCE_MENU=1），配合 PET_SNAPSHOT_MENU 拍面板。
   // 刻意等到 2.5s：要等 SSE 连上并收到带 tokens 的状态帧，拍出来才有真实数字。
   if (info.forceMenu) {
     setTimeout(() => {
-      api.log('调试模式：自动弹出右键菜单小窗')
+      api.log('调试模式：自动弹出操作面板')
       // 和真实右键路径保持一致（否则拍不到 poke 的效果）
       live2d?.pokeExpression('question', 1700)
-      api.openMenu({ tokens: tokensView }).catch(() => {})
+      openPanel(false)
     }, 2500)
   }
   return true
