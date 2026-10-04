@@ -88,7 +88,7 @@ export function createReminderState() {
     /** 上一轮见到的审批积压数（用于判断"又多了"） */
     lastApprovalCount: 0,
     /** 各会话已汇报过的 token 数 */
-    spendReported: Object.create(null),
+    spendBaseline: Object.create(null),
     /** 当前工作段的起点；空闲超时后清空 */
     workStartedAt: undefined,
     lastActivityAt: undefined,
@@ -122,7 +122,7 @@ export function decideReminders(input) {
   const state = {
     lastFiredAt: { ...prev.lastFiredAt },
     lastApprovalCount: prev.lastApprovalCount ?? 0,
-    spendReported: { ...prev.spendReported },
+    spendBaseline: { ...prev.spendBaseline },
     workStartedAt: prev.workStartedAt,
     lastActivityAt: prev.lastActivityAt,
   }
@@ -171,14 +171,28 @@ export function decideReminders(input) {
     }
   }
 
-  // ── 4. 花销（按会话累计）────────────────────────────────────────
+  // ── 4. 花销（基线制）────────────────────────────────────────────
+  //
+  // ⚠️ **必须用基线制**：token 总数现在来自宿主的 durable projection（重启不丢），
+  //    而本引擎的状态是进程内的（重启归零）。若直接拿"总数 - 已报数"判断，
+  //    DSH 一重启就会立刻炸一条"本会话已用约 247040k tokens"——**实测踩到过**。
+  //
+  // 基线 = 本引擎第一次看到该会话时的累计值（历史账不计入提醒），
+  // 之后只对**新增**的部分提醒。语义反而更贴切：提醒说的是"你最近花得有点多"，
+  // 而不是"历史总账".
   if (config.spend.everyTokens > 0) {
     for (const [sessionId, tokens] of Object.entries(spendBySession)) {
       if (typeof tokens !== 'number') continue
-      const reported = state.spendReported[sessionId] ?? 0
-      if (tokens - reported >= config.spend.everyTokens) {
-        if (fire('spend', `本会话已用约 ${Math.round(tokens / 1000)}k tokens`)) {
-          state.spendReported[sessionId] = tokens
+      if (state.spendBaseline[sessionId] === undefined) {
+        state.spendBaseline[sessionId] = tokens
+        continue
+      }
+      const base = state.spendBaseline[sessionId]
+      const consumed = tokens - base
+      if (consumed >= config.spend.everyTokens) {
+        if (fire('spend', `这段时间又用了约 ${Math.round(consumed / 1000)}k tokens`)) {
+          // 按整数倍推进，避免"刚好过线一点点"就把余量吞掉
+          state.spendBaseline[sessionId] = base + Math.floor(consumed / config.spend.everyTokens) * config.spend.everyTokens
         }
       }
     }

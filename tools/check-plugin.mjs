@@ -30,11 +30,13 @@ import {
   normalizeStreamChunk,
   pendingApprovalCount,
   primarySessionId,
+  primaryTokens,
   reduceAgentError,
   reduceAgentStatus,
   reducePetEvent,
   reduceStreamChunk,
   releaseHeld,
+  setTokenTotals,
   snapshot,
   spendBySession,
 } from '../packages/pet-plugin/reducer.js'
@@ -396,16 +398,30 @@ check('久坐：空闲超过 idleResetMs 会重置工作段', () => {
   assert.equal(st.workStartedAt, undefined, '空闲超时后工作段应重置')
 })
 
-check('花销：跨过阈值才提醒，且同一额度不重复', () => {
+check('花销：基线制 —— 历史账不提醒，只对本次启动后的新增提醒', () => {
+  // 这条治的是"切换成耐久总数后，DSH 一重启就炸一条 2.47 亿的提醒"（实测踩到）
   const config = mergeReminderConfig({ spend: { everyTokens: 1000 } })
   const t0 = 3_000_000
-  let r = decideReminders({ now: t0, spendBySession: { s1: 999 }, config })
-  assert.equal(r.fires.length, 0, '未达阈值不应提醒')
-  r = decideReminders({ state: r.state, now: t0 + 1, spendBySession: { s1: 1000 }, config })
+  const big = 247_040_500
+
+  // 第一次看到：只记基线，绝不因为"历史累计很大"而提醒
+  let r = decideReminders({ now: t0, spendBySession: { s1: big }, config })
+  assert.equal(r.fires.length, 0, '历史累计不该提醒')
+  assert.equal(r.state.spendBaseline.s1, big, '应把当时的值记成基线')
+
+  // 新增未达阈值 → 不提醒
+  r = decideReminders({ state: r.state, now: t0 + 1, spendBySession: { s1: big + 999 }, config })
+  assert.equal(r.fires.length, 0, '新增未达阈值不应提醒')
+
+  // 新增跨过阈值 → 提醒，且文案说的是"这段新增"而不是历史总账
+  r = decideReminders({ state: r.state, now: t0 + 2, spendBySession: { s1: big + 1000 }, config })
   assert.equal(r.fires[0]?.notice, 'spend')
-  const again = decideReminders({ state: r.state, now: t0 + 2, spendBySession: { s1: 1000 }, config })
+  assert.match(r.fires[0].text, /又用了约 1k/, '文案应只说本次新增')
+
+  const again = decideReminders({ state: r.state, now: t0 + 3, spendBySession: { s1: big + 1000 }, config })
   assert.equal(again.fires.length, 0, '同一额度不应重复提醒')
-  const more = decideReminders({ state: r.state, now: t0 + 3, spendBySession: { s1: 2000 }, config })
+
+  const more = decideReminders({ state: r.state, now: t0 + 4, spendBySession: { s1: big + 2000 }, config })
   assert.equal(more.fires.length, 1, '再跨一个阈值应再提醒')
 })
 
@@ -578,6 +594,42 @@ check('markRead：清未读并推一帧 state；没有未读时是空操作', ()
   assert.equal(all.frames[0].unread, 0, '帧里必须带 unread=0，窗口才会把徽标收掉')
   const one = markRead(base, 'a')
   assert.equal(one.state.sessions.a.unread, false)
+})
+
+check('primaryTokens：右键菜单的用量视图取「最近活跃」那个会话', () => {
+  let s = createPetState()
+  s = emit(s, 'turn/start', 's-a', 1)
+  s = emit(s, 'turn/start', 's-b', 2) // b 更近
+  s = setTokenTotals(s, 's-a', { uncachedInputTokens: 100, outputTokens: 0, cacheReadTokens: 300, cacheWriteTokens: 0 })
+  s = setTokenTotals(s, 's-b', { uncachedInputTokens: 50, outputTokens: 50, cacheReadTokens: 100, cacheWriteTokens: 0 })
+  const t = primaryTokens(s)
+  assert.equal(t.sessionId, 's-b', '应取最近活跃的会话，而不是先出现的那个')
+  assert.equal(t.spendTokens, 200)
+  assert.equal(t.cacheHitRate, 100 / 150)
+  assert.equal(t.tokenSource, 'host')
+})
+
+check('setTokenTotals：整体覆盖不累加；切到 host 源后 reducer 不再自算；同值写入幂等', () => {
+  let s = createPetState()
+  s = emit(s, 'assistant/message', 's1', 1, {
+    data: { turn: 1, step: 1, usage: { inputTokens: 10, outputTokens: 20 } },
+  })
+  assert.equal(primaryTokens(s).spendTokens, 30, '先由插件自算出 30')
+  assert.equal(primaryTokens(s).tokenSource, 'own')
+
+  const host = { uncachedInputTokens: 1000, outputTokens: 2000, cacheReadTokens: 500, cacheWriteTokens: 0 }
+  s = setTokenTotals(s, 's1', host)
+  assert.equal(primaryTokens(s).spendTokens, 3500, 'host 值应**整体覆盖**，不是加在 30 上')
+
+  // 切到 host 源后再来事件 → 不再自己累加，否则两边混着算、数字会飘
+  s = emit(s, 'assistant/message', 's1', 2, {
+    data: { turn: 2, step: 1, usage: { inputTokens: 10, outputTokens: 20 } },
+  })
+  assert.equal(primaryTokens(s).spendTokens, 3500, '切到 host 源后 reducer 必须停止自算')
+
+  const before = s
+  s = setTokenTotals(s, 's1', { ...host })
+  assert.equal(s, before, '同值写入应原样返回（幂等，免得每次 /state 都换新对象）')
 })
 
 // ─────────────────────────────────────────────────────────────

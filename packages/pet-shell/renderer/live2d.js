@@ -165,6 +165,8 @@ function applyBlink(now) {
 let oneShotTimer = null
 let lingerTimer = null
 let currentMotion = null
+/** pokeExpression 的恢复定时器（连点右键时只保留最后一次） */
+let pokeTimer = null
 
 /** error 档的兜底：模型没有"困扰/失败"参数，用眉毛 + 眼睛手工凑一个皱眉苦脸 */
 const ERROR_FACE = {
@@ -375,6 +377,32 @@ function setExpression(name) {
   } catch (error) {
     state.log(`表情 ${name} 失败：${error.message}`)
   }
+}
+
+/**
+ * 临时弹一个特效表情，过一会儿恢复（右键弹问号就靠它）。
+ *
+ * ⚠️ **恢复不能让"提问状态"的问号被误清**：agent 在等你回答时，状态就是 `question`，
+ * 那个问号是**常驻**的。所以恢复的方式是"把当前状态该有的表情重新应用一遍" ——
+ * 状态本来就是 question 时，等于再应用一次 question，问号留着。
+ *
+ * ⚠️ 状态不是 question 时，额外**显式把 Param6 清 0**：`reset` 表情的参数表里
+ * **没有** Param6（只有 惊喜/圈圈/开心/墨镜 四个），只靠"替换表情"不保险。
+ *
+ * @param {string} name 表情名（question / surprise / spiral / happy / sunglasses）
+ * @param {number} ms   停留时长
+ * @returns {boolean} 是否真的应用了
+ */
+export function pokeExpression(name, ms = 1700) {
+  if (!state.model || !state.ready) return false
+  setExpression(name)
+  clearTimeout(pokeTimer)
+  pokeTimer = setTimeout(() => {
+    const mapped = STATE_MAP[state.currentState] ?? STATE_MAP.idle
+    setExpression(mapped.expression)
+    if (state.currentState !== 'question') setParams({ Param6: 0 })
+  }, Math.max(200, ms))
+  return true
 }
 
 /**

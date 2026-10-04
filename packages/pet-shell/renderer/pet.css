@@ -85,6 +85,7 @@ body {
 #badge,
 #bubble,
 #notice,
+#menu,
 #composer,
 #status {
   z-index: 2;
@@ -327,4 +328,61 @@ body.has-notice #bubble {
 }
 #status[data-link="down"] {
   background: #e2686a;
+}
+
+/* ── 右键菜单 ──────────────────────────────────────────────────────
+   260×300 的窗口很小，所以刻意做得紧凑：宽 ~184px、四项加起来 ~132px，放得下。
+   定位由 pet.js 按点击点算，并夹在窗口内（贴边时会自动收进来）。 */
+#menu {
+  position: absolute;
+  /* 比输入条高一层：HTML 里菜单在 composer 之前，同 z-index 会被输入条盖住 */
+  z-index: 3;
+  min-width: 184px;
+  padding: 6px;
+  border-radius: 12px;
+  background: rgba(38, 32, 52, 0.93);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.42);
+  color: #fff;
+  font-size: 15px;
+  user-select: none;
+}
+
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+.menu-item.danger {
+  color: #ffb3b3;
+}
+
+.menu-sep {
+  height: 1px;
+  margin: 5px 6px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.menu-stat {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 10px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.72);
+}
+.menu-stat b {
+  color: #fff;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }

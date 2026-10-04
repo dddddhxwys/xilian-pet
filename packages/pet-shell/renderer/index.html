@@ -43,6 +43,19 @@
         <span id="noticeHint">点击回到 DSH</span>
       </div>
 
+      <!--
+        右键菜单（右键昔涟 → 弹这个，同时她弹一个问号表情）。
+        为什么用 HTML 自绘而不是 Electron 原生 Menu：原生是 Windows 灰菜单，和桌宠风格完全不搭；
+        代价是要自己处理失焦关闭，并且**必须登记进 visibleUiRects**，否则会被点击穿透（踩过）。
+      -->
+      <div id="menu" hidden>
+        <button type="button" class="menu-item" data-action="prompt">派活…</button>
+        <button type="button" class="menu-item danger" data-action="interrupt">打断当前回合</button>
+        <div class="menu-sep"></div>
+        <div class="menu-stat"><span>本次会话</span><b id="menuTokens">—</b></div>
+        <div class="menu-stat"><span>缓存命中</span><b id="menuCache">—</b></div>
+      </div>
+
       <form id="composer" hidden>
         <input id="composerInput" type="text" placeholder="给 agent 派个活…" autocomplete="off" />
         <button type="submit">派活</button>

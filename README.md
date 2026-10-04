@@ -8,8 +8,8 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1894 行 / 外壳 9 文件 2761 行 / 工具 14 文件 3088 行，65 个提交 |
-| 自测 | `& $NODE tools\check-plugin.mjs` → **89 项全绿** |
+| 规模 | 插件 5 文件 1932 行 / 外壳 9 文件 2972 行 / 工具 14 文件 3140 行，66 个提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **91 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
 > 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
@@ -355,6 +355,29 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
 - 刷新时机：**数字要被用到之前**（`/state`、SSE 的 snapshot、提醒引擎的定时 tick），
   不必每个事件都刷 —— `stateOf` 只是一次 WeakMap 查表，但没必要浪费
 
+### 右键菜单
+
+右键昔涟 → 弹出菜单，**同时她弹一个问号表情**（"你想干嘛？"）。
+
+| 菜单项 | 行为 |
+|---|---|
+| 派活… | 唤出 / 聚焦派活输入条（双击也还能用，等菜单稳定后再考虑取消双击） |
+| 打断当前回合 | `POST /interrupt`（红色，和目标会话一起走 `latestSessionId`） |
+| 本次会话 | 当前会话累计 token（大数字显示成"2.47 亿"） |
+| 缓存命中 | `cacheHitRate` |
+
+几个刻意的选择：
+
+- **HTML 自绘，不用 Electron 原生 `Menu`** —— 原生是 Windows 灰菜单，和桌宠风格不搭。
+  代价是要自己处理失焦关闭，而且**必须登记进 `visibleUiRects`**，否则会被点击穿透（输入条踩过同样的坑）。
+- **放得下 260×300**：宽 184px、高约 132px，定位时按点击点算并**夹在窗口内**。
+  用 `PET_FORCE_MENU=1` + `PET_SNAPSHOT` 实测确认过。
+- **问号不会被误清**：`question` 状态（agent 在等你回答）的问号是**常驻**的。
+  所以 `pokeExpression` 的恢复方式是"把当前状态该有的表情重新应用一遍" ——
+  状态本来就是 question 时等于再应用一次；否则额外显式把 `Param6` 清 0
+  （因为 `reset` 表情的参数表里**没有** Param6，只靠替换不保险）。
+- 菜单 `z-index: 3`：HTML 里它在输入条之前，同层级会被输入条盖住。
+
 ### 三条特殊规则（都是实测踩出来的）
 
 1. **开场手势**：启动先演一次 `Scene[0]` 比嘘，**0.6x 慢放**，演完落待机。
@@ -681,6 +704,8 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **只按进程名找 DSH 窗口找不到** | 点通知没反应：`detail=no-window pids=2` | DSH 的窗口**不属于**那两个同名进程 → 改成「PID 命中 **或** 标题含 `Harness/DSH/DeepSeek`」再取**面积最大**者。另：`Process.MainWindowHandle` 实测恒为 0，**别用它** |
 | **`SetForegroundWindow` 返回 true 却没到前台** | 点了只闪一下任务栏 | Windows 前台锁 → 先 `AllowSetForegroundWindow(-1)` + `AttachThreadInput` 再设置；用 `GetForegroundWindow()` **复核**，别信返回值 |
 | **拿 `usage.totalTokens` 累加当用量** | `/state` 报出 **3390 万** tokens | `totalTokens` 含 `cacheReadTokens`（重发的整个上下文）→ 改**四桶**分别累加，并按 `(turn,step)` 增量替换（口径对齐宿主 `tokenMeter`） |
+| **拿「已报数」当花销提醒的基线** | 总数换成 durable 之后，DSH 一重启就炸一条"本会话已用约 **247040k** tokens" | 总数 durable 了、提醒基线还是易失的 → 改**基线制**：首次看到该会话时把当时的值记成基线，之后只对**新增**部分提醒（实测踩到） |
+| **`llm/retry-started` 不在 `EVENT_STATE` 里** | 处理分支放错位置会**静默变死代码** | 会被 `target === undefined` 提前 return → 必须放在状态映射**之前**（已有专门断言） |
 | **清未读"假清"** | 点了徽标不消失，或过一会儿又冒出来 | 两层：① `markRead()` 是**死代码**（`mousedown` 无条件 `dragging=true`，`mouseup` 里 `if(!dragging)` 永远不成立）；② 它只 `setBadge(0)` 清本地显示，**没告诉插件**，下一个 `state` 帧就把 unread 报回来 → 必须加插件端点 `POST /read` |
 | **`llm/retry-started` 不在 `EVENT_STATE` 里** | 放在状态映射之后的处理分支变**死代码**，静默失效 | 该事件会被 `target === undefined` 提前 return → 必须在状态映射**之前**单独处理（自测里有专门一条覆盖它） |
 
@@ -731,6 +756,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | `PET_SNAPSHOT_DELAY_MS=<ms>` | 从 ready-to-show 起算的截图延迟 |
 | `PET_FORCE_STATE=<state>` | 强制推一个状态（**不发真实快照**，避免干扰） |
 | `PET_FORCE_MOTION=Scene:<i>` | 指定播放哪个动作 |
+| `PET_FORCE_MENU=1` | 启动后自动展开右键菜单（配合 `PET_SNAPSHOT` 就能拍到菜单，不必真的去点） |
 | `PET_SAMPLE_PARAMS=1` + `PET_SAMPLE_MS` | **参数采样**：反推动作内容 / 验证时序 |
 | `PET_HIT_DEBUG=1` | 每秒打印命中判定（坐标换算逐项可见） |
 | `PET_DEFER_SHOW=0` | 关掉"构图就绪前不显示窗口" |
@@ -768,7 +794,7 @@ docs/
   Live2D约稿单.md                    委托说明（已暂缓，将来换自研形象可启用）
   screenshots/                      实机自检截图（含第三方角色，默认 gitignore）
 tools/
-  check-plugin.mjs                  自测（89 项断言，含外壳命中测试，不需要 DSH）
+  check-plugin.mjs                  自测（91 项断言，含外壳命中测试，不需要 DSH）
   tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）

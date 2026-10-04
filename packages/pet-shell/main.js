@@ -693,6 +693,9 @@ app.whenReady().then(async () => {
       sampleMs: process.env.PET_SAMPLE_PARAMS === '1' ? Number(process.env.PET_SAMPLE_MS ?? 5000) : 0,
       // 从动作开始算起的截图时刻（0 = 不用这条路径）
       snapshotAtMs: Number(process.env.PET_SNAPSHOT_AT_MOTION_MS ?? 0),
+      // 调试用：启动后自动展开右键菜单（配合 PET_SNAPSHOT 就能拍到菜单长什么样，
+      // 不必让用户真的去点一下）
+      forceMenu: process.env.PET_FORCE_MENU === '1',
     }
   })
   // 渲染端在动作跑到指定时刻时主动请求截图（见 maybeSnapshot 上方注释）

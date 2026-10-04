@@ -228,6 +228,24 @@ export function setTokenTotals(state, sessionId, buckets, source = 'host') {
   }
 }
 
+/**
+ * "当前最相关那个会话"的 token 视图 —— 状态帧和 snapshot 都带一份。
+ *
+ * 为什么要塞进**状态帧**：渲染端的右键菜单要显示用量，而 snapshot 只在 SSE 连接时来一次，
+ * 靠它数字会一直停在几小时前。状态帧是事件驱动的，跟着它走才是新鲜的。
+ */
+export function primaryTokens(state) {
+  const id = primarySessionId(state)
+  const s = id === undefined ? undefined : state.sessions[id]
+  const buckets = s?.tokenBuckets ?? zeroBuckets()
+  return {
+    sessionId: id ?? null,
+    spendTokens: bucketsTotal(buckets),
+    cacheHitRate: cacheHitRate(buckets),
+    tokenSource: s?.tokenSource ?? 'own',
+  }
+}
+
 export function createPetState(options = {}) {
   return {
     sessions: Object.create(null),
@@ -276,7 +294,9 @@ export function markRead(state, sessionId) {
   const next = { ...state, sessions }
   return {
     state: next,
-    frames: [{ type: 'state', seq: next.seq, state: aggregate(next), unread: unreadCount(next) }],
+    frames: [
+      { type: 'state', seq: next.seq, state: aggregate(next), unread: unreadCount(next), tokens: primaryTokens(next) },
+    ],
   }
 }
 
@@ -401,7 +421,7 @@ export function evaluate(state, now) {
   const rising = STATE_PRIORITY[agg] > STATE_PRIORITY[state.current]
   if (rising || !held) {
     const next = { ...state, current: agg, currentSince: now, seq: state.seq + 1 }
-    frames.push({ type: 'state', seq: next.seq, state: agg, unread: unreadCount(next) })
+    frames.push({ type: 'state', seq: next.seq, state: agg, unread: unreadCount(next), tokens: primaryTokens(next) })
     return { state: next, frames }
   }
   return { state, frames }
@@ -658,6 +678,8 @@ export function snapshot(state) {
     seq: state.seq,
     // 渲染端拿不到 sessionId 时的兜底目标（也是 /prompt、/interrupt 的兜底目标）
     primarySessionId: primarySessionId(state) ?? null,
+    // 右键菜单要显示的数字（见 primaryTokens 的注释）
+    tokens: primaryTokens(state),
     sessions: Object.values(state.sessions).map((s) => {
       const buckets = s.tokenBuckets ?? zeroBuckets()
       return {

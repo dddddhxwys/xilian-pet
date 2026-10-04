@@ -87,7 +87,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 15
+const CODE_REVISION = 16
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -271,6 +271,8 @@ export function apply(ctx, config = {}) {
       if (ev === null) return
       const result = reducePetEvent(state, ev, Date.now())
       state = result.state
+      // 状态帧里带 token 数字（右键菜单要用），所以发之前先刷一次宿主的权威值
+      syncAuthoritativeTokens()
       publishFrames(result.frames)
       publishActivity(ev)
     } catch (error) {
