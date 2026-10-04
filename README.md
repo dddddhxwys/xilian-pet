@@ -8,7 +8,7 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1932 行 / 外壳 9 文件 3014 行 / 工具 14 文件 3140 行，67 个提交 |
+| 规模 | 插件 5 文件 1932 行 / 外壳 13 文件 3157 行 / 工具 14 文件 3140 行，68 个提交 |
 | 自测 | `& $NODE tools\check-plugin.mjs` → **91 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
@@ -355,31 +355,37 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
 - 刷新时机：**数字要被用到之前**（`/state`、SSE 的 snapshot、提醒引擎的定时 tick），
   不必每个事件都刷 —— `stateOf` 只是一次 WeakMap 查表，但没必要浪费
 
-### 右键菜单
+### 右键菜单（**独立小窗**）
 
-右键昔涟 → 弹出菜单，**同时她弹一个问号表情**（"你想干嘛？"）。
+右键昔涟 → 在她**旁边**弹出一个小窗，**同时她弹一个问号表情**（"你想干嘛？"）。
 
 | 菜单项 | 行为 |
 |---|---|
 | 派活… | 唤出 / 聚焦派活输入条（双击也还能用，等菜单稳定后再考虑取消双击） |
 | 打断当前回合 | `POST /interrupt`（红色，和目标会话一起走 `latestSessionId`） |
-| 本次会话 | 当前会话累计 token（大数字显示成"2.47 亿"） |
+| 本次会话 | 当前会话累计 token（大数字显示成"2.75 亿"） |
 | 缓存命中 | `cacheHitRate` |
 
-几个刻意的选择：
+**为什么是独立窗口**：她本体占满 260×300，窗口内**唯一**不压在她身上的地方只有头顶约 87px 的留白
+（实测构图：内容 233×207 / 舞台 260×300），竖排四项菜单约 141px 根本放不下 —— 用户实测反馈"会遮住桌宠本体"。
+独立小窗可以在她旁边弹出，完全不相交，尺寸也不再受限。**两次试错的记录见 §八 踩坑表。**
 
-- **HTML 自绘，不用 Electron 原生 `Menu`** —— 原生是 Windows 灰菜单，和桌宠风格不搭。
-  代价是要自己处理失焦关闭，而且**必须登记进 `visibleUiRects`**，否则会被点击穿透（输入条踩过同样的坑）。
-- **放得下 260×300，而且不挡本体**：她本体占满窗口，**唯一不压在她身上的地方只有头顶那条约 87px 的留白**
-  （实测构图：内容 233×207 / 舞台 260×300，上方留白 87）。所以菜单做成**紧凑两行**（动作一行 + 数字一行，高约 68px），
-  位置**按 alpha 掩码算**（`contentTopY()` 从上往下扫第一行不透明像素）而不是跟着鼠标走 —— 跟着鼠标必然压到她。
-  掩码算的好处：换模型 / 换窗口尺寸 / 占位图降级时都自动跟着变，不用写死 87。
-  实测日志：`右键菜单已打开（顶部留白 87px，菜单高 68px）`。
+实现要点：
+
+- 三个新文件：`renderer/menu.html` + `menu.css` + `menu.js`，桥是 `menu-preload.cjs`
+- 主进程 `openMenuWindow()`：**右优先**（右边放不下换左侧，两侧都不行才退回压在上面），
+  竖直对齐右键位置并夹在工作区内；`MENU_WIDTH×MENU_HEIGHT = 236×172`
+- 复用一个实例（`hide()` 而不是 `close()`，免得每次重开闪一下）；`blur` 自动收起；拖桌宠时也收起
+- ⚠️ **`menu:ready` 补发数据**：`loadFile()` 是异步的，`show()` 时主进程就 `send`，
+  渲染端监听器还没注册 → **IPC 消息直接丢**，菜单里永远是"—"（实测踩到）。
+  与桌宠窗口的 `pet:ready` 补发是同一类问题
 - **问号不会被误清**：`question` 状态（agent 在等你回答）的问号是**常驻**的。
   所以 `pokeExpression` 的恢复方式是"把当前状态该有的表情重新应用一遍" ——
   状态本来就是 question 时等于再应用一次；否则额外显式把 `Param6` 清 0
-  （因为 `reset` 表情的参数表里**没有** Param6，只靠替换不保险）。
-- 菜单 `z-index: 3`：HTML 里它在输入条之前，同层级会被输入条盖住。
+  （因为 `reset` 表情的参数表里**没有** Param6，只靠替换不保险）
+- 动作**回桌宠窗口执行**（`pet:menu-action`）：派活要用输入条、打断要用 `latestSessionId`，上下文都在那边
+- `PET_SNAPSHOT_MENU=<png>` 可把菜单小窗也拍下来核对布局 ——
+  注意透明窗在屏幕外时 compositor 未必已产出帧，`capturePage()` 会抛 `UnknownVizError`，**必须重试**
 
 ### 三条特殊规则（都是实测踩出来的）
 
@@ -709,6 +715,9 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **拿 `usage.totalTokens` 累加当用量** | `/state` 报出 **3390 万** tokens | `totalTokens` 含 `cacheReadTokens`（重发的整个上下文）→ 改**四桶**分别累加，并按 `(turn,step)` 增量替换（口径对齐宿主 `tokenMeter`） |
 | **拿「已报数」当花销提醒的基线** | 总数换成 durable 之后，DSH 一重启就炸一条"本会话已用约 **247040k** tokens" | 总数 durable 了、提醒基线还是易失的 → 改**基线制**：首次看到该会话时把当时的值记成基线，之后只对**新增**部分提醒（实测踩到） |
 | **`llm/retry-started` 不在 `EVENT_STATE` 里** | 处理分支放错位置会**静默变死代码** | 会被 `target === undefined` 提前 return → 必须放在状态映射**之前**（已有专门断言） |
+| **菜单画在桌宠窗口里 → 遮住本体** | 用户实测："菜单的位置不对，会遮住桌宠本体" | 她占满 260×300，**只有头顶约 87px 是空的**，竖排四项菜单放不下 → 最终改成**独立小窗**在她旁边弹出。（中间的试错：先改紧凑两行塞进留白带能work，但样式受限） |
+| **`show()` 时 `send` 数据，渲染端监听还没注册** | 菜单里永远显示"—"（首次打开必现） | `loadFile()` 是异步的 → IPC 消息被丢。加 `menu:ready` 让主进程**补发**（与桌宠窗口 `pet:ready` 同一套路） |
+| **透明窗在屏幕外 `capturePage()` 抛 `UnknownVizError`** | 菜单小窗抓图失败，没法核对布局 | compositor 还没产出帧 → **重试**（等一帧再来）即可，实测第 2 次成功 |
 | **清未读"假清"** | 点了徽标不消失，或过一会儿又冒出来 | 两层：① `markRead()` 是**死代码**（`mousedown` 无条件 `dragging=true`，`mouseup` 里 `if(!dragging)` 永远不成立）；② 它只 `setBadge(0)` 清本地显示，**没告诉插件**，下一个 `state` 帧就把 unread 报回来 → 必须加插件端点 `POST /read` |
 | **`llm/retry-started` 不在 `EVENT_STATE` 里** | 放在状态映射之后的处理分支变**死代码**，静默失效 | 该事件会被 `target === undefined` 提前 return → 必须在状态映射**之前**单独处理（自测里有专门一条覆盖它） |
 
@@ -759,7 +768,8 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | `PET_SNAPSHOT_DELAY_MS=<ms>` | 从 ready-to-show 起算的截图延迟 |
 | `PET_FORCE_STATE=<state>` | 强制推一个状态（**不发真实快照**，避免干扰） |
 | `PET_FORCE_MOTION=Scene:<i>` | 指定播放哪个动作 |
-| `PET_FORCE_MENU=1` | 启动后自动展开右键菜单（配合 `PET_SNAPSHOT` 就能拍到菜单，不必真的去点） |
+| `PET_FORCE_MENU=1` | 启动后自动展开右键菜单小窗（配合 `PET_SNAPSHOT_MENU` 就能拍到菜单，不必真的去点） |
+| `PET_SNAPSHOT_MENU=<png>` | 把菜单小窗拍下来（会自动重试，透明窗首帧可能没准备好） |
 | `PET_SAMPLE_PARAMS=1` + `PET_SAMPLE_MS` | **参数采样**：反推动作内容 / 验证时序 |
 | `PET_HIT_DEBUG=1` | 每秒打印命中判定（坐标换算逐项可见） |
 | `PET_DEFER_SHOW=0` | 关掉"构图就绪前不显示窗口" |

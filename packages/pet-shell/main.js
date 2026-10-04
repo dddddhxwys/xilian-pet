@@ -539,6 +539,14 @@ function maybeSnapshot(win) {
 }
 
 // ── 窗口 ────────────────────────────────────────────────────────────
+/** 右键菜单小窗的固定尺寸（窗口 resizable:false，菜单内容按 100% 铺满） */
+const MENU_WIDTH = 236
+const MENU_HEIGHT = 172
+/** 菜单小窗：复用一个实例（hide 而不是 close，避免每次重载闪一下） */
+let menuWin = null
+/** 最近一次要显示的数据 —— menu:ready 补发用（首次打开时页面还没加载完） */
+let lastMenuData = { tokens: null }
+
 function createWindow() {
   const saved = loadWindowState()
   const win = new BrowserWindow({
@@ -672,12 +680,138 @@ app.whenReady().then(async () => {
   })
   ipcMain.on('pet:move-by', (_event, dx, dy) => {
     if (win.isDestroyed()) return
+    closeMenuWindow() // 桌宠一动，菜单就不该留在原地
     const [x, y] = win.getPosition()
     win.setPosition(x + dx, y + dy)
   })
   ipcMain.handle('pet:control', (_event, action, payload) => postControl(action, payload))
   // A7：点击桌宠上的通知 → 把 DSH 窗口唤到前台
   ipcMain.handle('pet:focus-dsh', () => focusDshWindow())
+
+  /**
+   * 右键菜单：**独立小窗**，在桌宠旁边弹出。
+   *
+   * 为什么不画在桌宠窗口里：她本体占满 260×300，窗口内唯一不压在她身上的地方
+   * 只有头顶约 87px 的留白，而竖排四项菜单约 141px —— 用户实测反馈"会遮住桌宠本体"。
+   * 独立小窗可以在她旁边弹出，完全不相交。
+   */
+  ipcMain.handle('pet:open-menu', (_event, payload) => openMenuWindow(payload))
+  ipcMain.on('pet:menu-close', () => closeMenuWindow())
+  // 小窗选了某一项 → 收起小窗，把动作交回**桌宠窗口**执行（动作都在它那边有上下文）
+  ipcMain.on('menu:choose', (_event, action) => {
+    closeMenuWindow()
+    if (!win.isDestroyed()) win.webContents.send('pet:menu-action', String(action))
+  })
+  ipcMain.on('menu:close', () => closeMenuWindow())
+  // 菜单小窗渲染端就绪 → 补发数据（首次打开时 show() 那次 send 会因页面未加载而丢）
+  ipcMain.on('menu:ready', (event) => {
+    if (menuWin !== null && !menuWin.isDestroyed() && event.sender === menuWin.webContents) {
+      menuWin.webContents.send('menu:data', lastMenuData)
+    }
+  })
+
+  /**
+   * 弹出菜单小窗。
+   * @param {{x?:number, y?:number, tokens?:object}} payload
+   *        x/y 是**屏幕坐标**的右键位置；缺省时贴着桌宠竖直居中
+   */
+  function openMenuWindow(payload) {
+    const pet = win.getBounds()
+    const center = { x: pet.x + Math.round(pet.width / 2), y: pet.y + Math.round(pet.height / 2) }
+    const area = screen.getDisplayNearestPoint(center).workArea
+
+    // 优先放右侧；右边放不下放左侧；两侧都放不下才退回"压在桌宠上面"（这种情况窗口几乎占满屏）
+    let x = pet.x + pet.width + 6
+    if (x + MENU_WIDTH > area.x + area.width) x = pet.x - MENU_WIDTH - 6
+    if (x < area.x) x = pet.x + Math.round((pet.width - MENU_WIDTH) / 2)
+
+    const anchorY = Number.isFinite(payload?.y) ? payload.y - 24 : center.y - Math.round(MENU_HEIGHT / 2)
+    const y = Math.min(Math.max(area.y + 4, Math.round(anchorY)), area.y + area.height - MENU_HEIGHT - 4)
+
+    const w = ensureMenuWindow()
+    w.setBounds({ x: Math.round(x), y, width: MENU_WIDTH, height: MENU_HEIGHT })
+    // 先发数据再 show，避免"先闪一个空面板再填上数字"。
+    // 但**首次**打开时页面可能还没加载完 → 那次会丢，靠 menu:ready 补发（见 menu-preload.cjs）。
+    lastMenuData = { tokens: payload?.tokens ?? null }
+    w.webContents.send('menu:data', lastMenuData)
+    w.show()
+    w.focus() // 要焦点才能靠 blur 自动收起（Esc 也才好用）
+    log(`右键菜单小窗：桌宠(${pet.x},${pet.y} ${pet.width}×${pet.height}) → 菜单(${Math.round(x)},${y})`)
+    if (process.env.PET_SNAPSHOT_MENU) captureMenuSnapshot(w)
+    return { ok: true, bounds: w.getBounds() }
+  }
+
+  function closeMenuWindow() {
+    if (menuWin !== null && !menuWin.isDestroyed() && menuWin.isVisible()) menuWin.hide()
+  }
+
+  function ensureMenuWindow() {
+    if (menuWin !== null && !menuWin.isDestroyed()) return menuWin
+    menuWin = new BrowserWindow({
+      width: MENU_WIDTH,
+      height: MENU_HEIGHT,
+      transparent: true,
+      frame: false,
+      resizable: false,
+      hasShadow: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      show: false,
+      fullscreenable: false,
+      webPreferences: {
+        preload: join(here, 'menu-preload.cjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    })
+    menuWin.setAlwaysOnTop(true, 'screen-saver')
+    menuWin.setMenuBarVisibility?.(false)
+    menuWin.loadFile(join(here, 'renderer', 'menu.html'))
+    // 失焦即收起 —— 原生菜单也是这个行为
+    menuWin.on('blur', () => closeMenuWindow())
+    menuWin.on('closed', () => {
+      menuWin = null
+    })
+    menuWin.webContents.on('console-message', (_event, ...rest) => {
+      if (rest.length === 1 && rest[0] !== null && typeof rest[0] === 'object' && 'message' in rest[0]) {
+        log(`[menu:${rest[0].level}] ${rest[0].message}`)
+      } else {
+        const [level, message] = rest
+        log(`[menu:${level}] ${message}`)
+      }
+    })
+    menuWin.webContents.on('preload-error', (_event, path, error) => {
+      log(`[menu-preload-error] ${path}: ${error?.message ?? error}`)
+    })
+    return menuWin
+  }
+
+  /**
+   * 调试：把菜单小窗也拍下来（PET_SNAPSHOT_MENU=<png>），用来核对布局。
+   *
+   * ⚠️ 必须重试：透明窗在屏幕外时 compositor 未必已经产出帧，
+   * `capturePage()` 会抛 `UnknownVizError`（实测踩到）。等一帧再来一次就好。
+   */
+  function captureMenuSnapshot(target) {
+    const file = process.env.PET_SNAPSHOT_MENU
+    let tries = 0
+    const attempt = async () => {
+      tries += 1
+      try {
+        const image = await target.webContents.capturePage()
+        writeFileSync(file, image.toPNG())
+        log(`菜单小窗截图已写出：${file}`)
+      } catch (error) {
+        if (tries < 5) {
+          setTimeout(attempt, 500)
+          return
+        }
+        log(`菜单小窗截图失败（试了 ${tries} 次）：${error?.message ?? error}`)
+      }
+    }
+    setTimeout(attempt, Number(process.env.PET_SNAPSHOT_MENU_DELAY_MS ?? 1200))
+  }
+
   ipcMain.handle('pet:model-info', () => {
     const file = findModelSettings()
     return {

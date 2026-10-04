@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      独立小窗（右键菜单）。
+      为什么单独开一个窗口而不是画在桌宠窗口里：
+        她本体占满 260×300，窗口内唯一不压在她身上的地方只有头顶 ~87px 的留白，
+        竖排四项菜单（约 141px）根本放不下 —— 实测用户反馈"会遮住桌宠本体"。
+        独立小窗可以在她**旁边**弹出，完全不相交，空间也自由。
+      CSP：只有本地文件，不需要 eval（这里不加载 PixiJS/Live2D）。
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'" />
+    <title>昔涟 · 菜单</title>
+    <link rel="stylesheet" href="menu.css" />
+  </head>
+  <body>
+    <div id="menu">
+      <button type="button" class="item" data-action="prompt">派活…</button>
+      <button type="button" class="item danger" data-action="interrupt">打断当前回合</button>
+      <div class="sep"></div>
+      <div class="stat"><span>本次会话</span><b id="tokens">—</b></div>
+      <div class="stat"><span>缓存命中</span><b id="cache">—</b></div>
+    </div>
+    <script src="menu.js"></script>
+  </body>
+</html>

@@ -85,7 +85,6 @@ body {
 #badge,
 #bubble,
 #notice,
-#menu,
 #composer,
 #status {
   z-index: 2;
@@ -330,71 +329,3 @@ body.has-notice #bubble {
   background: #e2686a;
 }
 
-/* ── 右键菜单 ──────────────────────────────────────────────────────
-   ⚠️ 布局是被窗口尺寸逼出来的：她本体占满 260×300，**唯一不压在她身上的地方
-   只有头顶那条约 87px 的留白**（实测构图：内容 233×207，上方留白 87）。
-   所以菜单做成**紧凑两行**（动作一行 + 数字一行）≈ 68px，正好放进那条留白带；
-   位置由 pet.js 按 alpha 掩码算，**不再跟着鼠标走**（跟着鼠标必然压到她）。 */
-#menu {
-  position: absolute;
-  /* 比输入条高一层：HTML 里菜单在 composer 之前，同 z-index 会被输入条盖住 */
-  z-index: 3;
-  min-width: 232px;
-  padding: 5px;
-  border-radius: 12px;
-  background: rgba(38, 32, 52, 0.93);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.42);
-  color: #fff;
-  user-select: none;
-}
-
-.menu-row {
-  display: flex;
-  gap: 5px;
-}
-
-.menu-item {
-  flex: 1;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: 14px;
-  text-align: center;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.menu-item:hover {
-  background: rgba(255, 255, 255, 0.14);
-}
-.menu-item.danger {
-  color: #ffb3b3;
-}
-
-.menu-stats {
-  margin-top: 5px;
-  padding-top: 5px;
-  border-top: 1px solid rgba(255, 255, 255, 0.16);
-}
-
-.menu-stat {
-  flex: 1;
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 6px;
-  padding: 0 6px;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.72);
-}
-.menu-stat i {
-  font-style: normal;
-}
-.menu-stat b {
-  color: #fff;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}

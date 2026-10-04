@@ -28,9 +28,6 @@ const interruptBtn = document.getElementById('interruptBtn')
 const notice = document.getElementById('notice')
 const noticeText = document.getElementById('noticeText')
 const status = document.getElementById('status')
-const menu = document.getElementById('menu')
-const menuTokens = document.getElementById('menuTokens')
-const menuCache = document.getElementById('menuCache')
 
 const ALPHA_THRESHOLD = 24
 
@@ -46,8 +43,7 @@ let bubbleTimer = null
 let noticeTimer = null
 let latestSessionId = undefined
 let unread = 0
-// 右键菜单是否展开；tokensView 是插件在状态帧里带的用量视图（见 reducer 的 primaryTokens）
-let menuOpen = false
+// 用量视图：插件在状态帧里带（见 reducer 的 primaryTokens），右键时交给菜单小窗显示
 let tokensView = null
 
 // Live2D 是否成功接管。失败时保持 false → 用占位图 + 占位图的 alpha 掩码（验收项 A10 降级）
@@ -89,7 +85,7 @@ function visibleUiRects() {
   const rects = []
   // ⚠️ 只收**能接住点击**的控件。气泡是 pointer-events:none 的被动展示，
   // 把它算进来会在它覆盖的区域形成一个"点了没反应、也不穿透"的死区。
-  for (const el of [composer, notice, badge, menu]) {
+  for (const el of [composer, notice, badge]) {
     if (el.hidden) continue
     const r = el.getBoundingClientRect()
     if (r.width <= 0 || r.height <= 0) continue
@@ -179,8 +175,7 @@ function shouldBeInteractive(clientX, clientY) {
     insideRect(composer, clientX, clientY) ||
     insideRect(bubble, clientX, clientY) ||
     insideRect(notice, clientX, clientY) ||
-    insideRect(badge, clientX, clientY) ||
-    insideRect(menu, clientX, clientY)
+    insideRect(badge, clientX, clientY)
   )
 }
 
@@ -226,12 +221,7 @@ window.addEventListener(
 )
 
 window.addEventListener('mousedown', (event) => {
-  if (event.button !== 0) return // 右键留给菜单，不参与拖拽
-  // 菜单展开时：点菜单自己 → 交给它；点别处 → 先收起（收起后再判断要不要开始拖拽）
-  if (menuOpen) {
-    if (insideRect(menu, event.clientX, event.clientY)) return
-    closeMenu()
-  }
+  if (event.button !== 0) return // 右键留给菜单小窗，不参与拖拽
   if (!shouldBeInteractive(event.clientX, event.clientY)) return
   if (insideRect(composer, event.clientX, event.clientY)) return
   dragging = true
@@ -275,91 +265,24 @@ badge.addEventListener('click', (event) => {
 })
 
 // ── 右键菜单 ───────────────────────────────────────────────────────
-// 右下角那个 "点击回到 DSH" 的通知、徽标之外的第四块 UI。
-// ⚠️ 菜单必须出现在 visibleUiRects() 里，否则命中测试不认它 → 点不动（输入条踩过同样的坑）。
+// 菜单是**独立小窗**（main.js 的 openMenuWindow），不在本窗口里画 ——
+// 她本体占满 260×300，画在里面必然遮住她（实测反馈"会遮住桌宠本体"）。
+// 这边只负责：把数据和右键位置交给主进程 + 收到选择后执行动作。
 
-/** 大数字用人话显示：2.47 亿 比 247040500 好读得多 */
-function formatTokens(n) {
-  if (!Number.isFinite(n) || n <= 0) return '—'
-  if (n >= 1e8) return `${(n / 1e8).toFixed(2)} 亿`
-  if (n >= 1e4) return `${(n / 1e4).toFixed(1)} 万`
-  return String(Math.round(n))
-}
-
-function renderMenuStats() {
-  menuTokens.textContent = formatTokens(tokensView?.spendTokens)
-  const rate = tokensView?.cacheHitRate
-  menuCache.textContent = typeof rate === 'number' ? `${(rate * 100).toFixed(1)}%` : '—'
-  menuTokens.title = `来源：${tokensView?.tokenSource === 'host' ? '宿主（重启不丢）' : '插件自算'}`
-}
-
-/**
- * 她本体的最上沿（CSS px，相对窗口）—— 从上往下扫 alpha 掩码，第一行出现不透明像素的位置。
- *
- * 用途：菜单放在这条线**以上**就绝不会挡住本体。
- * 实测构图：内容 233×207 / 舞台 260×300，上方留白 87px —— 那就是菜单唯一能待的地方。
- * 用掩码算而不是写死 87：换模型、换窗口尺寸、用占位图降级时都自动跟着变。
- */
-function contentTopY() {
-  if (alphaMap === null || !mapW || !mapH) return 0
-  const rect = maskSource().getBoundingClientRect()
-  for (let v = 0; v < mapH; v++) {
-    const row = v * mapW
-    for (let u = 0; u < mapW; u++) {
-      if (alphaMap[row + u] > ALPHA_THRESHOLD) return rect.top + (v / mapH) * rect.height
-    }
-  }
-  return 0
-}
-
-function openMenu(clientX, clientY) {
-  renderMenuStats()
-  menu.hidden = false
-  const w = menu.offsetWidth
-  const h = menu.offsetHeight
-  const left = Math.min(Math.max(4, clientX - w / 2), Math.max(4, window.innerWidth - w - 4))
-  // 优先塞进"她头顶的留白带"里 —— 只有这样才能保证不挡本体。
-  // 留白不够（占位图以外的异常情况）才退回鼠标下方，并尽量贴边。
-  const bandBottom = contentTopY()
-  const top =
-    bandBottom - h - 4 >= 2
-      ? bandBottom - h - 4
-      : Math.min(Math.max(4, clientY + 10), Math.max(4, window.innerHeight - h - 4))
-  menu.style.left = `${Math.round(left)}px`
-  menu.style.top = `${Math.round(top)}px`
-  menuOpen = true
-  api.log(`右键菜单已打开（顶部留白 ${Math.round(bandBottom)}px，菜单高 ${h}px）`)
-  // 同时弹个问号 —— "你想干嘛？"
-  live2d?.pokeExpression('question', 1700)
-}
-
-function closeMenu() {
-  if (!menuOpen) return
-  menuOpen = false
-  menu.hidden = true
-}
-
-// 右键昔涟 → 菜单 + 问号表情。
+// 右键昔涟 → 弹菜单小窗 + 问号表情。
 // 注意 mousedown 里已按 `event.button !== 0` 挡掉右键，所以右键不会触发拖拽。
 window.addEventListener('contextmenu', (event) => {
   event.preventDefault()
-  if (insideRect(menu, event.clientX, event.clientY)) return // 在菜单上右键 = 什么都不做
-  if (!overOpaquePixel(event.clientX, event.clientY)) {
-    closeMenu()
-    return
-  }
-  if (menuOpen) {
-    closeMenu() // 再点一次收起
-    return
-  }
-  openMenu(event.clientX, event.clientY)
+  if (!overOpaquePixel(event.clientX, event.clientY)) return
+  live2d?.pokeExpression('question', 1700) // "你想干嘛？"
+  api
+    .openMenu({ x: event.screenX, y: event.screenY, tokens: tokensView })
+    .then((result) => api.log(`右键菜单小窗：${result?.ok ? '已弹出' : JSON.stringify(result)}`))
+    .catch((error) => api.log(`右键菜单小窗打开失败：${error?.message ?? error}`))
 })
 
-menu.addEventListener('click', (event) => {
-  const button = event.target.closest?.('.menu-item')
-  if (!button) return
-  const action = button.dataset.action
-  closeMenu()
+// 菜单里的动作在**这边**执行：派活要用输入条、打断要用 latestSessionId，上下文都在这边
+api.onMenuAction((action) => {
   if (action === 'prompt') {
     if (composer.hidden) toggleComposer()
     else composerInput.focus()
@@ -371,11 +294,6 @@ menu.addEventListener('click', (event) => {
       api.log(`菜单打断：${result?.status} ${JSON.stringify(result?.body)}`)
     })
   }
-})
-
-// Esc 收起
-window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') closeMenu()
 })
 
 // ── UI 状态 ─────────────────────────────────────────────────────────
@@ -516,12 +434,9 @@ api.onFrame((frame) => {
   if (typeof frame.primarySessionId === 'string' && frame.primarySessionId !== '') {
     latestSessionId = frame.primarySessionId
   }
-  // 用量视图（右键菜单要显示）。状态帧也带 —— 这样菜单里的数字是新鲜的，
+  // 用量视图（右键时交给菜单小窗）。状态帧也带 —— 这样数字是新鲜的，
   // 而不是停在 SSE 连接那一刻的 snapshot。
-  if (frame.tokens !== undefined) {
-    tokensView = frame.tokens
-    if (menuOpen) renderMenuStats()
-  }
+  if (frame.tokens !== undefined) tokensView = frame.tokens
   switch (frame.type) {
     case 'hello':
       api.log(`hello protocol=${frame.protocol}`)
@@ -616,12 +531,13 @@ async function startLive2D() {
       api.snapshotNow()
     }, info.snapshotAtMs)
   }
-  // 调试用：启动后自动展开右键菜单（PET_FORCE_MENU=1），配合 PET_SNAPSHOT 拍菜单
+  // 调试用：启动后自动展开右键菜单小窗（PET_FORCE_MENU=1），配合 PET_SNAPSHOT_MENU 拍菜单。
+  // 刻意等到 2.5s：要等 SSE 连上并收到带 tokens 的状态帧，拍出来才有真实数字。
   if (info.forceMenu) {
     setTimeout(() => {
-      api.log('调试模式：自动展开右键菜单')
-      openMenu(130, 150)
-    }, 1200)
+      api.log('调试模式：自动弹出右键菜单小窗')
+      api.openMenu({ tokens: tokensView }).catch(() => {})
+    }, 2500)
   }
   return true
 }

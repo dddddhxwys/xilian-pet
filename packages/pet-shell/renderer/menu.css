@@ -1,0 +1,84 @@
+/* 独立菜单小窗：整个窗口是透明的，只有面板本身可点。
+   尺寸由 main.js 的 MENU_WIDTH/MENU_HEIGHT 定死（窗口 resizable:false），
+   所以这里用 100% 铺满、不设自身尺寸，免得两边对不上。 */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+}
+
+#menu {
+  width: 100%;
+  height: 100%;
+  padding: 6px;
+  border-radius: 14px;
+  background: rgba(38, 32, 52, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+  color: #fff;
+  user-select: none;
+  /* 弹出时轻微放大淡入；窗口刚 show 就位，动画只是视觉润色 */
+  animation: menuIn 110ms ease-out;
+}
+
+@keyframes menuIn {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+.item:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+.item.danger {
+  color: #ffb3b3;
+}
+
+.sep {
+  height: 1px;
+  margin: 6px 8px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 3px 10px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.72);
+}
+.stat b {
+  color: #fff;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
