@@ -47,3 +47,45 @@ export function hitTest({ mask, uiRects, winWidth, winHeight, x, y, threshold = 
   }
   return { interactive: hitUi || hitMask, inWindow, hitUi, u, v, sampled }
 }
+
+/**
+ * 从 alpha 掩码里算出"角色本体"的竖直范围（CSS px，相对窗口顶）。
+ *
+ * 用途：右键菜单要跟**她的身体**对齐，而不是跟窗口的几何中心 ——
+ * 她头顶有约 87px 留白（实测构图），窗口几何中心比她身体中心高约 40px，
+ * 按窗口居中菜单会明显偏上（用户实测要求"与昔涟的身体对齐"）。
+ *
+ * 为什么用掩码而不是写死数值：换模型、换窗口尺寸、占位图降级时都自动跟着变。
+ *
+ * @param {Uint8Array|Uint8ClampedArray} mask 行优先的 alpha 掩码
+ * @param {number} maskWidth
+ * @param {number} maskHeight
+ * @param {number} winHeight 窗口高（CSS px / DIP）
+ * @param {number} [threshold] alpha 阈值
+ * @returns {{top:number, bottom:number, centerY:number}|null}
+ *          掩码里一个不透明像素都没有时返回 null（调用方退回窗口中心）
+ */
+export function contentBand(mask, maskWidth, maskHeight, winHeight, threshold = 24) {
+  if (!mask || !maskWidth || !maskHeight || !winHeight) return null
+  let first = -1
+  let last = -1
+  for (let v = 0; v < maskHeight; v++) {
+    const row = v * maskWidth
+    let hasPixel = false
+    for (let u = 0; u < maskWidth; u++) {
+      if (mask[row + u] > threshold) {
+        hasPixel = true
+        break
+      }
+    }
+    if (hasPixel) {
+      if (first < 0) first = v
+      last = v
+    }
+  }
+  if (first < 0) return null
+  const scale = winHeight / maskHeight
+  const top = first * scale
+  const bottom = (last + 1) * scale // 最后一行也算一格
+  return { top, bottom, centerY: (top + bottom) / 2 }
+}

@@ -8,8 +8,8 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 1932 行 / 外壳 13 文件 3157 行 / 工具 14 文件 3140 行，70 个提交 |
-| 自测 | `& $NODE tools\check-plugin.mjs` → **91 项全绿** |
+| 规模 | 插件 5 文件 1932 行 / 外壳 13 文件 3221 行 / 工具 14 文件 3170 行，71 个提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **93 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
 > 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
@@ -374,11 +374,14 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
 
 - 三个新文件：`renderer/menu.html` + `menu.css` + `menu.js`，桥是 `menu-preload.cjs`
 - 主进程 `openMenuWindow()`：**右优先**（右边放不下换左侧，两侧都不行才退回压在上面），
-  **竖直与桌宠窗口居中**（`pet.y + (300-172)/2`，即固定偏移 +64），夹在工作区内；
-  `MENU_WIDTH×MENU_HEIGHT = 236×172`
+  **竖直与她的「身体」居中**，夹在工作区内；`MENU_WIDTH×MENU_HEIGHT = 236×172`
   - ⚠️ 竖直**不能跟着右键的高度走**：用户实测反馈"菜单的位置有点歪" ——
-    点她身体中部时菜单从那个高度往下挂、底部吊到她脚下，点得高又顶到她头上，看着像跟桌宠脱开了。
-    桌宠窗口本来就小（260×300），固定"贴着她"才稳。实测日志 `菜单 y-桌宠 y = 64`，中心差 0。
+    点她身体中部时菜单从那个高度往下挂、底部吊到她脚下，看着像跟桌宠脱开了。
+  - ⚠️ 也**不能按窗口几何中心**：她头顶有约 87px 留白，窗口中心比她身体中心**高约 40px**，
+    按窗口居中的话菜单明显偏上。用户要求"**与昔涟的身体对齐**"。
+  - 正解：`contentBand()` 从 alpha 掩码里算出内容的竖直范围（实测 86..294，中心 190），
+    菜单中心对齐它。用掩码而不是写死数值 —— 换模型 / 换尺寸 / 占位图降级都自动跟着变；
+    掩码还没到就退回窗口中心。日志会把算出来的范围打出来便于复查。
 - 复用一个实例（`hide()` 而不是 `close()`，免得每次重开闪一下）；`blur` 自动收起；拖桌宠时也收起
 - ⚠️ **`menu:ready` 补发数据**：`loadFile()` 是异步的，`show()` 时主进程就 `send`，
   渲染端监听器还没注册 → **IPC 消息直接丢**，菜单里永远是"—"（实测踩到）。
@@ -614,7 +617,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 |---|---|
 | 插件被加载 | `/health` → `{"ok":true,"code":13,...}`（`messageFactory` 报官方 `module:file:///…app.asar/…/dsh-llm/lib/index.js`） |
 | **A6 派活端到端** | 用户在派活框输入的文字**真的到达了 agent**。客观判据：桌宠发的 `user/message` 的 `source` 只有 `{kind:'user'}`，而 GUI 发的带 `rpcId` —— 在 `/debug/shapes` 里一眼可分（实测同一条文案两种来源对比过） |
-| 插件自测 82 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / **waterfall 回归 + 负向对照** / **inject 静态扫描 + 负向对照** / **派活兜底 + resolveAgent 恢复 + 宿主会话枚举 + 只读诊断** / **外壳命中测试** / **活动摘要 + 通知帧** / 清理注销 |
+| 插件自测 93 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / **waterfall 回归 + 负向对照** / **inject 静态扫描 + 负向对照** / **派活兜底 + resolveAgent 恢复 + 宿主会话枚举 + 只读诊断** / **外壳命中测试 + contentBand 身体对齐** / **活动摘要 + 通知帧** / **token 四桶 + 宿主数据源 + 花销基线 + 清未读** / 清理注销 |
 | 版本兼容性 | Cubism Core `05.01.0000`，`MsvGetLatestMocVersion=5`，模型 moc3 版本号 5 |
 | 事件协议取自事实 | 59 个真实事件类型名、`SessionEventMap`、`StreamChunk`（正文在 `frame.chunk.text`）均来自 asar 类型清单 |
 | Live2D 模型渲染 | 4200×3500 加载成功，截图见 `docs/screenshots/` |
@@ -718,7 +721,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **`SetForegroundWindow` 返回 true 却没到前台** | 点了只闪一下任务栏 | Windows 前台锁 → 先 `AllowSetForegroundWindow(-1)` + `AttachThreadInput` 再设置；用 `GetForegroundWindow()` **复核**，别信返回值 |
 | **拿 `usage.totalTokens` 累加当用量** | `/state` 报出 **3390 万** tokens | `totalTokens` 含 `cacheReadTokens`（重发的整个上下文）→ 改**四桶**分别累加，并按 `(turn,step)` 增量替换（口径对齐宿主 `tokenMeter`） |
 | **拿「已报数」当花销提醒的基线** | 总数换成 durable 之后，DSH 一重启就炸一条"本会话已用约 **247040k** tokens" | 总数 durable 了、提醒基线还是易失的 → 改**基线制**：首次看到该会话时把当时的值记成基线，之后只对**新增**部分提醒（实测踩到） |
-| **`llm/retry-started` 不在 `EVENT_STATE` 里** | 处理分支放错位置会**静默变死代码** | 会被 `target === undefined` 提前 return → 必须放在状态映射**之前**（已有专门断言） |
+| **菜单竖直位置按窗口几何中心对齐** | 菜单比她的身体明显偏上 | 她头顶有 ~87px 留白 → 窗口中心比身体中心高 40px。改 `contentBand()`：从 alpha 掩码算内容竖直范围（实测 86..294 → 中心 190）再对齐 |
 | **菜单画在桌宠窗口里 → 遮住本体** | 用户实测："菜单的位置不对，会遮住桌宠本体" | 她占满 260×300，**只有头顶约 87px 是空的**，竖排四项菜单放不下 → 最终改成**独立小窗**在她旁边弹出。（中间的试错：先改紧凑两行塞进留白带能work，但样式受限） |
 | **`show()` 时 `send` 数据，渲染端监听还没注册** | 菜单里永远显示"—"（首次打开必现） | `loadFile()` 是异步的 → IPC 消息被丢。加 `menu:ready` 让主进程**补发**（与桌宠窗口 `pet:ready` 同一套路） |
 | **临时表情恢复时照搬"当前态"的表情** | 右键弹完问号后，她**卡在闭眼笑**上不再恢复（用户实测："问号消失，出现如图表情"） | `done` 是 `{once:true, expression:'happy'}`（闭眼笑，演完就该撤）。恢复时照搬 `STATE_MAP['done'].expression` 等于**把一次性特效复活**，而且不会再有人来清。→ 一次性且无 `keepEffect` 的态恢复成**基础表情**（A/B 抓图对照验证过） |
@@ -812,7 +815,7 @@ docs/
   Live2D约稿单.md                    委托说明（已暂缓，将来换自研形象可启用）
   screenshots/                      实机自检截图（含第三方角色，默认 gitignore）
 tools/
-  check-plugin.mjs                  自测（91 项断言，含外壳命中测试，不需要 DSH）
+  check-plugin.mjs                  自测（93 项断言，含外壳命中测试，不需要 DSH）
   tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）

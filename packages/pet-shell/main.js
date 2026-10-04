@@ -14,7 +14,7 @@ import { app, BrowserWindow, globalShortcut, ipcMain, protocol, screen } from 'e
 import { execFile } from 'node:child_process'
 import http from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs'
-import { hitTest } from './hit-test.js'
+import { contentBand, hitTest } from './hit-test.js'
 import { readFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -725,12 +725,16 @@ app.whenReady().then(async () => {
     if (x + MENU_WIDTH > area.x + area.width) x = pet.x - MENU_WIDTH - 6
     if (x < area.x) x = pet.x + Math.round((pet.width - MENU_WIDTH) / 2)
 
-    // 竖直：与桌宠窗口**垂直居中**，而不是跟着右键的高度走。
-    // 用户实测反馈"菜单的位置有点歪"：跟着鼠标走时，点得低菜单就吊在她脚下、
-    // 点得高又顶到她头上，看着像跟桌宠脱开了。桌宠窗口本来就小（260×300），
-    // 固定"贴着她"才稳。
-    const centered = pet.y + (pet.height - MENU_HEIGHT) / 2
-    const y = Math.min(Math.max(area.y + 4, Math.round(centered)), area.y + area.height - MENU_HEIGHT - 4)
+    // 竖直：与**她的身体**居中，而不是窗口的几何中心。
+    // 她头顶有约 87px 留白（实测构图），窗口中心比她身体中心高约 40px ——
+    // 按窗口居中的话菜单会明显偏上；用户实测要求"与昔涟的身体对齐"。
+    // 身体范围从 alpha 掩码算（contentBand），掩码还没到就退回窗口中心。
+    const band = contentBand(alphaMask?.data, alphaMask?.width, alphaMask?.height, pet.height, HIT_ALPHA_THRESHOLD)
+    const bodyCenterY = pet.y + (band === null ? pet.height / 2 : band.centerY)
+    const y = Math.min(
+      Math.max(area.y + 4, Math.round(bodyCenterY - MENU_HEIGHT / 2)),
+      area.y + area.height - MENU_HEIGHT - 4,
+    )
 
     const w = ensureMenuWindow()
     w.setBounds({ x: Math.round(x), y, width: MENU_WIDTH, height: MENU_HEIGHT })
@@ -740,7 +744,10 @@ app.whenReady().then(async () => {
     w.webContents.send('menu:data', lastMenuData)
     w.show()
     w.focus() // 要焦点才能靠 blur 自动收起（Esc 也才好用）
-    log(`右键菜单小窗：桌宠(${pet.x},${pet.y} ${pet.width}×${pet.height}) → 菜单(${Math.round(x)},${y})`)
+    log(
+      `右键菜单小窗：桌宠(${pet.x},${pet.y} ${pet.width}×${pet.height}) → 菜单(${Math.round(x)},${y})；` +
+        `身体竖直范围 ${band === null ? '未知（退回窗口中心）' : `${Math.round(band.top)}..${Math.round(band.bottom)}，中心 ${Math.round(band.centerY)}`}`,
+    )
     if (process.env.PET_SNAPSHOT_MENU) captureMenuSnapshot(w)
     return { ok: true, bounds: w.getBounds() }
   }

@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { apply, inject as pluginInject } from '../packages/pet-plugin/index.js'
-import { hitTest, insideAnyRect } from '../packages/pet-shell/hit-test.js'
+import { contentBand, hitTest, insideAnyRect } from '../packages/pet-shell/hit-test.js'
 import {
   activityLabel,
   aggregate,
@@ -1611,6 +1611,36 @@ check('insideAnyRect 边界：闭区间', () => {
   assert.equal(insideAnyRect(rects, 30, 30), true, '右下角算命中')
   assert.equal(insideAnyRect(rects, 30.1, 30), false)
   assert.equal(insideAnyRect(null, 10, 10), false, 'rects 不是数组时不能抛')
+})
+
+// ── 菜单竖直对齐：从掩码算"她的身体"范围 ────────────────────────────
+check('contentBand：按真实构图数据算，身体中心比窗口中心低约 40px', () => {
+  // 真实构图（实拍日志）：内容 233×207 / 舞台 260×300，上方留白 87px
+  // → 内容竖直范围 87..294。掩码是 150 行对 300px（2px 一行）。
+  const maskW = 130
+  const maskH = 150
+  const data = new Uint8Array(maskW * maskH)
+  const topRow = Math.floor(87 / 2) // 43 → 覆盖 86..88
+  const bottomRow = Math.ceil(294 / 2) - 1 // 146 → 覆盖 292..294
+  for (let v = topRow; v <= bottomRow; v++) for (let u = 0; u < maskW; u++) data[v * maskW + u] = 255
+
+  const band = contentBand(data, maskW, maskH, 300)
+  assert.ok(band, '应算出范围')
+  assert.equal(band.top, 86)
+  assert.equal(band.bottom, 294)
+  assert.equal(band.centerY, 190)
+  // 菜单要按这个中心对齐：窗口几何中心是 150，身体中心是 190 —— 差 40px
+  assert.equal(band.centerY - 300 / 2, 40, '这就是"按窗口居中会偏上 40px"的来源')
+})
+
+check('contentBand：空白掩码返回 null；低于阈值的像素不算内容', () => {
+  assert.equal(contentBand(null, 10, 10, 300), null, '没有掩码')
+  assert.equal(contentBand(new Uint8Array(100), 10, 10, 300), null, '全透明 → null（调用方退回窗口中心）')
+  const faint = new Uint8Array(100)
+  faint[55] = 10 // 低于默认阈值 24
+  assert.equal(contentBand(faint, 10, 10, 300), null, '淡到阈值的像素不算她')
+  faint[55] = 200
+  assert.ok(contentBand(faint, 10, 10, 300), '超过阈值才算')
 })
 
 console.log(`\n${'─'.repeat(56)}`)
