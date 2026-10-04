@@ -590,7 +590,21 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cache
       return
     }
     const mapped = STATE_MAP[state.currentState]
-    if (mapped?.once) returnToBaseMotion()
+    if (mapped?.once) {
+      returnToBaseMotion()
+      return
+    }
+    // ⚠️ 非一次性状态（idle / running / question / error）本该**一直循环**，
+    //    正常永远不会收到 motionFinish。收到了就说明循环没生效
+    //    （setIsLoop 没设上、被别的动作打断、或库把循环当成一次播放）。
+    //
+    //    这里必须**重开**，否则她会停在最后一帧完全不动 ——
+    //    实机症状就是"长时间待机之后退出待机动作"：
+    //    待机用的是 Scene[3]（荡秋千），模型里它的时长是 **180 秒**，
+    //    所以表现为"待机几分钟后就不动了"，而不是"一看就坏"。
+    const index = mapped?.motion ?? BASE_MOTION
+    state.log(`⚠️ 非一次性动作 Scene[${index}] 收到 motionFinish（循环未生效）→ 重新开始`)
+    startMotion(index, true)
   })
 
   // 起始动作：默认荡秋千。调试时可用 PET_FORCE_MOTION=Scene:N 指定。

@@ -312,6 +312,15 @@ function pushLink(win, link) {
  */
 let frameEffects = null
 
+/**
+ * 调试：PET_FORCE_STATE=<state> 期间，**所有**出站状态帧都改写成它。
+ *
+ * 为什么需要改写而不是只推一次：真实状态帧随后就到、会把强制状态覆盖掉。
+ * 实测踩到：强制 idle 之后 agent 一动就变回 running，
+ * 于是"长时间待机"这类场景**永远复现不出来**。FORCE 就该是 FORCE。
+ */
+const FORCED_STATE = process.env.PET_FORCE_STATE ?? null
+
 function startSse(win) {
   const url = new URL(`${ROUTE_PREFIX}/events`, DSH_URL)
   sseRequest = http.get(url, (res) => {
@@ -346,6 +355,10 @@ function startSse(win) {
               frameEffects?.(frame)
             } catch (error) {
               log('frame effect failed:', error?.message ?? error)
+            }
+            // 调试：强制状态期间改写所有状态帧（否则真实状态会把它覆盖掉）
+            if (FORCED_STATE !== null && (frame.type === 'state' || frame.type === 'snapshot')) {
+              frame.state = FORCED_STATE
             }
             // 这一句必须**无条件**执行 —— 它是桌宠活着的前提
             send(win, 'pet:frame', frame)
