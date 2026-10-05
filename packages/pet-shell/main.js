@@ -175,10 +175,37 @@ function initLogFile() {
  * 构建指纹：用来一眼确认"用户到底重启到新代码没有"。
  * 排查时最怕的就是"修了但跑的还是旧代码"（这个也踩过）。
  */
+/**
+ * 构建指纹：用来一眼确认"用户到底重启到新代码没有"。
+ * 排查时最怕的就是"修了但跑的还是旧代码"（这个也踩过）。
+ *
+ * ⚠️ 必须把 **UI 文件也纳入** —— 早先只盖 main/live2d/motion-policy 三个，
+ *    结果"去掉光晕"（纯 CSS）这类改动**无法从日志判断有没有生效**（这次就踩了）。
+ * ⚠️ 短名要保留扩展名：否则 `pet.js` 与 `pet.css` 都缩成 `pet`，行里出现两个 `pet=` 没法分辨。
+ */
+const STAMP_FILES = [
+  'main.js',
+  'hit-test.js',
+  'renderer/pet.js',
+  'renderer/pet.css',
+  'renderer/index.html',
+  'renderer/live2d.js',
+  'renderer/motion-policy.js',
+  'renderer/menu.js',
+  'renderer/menu.css',
+  'renderer/menu.html',
+  'renderer/approval.js',
+  'renderer/approval.css',
+  'renderer/approval.html',
+]
+
 function buildStamp() {
   try {
-    const hash = (file) => createHash('sha1').update(readFileSync(join(here, file))).digest('hex').slice(0, 8)
-    return `main=${hash('main.js')} live2d=${hash('renderer/live2d.js')} motion=${hash('renderer/motion-policy.js')}`
+    return STAMP_FILES.map((file) => {
+      const short = file.replace(/^renderer\//, '')
+      const hash = createHash('sha1').update(readFileSync(join(here, file))).digest('hex').slice(0, 6)
+      return `${short}=${hash}`
+    }).join(' ')
   } catch {
     return 'build=?'
   }

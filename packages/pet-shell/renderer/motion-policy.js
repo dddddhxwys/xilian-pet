@@ -73,6 +73,49 @@ export function planParamTransition(applied, mapped) {
 }
 
 /**
+ * 道具渐变的插值 —— 纯函数，便于自测。
+ *
+ * ⚠️ 为什么需要渐变：切到"不播动作"的状态（running）时，如果把 32 个道具参数
+ *    **一帧内清零**，秋千绳/秋千道具会**瞬间消失**、思考姿势**瞬间出现** ——
+ *    实机观感就是"荡秋千 → 思考中间没有衔接"（用户原话）。
+ *    改成约 300ms 的缓出渐变，两个方向都有过渡。
+ *
+ * @param {Record<string, number>} from 起始值（一般是"当前实际值"）
+ * @param {Record<string, number>} to   目标值
+ * @param {number} progress 0..1
+ * @returns {Record<string, number>} 该写进模型的参数
+ */
+export function fadeProps(from, to, progress) {
+  const t = Math.max(0, Math.min(1, Number.isFinite(progress) ? progress : 1))
+  const eased = 1 - Math.pow(1 - t, 3) // easeOutCubic：起步快、收尾稳
+  const ids = new Set([...Object.keys(from ?? {}), ...Object.keys(to ?? {})])
+  const out = {}
+  for (const id of ids) {
+    const a = from?.[id] ?? 0
+    const b = to?.[id] ?? 0
+    out[id] = a + (b - a) * eased
+  }
+  return out
+}
+
+/**
+ * 某个状态的"道具目标值"。
+ *
+ * 规则：所有道具开关先归 **0**（把上一个动作留下的绳子/手/叉腰等全关掉），
+ * 再叠加**本状态自己**要开的（如 running 的 `Param9`）。
+ * 这样切到 running 时 = 全身道具平滑熄掉、只剩思考 ✓ 不会出现"残道具叠多手多脚"。
+ *
+ * @param {{params?: Record<string, number>}|undefined} mapped 状态映射
+ * @param {string[]} propIds 道具参数 id 列表（`Param`/`Param2..Param32`）
+ */
+export function propTargetsFor(mapped, propIds) {
+  const out = {}
+  for (const id of propIds) out[id] = 0
+  for (const [id, value] of Object.entries(mapped?.params ?? {})) out[id] = value
+  return out
+}
+
+/**
  * @param {object} p
  * @param {number|null} p.currentMotion 目前记录的动作下标（startMotion 时写入）
  * @param {string} p.currentState       桌宠状态名

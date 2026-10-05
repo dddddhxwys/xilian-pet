@@ -22,7 +22,9 @@ import {
   INTRO_MOTION,
   STATE_MAP,
   decideOnMotionFinish,
+  fadeProps,
   planParamTransition,
+  propTargetsFor,
 } from '../packages/pet-shell/renderer/motion-policy.js'
 import {
   activityLabel,
@@ -1855,6 +1857,35 @@ check('切状态时 Param9「思考」必须被撤掉 【否则干完活还一�
 
   // 一直待在 running → 不清
   assert.deepEqual(planParamTransition({ Param9: 1 }, STATE_MAP.running).clear, [])
+})
+
+check('道具渐变：切到 running 时不能瞬间清零 【用户："荡秋千到思考中间没有衔接"】', () => {
+  // 场景：她正在荡秋千（道具被动作驱动），此时状态切到 running（不播动作）。
+  // 若一帧内把 32 个道具参数清零 → 秋千瞬间消失、思考姿势瞬间出现 → "没有衔接" ✗
+  // 所以要一段 easeOutCubic 渐变。
+  const from = { Param16: 1, Param32: 1, Param9: 0 } // 秋千绳/秋千开关 开着
+  const to = propTargetsFor(STATE_MAP.running, ['Param9', 'Param12', 'Param16', 'Param32'])
+  assert.deepEqual(to, { Param9: 1, Param12: 0, Param16: 0, Param32: 0 }, '目标：全身道具熄灭、只留 Param9')
+
+  // 起点：原来的值原样保留（并集里目标新增的键从 0 起）
+  const atStart = fadeProps(from, to, 0)
+  assert.equal(atStart.Param16, 1, '起点：秋千绳还在')
+  assert.equal(atStart.Param32, 1, '起点：秋千开关还开着')
+  assert.equal(atStart.Param9, 0, '起点：思考还没起')
+  assert.equal(atStart.Param12, 0, '起点：目标里新增的键从 0 起')
+  // 终点：落到目标
+  assert.deepEqual(fadeProps(from, to, 1), to)
+  // 中途：必须是**过渡值**，不能等于起点或终点（否则就是硬切）
+  const mid = fadeProps(from, to, 0.5)
+  assert.ok(mid.Param16 > 0 && mid.Param16 < 1, `Param16 中途应在 0..1（实际 ${mid.Param16}）`)
+  assert.ok(mid.Param9 > 0 && mid.Param9 < 1, `Param9 中途应在 0..1（实际 ${mid.Param9}）`)
+  // easeOutCubic：过半时已走过 ~87.5%，所以只剩不到 1/4
+  assert.ok(mid.Param16 < 0.25, `easeOut 半小时应基本走完（实际 ${mid.Param16}）`)
+  // 越界进度要夹住
+  assert.deepEqual(fadeProps(from, to, 2), to)
+  const atNeg = fadeProps(from, to, -1)
+  assert.equal(atNeg.Param16, 1, '负进度夹到起点')
+  assert.equal(atNeg.Param9, 0, '负进度夹到起点')
 })
 
 // ─────────────────────────────────────────────────────────────

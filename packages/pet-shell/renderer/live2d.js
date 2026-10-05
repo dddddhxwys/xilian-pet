@@ -57,7 +57,9 @@ import {
   INTRO_MOTION,
   STATE_MAP,
   decideOnMotionFinish,
+  fadeProps,
   planParamTransition,
+  propTargetsFor,
 } from './motion-policy.js'
 
 /**
@@ -503,6 +505,8 @@ function applyState() {
   const mapped = STATE_MAP[state.currentState] ?? STATE_MAP.idle
   if (mapped.params && Object.keys(mapped.params).length) setParams(mapped.params)
   if (state.currentState === 'error') setParams(ERROR_FACE)
+  // 道具渐变（running 的"荡秋千 → 思考"过渡）：位置在状态参数之后，才能盖过它们
+  stepPropFade(performance.now())
   // 眨眼也在这里输出 —— 位置在动作之后，才能压过被动作冻结的眼睛参数
   applyBlink(performance.now())
 }
@@ -707,34 +711,60 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cache
 }
 
 /**
- * 把所有"道具开关"参数归零。
- *
- * ⚠️ 这是"三只手"的真因：模型的手/道具是**开关参数**画上去的
- *    （`Param9` 思考的手、`Param12` 手指、`Param16` 绳子、`Param17/18` 叉腰…），
- *    而 `stopAllMotions()` **不会**把它们关掉 —— 上个动作留下的道具会挂着，
- *    与本状态该有的道具叠在一起 → **多出一只手**（用户报的"变成三只手了"）。
- *
- * 归零后由 `applyState` 每帧重新施加本状态真正要的参数（如 running 的 `Param9`）。
- * 只动 `Param`/`Param2..Param32` 这些编号开关，不碰眼/嘴/角度/呼吸（那些由眨眼逻辑负责）。
+ * 所有"道具开关"参数 id（`Param`/`Param2..Param32`）。
+ * 模型的手/道具都是这些开关画上去的，切换状态时必须整组处理。
  */
-function clearPropParams() {
-  const ids = Object.keys(WATCH_PARAMS).filter((id) => /^Param\d*$/.test(id))
-  const zero = {}
-  for (const id of ids) zero[id] = 0
-  setParams(zero)
-  return ids.length
+const PROP_PARAM_IDS = Object.keys(WATCH_PARAMS).filter((id) => /^Param\d*$/.test(id))
+
+/**
+ * 道具渐变（约 300ms）。
+ *
+ * ⚠️ 为什么不是瞬间清零：切到 running（不播动作）时若一帧内把道具全清零，
+ *    秋千道具会**瞬间消失**、思考姿势**瞬间出现** —— 用户原话"荡秋千到思考中间没有衔接"。
+ *    用缓出渐变后两个方向都有过渡。
+ */
+const PROP_FADE_MS = 300
+let propFade = null
+
+/** 用**当前实际值**作为起点，开始一段道具渐变 */
+function startPropFade(targets, durationMs = PROP_FADE_MS) {
+  const core = state.model?.internalModel?.coreModel
+  const from = {}
+  for (const id of Object.keys(targets)) {
+    let value = 0
+    try {
+      value = core?.getParameterValueById?.(id) ?? 0
+    } catch {
+      value = 0
+    }
+    from[id] = value
+  }
+  propFade = { from, to: { ...targets }, t0: performance.now(), durationMs }
+  return propFade
+}
+
+/** 每帧推进道具渐变；返回是否还在渐变中 */
+function stepPropFade(now) {
+  if (propFade === null) return false
+  const progress = propFade.durationMs <= 0 ? 1 : (now - propFade.t0) / propFade.durationMs
+  setParams(fadeProps(propFade.from, propFade.to, progress))
+  if (progress >= 1) propFade = null
+  return true
+}
+
+/** 直接结束渐变（切到有动作的状态时用：接下来交给动作驱动） */
+function cancelPropFade() {
+  propFade = null
 }
 
 /**
- * 停掉所有动作 + **关掉所有道具开关** —— 用于"这个状态不播动作"（`motion === null`，目前是 running）。
+ * 停掉所有动作（**不动参数**）—— 参数由调用方决定是渐变还是立即。
  */
 function stopAllMotions() {
   try {
     state.model?.internalModel?.motionManager?.stopAllMotions?.()
-    const n = clearPropParams()
-    state.log(`已停掉动作，并把 ${n} 个道具开关归零（避免残姿/残道具叠成多手多脚）`)
   } catch (error) {
-    state.log(`停动作/清道具失败：${error?.message ?? error}`)
+    state.log(`停动作失败：${error?.message ?? error}`)
   }
   currentMotion = null
 }
@@ -932,10 +962,16 @@ function applyStateMotion(next, animate) {
   //    用荡秋千又与 Param9 的手叠加成**三只手**（用户实测）。
   if (mapped.motion === null) {
     stopAllMotions()
-    state.log(`状态 ${next}：不播动作（只保留参数效果，如 Param9「思考」）`)
+    // ⚠️ 用**渐变**熄掉所有道具、同时点起本状态自己的（如 Param9）——
+    //    瞬间清零就是"荡秋千到思考中间没有衔接"（用户实测）。
+    startPropFade(propTargetsFor(mapped, PROP_PARAM_IDS))
+    state.log(`状态 ${next}：不播动作（道具 ${PROP_FADE_MS}ms 渐变过渡，只保留 Param9「思考」）`)
     oneShotUntil = 0
     return
   }
+
+  // 切到"有动作"的状态：动作会自己驱动参数，先取消道具渐变免得打架
+  cancelPropFade()
 
   // idle 与 running 之外的状态若共用同一动作：来回切时不要重开，避免"画面一顿"。
   // （万一它其实已经停了，巡检 3 秒内会重开，见 motionWatchdog。）
