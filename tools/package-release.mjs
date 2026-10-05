@@ -17,7 +17,7 @@ import { cpSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { collectReleaseFiles, requiredInRelease } from './lib/release-files.mjs'
+import { collectReleaseFiles, nodeRuntimeFiles, requiredInRelease } from './lib/release-files.mjs'
 import { writeZipFile } from './lib/zip-writer.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -26,26 +26,44 @@ const ROOT = join(here, '..')
 const argv = process.argv.slice(2)
 const withModel = argv.includes('--with-model')
 const withElectron = argv.includes('--with-electron')
+const withNode = argv.includes('--with-node')
 const dryRun = argv.includes('--dry-run')
 const outArg = argv.find((a) => a.startsWith('--out='))?.split('=')[1]
 
 const STAGE_ROOT = join(ROOT, '.release')
 const PKG_NAME = 'xilian-pet'
 const STAGE_DIR = join(STAGE_ROOT, PKG_NAME)
-const zipPath = outArg ?? join(ROOT, 'dist-release', `${PKG_NAME}${withElectron ? '-full' : ''}.zip`)
+const suffix = withNode ? '-allinone' : withElectron ? '-full' : ''
+const zipPath = outArg ?? join(ROOT, 'dist-release', `${PKG_NAME}${suffix}.zip`)
 
 /** 递归遍历在 tools/lib/release-files.mjs 里（那边才测得到，见那个文件的注释） */
 
 console.log('昔涟桌宠 · 打发行包')
 console.log('─'.repeat(56))
 console.log(`  仓库根   : ${ROOT}`)
-console.log(`  形态     : ${withElectron ? '完整版（含 Electron 367 MB）' : '精简版'}${withModel ? ' + 模型' : ''}`)
+console.log(
+  `  形态     : ${withElectron ? '含 Electron' : '不含 Electron'}${withModel ? ' + 模型' : ''}${withNode ? ' + 便携 Node' : ''}`,
+)
 console.log(`  输出     : ${zipPath}`)
 console.log(`  模式     : ${dryRun ? '只列清单（--dry-run）' : '实际打包'}`)
 console.log('')
 
 const all = collectReleaseFiles(ROOT, { withModel, withElectron })
 const included = all
+
+// 便携 Node 从 .cache/ 拷进来（名字与源路径不同，所以单独处理）
+const extras = []
+if (withNode) {
+  for (const entry of nodeRuntimeFiles(ROOT)) {
+    if (!existsSync(entry.src)) {
+      console.error(`❌ 缺少 ${entry.src}`)
+      console.error('   先跑一次：node tools/fetch-node.mjs')
+      process.exit(1)
+    }
+    extras.push(entry)
+  }
+}
+
 let bytes = 0
 for (const rel of included) {
   try {
@@ -54,12 +72,15 @@ for (const rel of included) {
     /* 忽略读不到的 */
   }
 }
-console.log(`  收录 ${included.length} 个文件，共 ${(bytes / 1024 / 1024).toFixed(2)} MB（未压缩）`)
+for (const e of extras) bytes += statSync(e.src).size
+console.log(`  收录 ${included.length + extras.length} 个文件，共 ${(bytes / 1024 / 1024).toFixed(2)} MB（未压缩）`)
 console.log(`  （整目录级的排除在遍历时就跳过了；这里的数字是**逐个判定过**的文件）`)
+if (extras.length > 0) console.log(`  其中便携 Node：${extras.map((e) => e.name).join(', ')}`)
 console.log('')
 
 // ── 自检：必需文件都在吗 ──────────────────────────────────────────
-const missing = requiredInRelease({ withModel }).filter((rel) => !included.includes(rel))
+const includedNames = [...included, ...extras.map((e) => e.name)]
+const missing = requiredInRelease({ withModel, withElectron, withNode }).filter((rel) => !includedNames.includes(rel))
 if (missing.length > 0) {
   console.error('❌ 缺少必需文件，发行包会跑不起来：')
   for (const m of missing) console.error(`     ${m}`)
@@ -68,10 +89,13 @@ if (missing.length > 0) {
 console.log('  ✅ 必需文件齐全')
 
 // ── 体积提示 ─────────────────────────────────────────────────────
+if (withNode) {
+  console.log('  ℹ️  内含便携 Node：朋友**不需要**预装 Node.js / DSH 也能跑起来')
+}
 if (withElectron) {
-  console.log('  ⚠️  完整版含 367 MB Electron，zip 后约 140~160 MB —— 适合网盘，不适合聊天软件直发')
+  console.log('  ⚠️  含 367 MB Electron，zip 后约 140~160 MB —— 适合网盘，不适合聊天软件直发')
 } else {
-  console.log('  ℹ️  精简版不含 Electron：朋友首次运行会自动下载（约 100 MB，走华为云镜像）')
+  console.log('  ℹ️  不含 Electron：朋友首次运行会自动下载（约 100 MB，走华为云镜像）')
 }
 
 if (dryRun) {
@@ -95,12 +119,27 @@ for (const rel of included) {
     console.warn(`  ⚠️  跳过 ${rel}：${error.message}`)
   }
 }
+// 便携 Node：源在 .cache/，包内名字是 node/（见 nodeRuntimeFiles 的注释）
+for (const entry of extras) {
+  const to = join(STAGE_DIR, entry.name)
+  try {
+    mkdirSync(dirname(to), { recursive: true })
+    cpSync(entry.src, to)
+    copied++
+  } catch (error) {
+    console.error(`❌ 复制便携 Node 失败（${entry.name}）：${error.message}`)
+    process.exit(1)
+  }
+}
 console.log(`  复制了 ${copied} 个文件`)
 
 console.log('\n压缩…')
 mkdirSync(dirname(zipPath), { recursive: true })
 rmSync(zipPath, { force: true })
-const files = included.map((rel) => ({ name: `${PKG_NAME}/${rel}`, absPath: join(STAGE_DIR, rel) }))
+const files = [
+  ...included.map((rel) => ({ name: `${PKG_NAME}/${rel}`, absPath: join(STAGE_DIR, rel) })),
+  ...extras.map((e) => ({ name: `${PKG_NAME}/${e.name}`, absPath: join(STAGE_DIR, e.name) })),
+]
 const zipInfo = writeZipFile(zipPath, files, { log: (m) => console.log(m) })
 if (!existsSync(zipPath)) {
   console.error('\n❌ 压缩失败：没有生成 zip')

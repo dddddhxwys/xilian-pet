@@ -101,6 +101,21 @@ export function requiredInRelease(options = {}) {
     ...VENDOR_FILES,
     ...(options.withModel ? ['assets/live2d/Cyrene/Cyrene.model3.json', 'assets/live2d/Cyrene/Cyrene.moc3'] : []),
     ...(options.withElectron ? ['node_modules/electron/dist/electron.exe'] : []),
+    ...(options.withNode ? ['node/node.exe'] : []),
+  ]
+}
+
+/**
+ * 便携 Node 的源文件：**在 `.cache/` 里**（不进 git、也不该进包），
+ * 打包时会被拷成包内的 `node/` 目录 —— 这样 `安装.cmd` 的
+ * `"%~dp0node\node.exe"` 就能找到它，朋友不需要预装任何东西。
+ *
+ * 名字与源路径不同，所以单独返回 { name, src } 而不是相对路径。
+ */
+export function nodeRuntimeFiles(root) {
+  return [
+    { name: 'node/node.exe', src: join(root, '.cache', 'node', 'node.exe') },
+    { name: 'node/LICENSE', src: join(root, '.cache', 'node', 'LICENSE') },
   ]
 }
 

@@ -31,7 +31,7 @@ import {
 } from '../packages/pet-shell/hit-test.js'
 import { createSseLink } from '../packages/pet-shell/sse-link.js'
 import { addPluginRow, looksLikeProfilePatch, pluginRowSnippet } from './lib/patch-edit.mjs'
-import { requiredInRelease, collectReleaseFiles, shouldDescend, shouldInclude } from './lib/release-files.mjs'
+import { collectReleaseFiles, nodeRuntimeFiles, requiredInRelease, shouldDescend, shouldInclude } from './lib/release-files.mjs'
 import { writeZipToBuffer } from './lib/zip-writer.mjs'
 import {
   BASE_MOTION,
@@ -2930,6 +2930,34 @@ check('发行包清单：安装脚本的日志不该跟着发行包走', () => {
   // 看到上一批人的日志（也白涨体积）
   for (const rel of ['setup-log.txt', 'install-log.txt']) {
     assert.equal(shouldInclude(rel, { withModel: true }), false, `${rel} 不该进包`)
+  }
+})
+
+check('发行包：便携 Node 的源在 .cache、包内名字必须是 node/（两者不能混）', () => {
+  // 为什么单独一条：node.exe 的来源（.cache，不进 git）和它在包内的位置（node/，
+  // 安装脚本按 "%~dp0node\node.exe" 找它）**故意不同** —— 这条约定错了，
+  // 朋友会拿到一个"包里明明有 node.exe 但脚本找不到"的版本。
+  const files = nodeRuntimeFiles('/repo')
+  assert.deepEqual(
+    files.map((f) => f.name),
+    ['node/node.exe', 'node/LICENSE'],
+    '包内路径必须是 node/xxx',
+  )
+  for (const f of files) {
+    assert.ok(f.src.includes('.cache'), `${f.name} 的源应在 .cache 里（不该进 git、也不该被遍历收进包）`)
+  }
+  assert.ok(requiredInRelease({ withNode: true }).includes('node/node.exe'), 'withNode 时必需清单要含 node/node.exe')
+  assert.ok(!requiredInRelease({}).includes('node/node.exe'), '不开 --with-node 时不该要求它')
+})
+
+check('两个 `.cmd` 都要能找到包内的便携 Node（零前置版的关键）', () => {
+  // 漏了这个的后果：包里明明带着 node.exe，启动器却只找 DSH 运行时和 PATH
+  // → 在"什么都没有"的朋友机器上，装完了却**启动不起来**。
+  // 实测踩过：只给 安装.cmd 加了这条，忘了 start-pet.cmd。
+  for (const rel of ['安装.cmd', 'start-pet.cmd']) {
+    const src = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
+    assert.ok(src.includes('%~dp0node\\node.exe'), `${rel} 里缺少包内 Node 的查找（%~dp0node\\node.exe）`)
+    assert.ok(src.includes('dsh-runtimes'), `${rel} 里缺少 DSH 运行时的查找`)
   }
 })
 
