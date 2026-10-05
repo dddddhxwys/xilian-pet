@@ -240,7 +240,17 @@ export const FLICK_PRESETS = {
     freqHz: 1.5,
     decayMs: 620,
     move: null,
-    amp: { Param23: 14, Param24: 14, Param19: 8, Param20: 8, ParamBodyAngleZ: 4 },
+    /**
+     * ⚠️ 幅度是**实测调出来的**，不是拍的：用内置参数采样器（PET_SAMPLE_PARAMS=1）
+     *    看荡秋千时到底哪些参数在动 —— 结果 `Param23/24 秋千摇晃` 本身就在 ±30° 扫动，
+     *    所以只加 ±9° 会被完全淹没（用户实测："有眨眼，但是秋千不晃"）✗
+     *
+     * 两条对策：
+     *  ① 驱动参数（23/24/19/20）幅度提到与动作**同量级**，才叠得出来
+     *  ② 优先用**动作没驱动的自由参数**（`ParamBodyAngleZ` 不在采样清单里）——
+     *     它的位移 100% 显现，是"整体晃一下"最可靠的杠杆
+     */
+    amp: { ParamBodyAngleZ: 10, ParamBodyAngleX: 6, Param23: 24, Param24: 24, Param19: 12, Param20: 12 },
   },
 }
 
