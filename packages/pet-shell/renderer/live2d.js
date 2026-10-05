@@ -1008,6 +1008,16 @@ const NEUTRAL_HANDS = {
 let handMix = null
 /** 上一次"手部姿势特殊"的状态（决定要不要起过渡） */
 let handState = null
+/**
+ * 我们**上一次真正写下去**的手部参数值。
+ *
+ * ⚠️ 这是"过渡会弹两下"的修复关键：
+ *    原来每帧都写 `lerp(动作本帧的值, 目标, 进度)` —— 到了第二段，起点又变回"动作的值"，
+ *    于是两段交界处会**弹回去一次**，一次过渡看起来就是弹两下（用户实测："手会很快速地弹两下"）。
+ *    改成以"我们上一次写下的值"为起点后，第二段从第一段的终点接着走，全程单调、无回弹 ✓
+ *    （读动作的值只在"从没写过"时用作兜底。）
+ */
+let lastHandValues = {}
 
 function readParamValue(id) {
   try {
@@ -1022,7 +1032,8 @@ function readParamValue(id) {
  * @param {Record<string, number>|null} inTarget 第二段目标；null = 混回动作自己的值（离开 running）
  */
 function startHandPoseMix(inTarget) {
-  const secondStep = inTarget === null ? { release: NEUTRAL_HANDS, durMs: HAND_MIX_IN_MS } : { to: inTarget, durMs: HAND_MIX_IN_MS }
+  const secondStep =
+    inTarget === null ? { release: NEUTRAL_HANDS, durMs: HAND_MIX_IN_MS } : { to: inTarget, durMs: HAND_MIX_IN_MS }
   handMix = { steps: [{ to: NEUTRAL_HANDS, durMs: HAND_MIX_OUT_MS }, secondStep], step: 0, t0: performance.now() }
 }
 
@@ -1034,18 +1045,20 @@ function stepHandPoseMix(now) {
   const eased = 1 - Math.pow(1 - progress, 3) // easeOutCubic
   const out = {}
   if (current.to) {
-    // 混向目标：起点是"动作本帧的值"
+    // 混向目标：起点 = **我们上一次写下的值**（没有才退回动作本帧的值）
     for (const id of Object.keys(current.to)) {
-      const motion = readParamValue(id)
-      out[id] = motion + (current.to[id] - motion) * eased
+      const start = lastHandValues[id] ?? readParamValue(id)
+      out[id] = start + (current.to[id] - start) * eased
     }
   } else if (current.release) {
-    // 混回动作：从"我们压住的值"回到动作自己的值
+    // 混回动作：从"我们压住的值"回到动作本帧的值
     for (const id of Object.keys(current.release)) {
-      const motion = readParamValue(id)
-      out[id] = motion + (current.release[id] - motion) * (1 - eased)
+      const target = readParamValue(id)
+      const start = lastHandValues[id] ?? target
+      out[id] = start + (target - start) * eased
     }
   }
+  lastHandValues = { ...out }
   if (progress >= 1) {
     handMix.step += 1
     handMix.t0 = now

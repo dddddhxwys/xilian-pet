@@ -1918,6 +1918,22 @@ check('道具过渡必须"两段式"，绝不能交叉淡入淡出 【"又有三
   assert.notDeepEqual(allOff, targets)
 })
 
+check('手部过渡必须以"上次写下的值"为起点 【否则两段交界会弹回去】', () => {
+  // 用户实测："在测试的时候手会很快速地弹两下"。
+  // 根因：原实现每帧写 `lerp(动作本帧的值, 目标, 进度)` —— 第二段的起点又变回"动作的值"，
+  //       于是两段交界处弹回去一次，一次过渡看起来弹两下。
+  // 修法：以 `lastHandValues`（我们上一次真正写下去的值）为起点，动作值只在没写过时兜底。
+  const src = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
+  const start = src.indexOf('function stepHandPoseMix')
+  assert.ok(start > 0, '找不到 stepHandPoseMix')
+  const body = src.slice(start, src.indexOf('\nfunction ', start + 10))
+  assert.ok(
+    body.includes('lastHandValues[id] ?? readParamValue(id)'),
+    '混向目标的起点必须是 lastHandValues（读动作值只能做兜底），否则两段交界会弹',
+  )
+  assert.ok(body.includes('lastHandValues = { ...out }'), '每帧都要记住实际写下去的值')
+})
+
 // ─────────────────────────────────────────────────────────────
 console.log('\n[5] 命中测试（外壳纯函数，不需要 Electron）')
 
