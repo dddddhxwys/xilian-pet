@@ -4,7 +4,13 @@
  * 为什么单独抽出来：这段逻辑原来内联在主进程 60Hz 的轮询回调里，
  * 结果"控件被穿透"这类 bug 只能靠用户肉眼发现、没法自测。
  * 抽出来之后可以直接用 node 断言（见 tools/check-plugin.mjs 的 [5] 段）。
+ *
+ * ── 2026-10-05 补：部件级命中测试的坐标换算也放这里 ─────────────────────
+ * 原来它写在 `renderer/live2d.js` 里（依赖 PIXI 全局），自测**根本 import 不了**，
+ * 于是自测只能对源码做正则断言 —— 结果把一条错公式钉死在里面、119 项全绿也发现不了 ✗
+ * 搬到这里之后可以真断言（见 check-plugin.mjs 的「坐标换算」段）。
  */
+import { inTriangle } from './renderer/motion-policy.js'
 
 /** 点是否落在任一矩形内（矩形为 CSS px，相对窗口左上角） */
 export function insideAnyRect(rects, x, y) {
@@ -89,3 +95,13 @@ export function contentBand(mask, maskWidth, maskHeight, winHeight, threshold = 
   const bottom = (last + 1) * scale // 最后一行也算一格
   return { top, bottom, centerY: (top + bottom) / 2 }
 }
+
+// ── 部件级命中测试：真源在 `renderer/hit-math.js`（渲染端只能 fetch 到 renderer/ 内的文件）──
+// 这里 re-export，好让**主进程**（main.js）与**自测**（tools/check-plugin.mjs）照旧从本文件取。
+export {
+  PART_NAMES,
+  PART_ZONES,
+  pickPartAt,
+  pointInDrawableLocal,
+  rawToLocal,
+} from './renderer/hit-math.js'

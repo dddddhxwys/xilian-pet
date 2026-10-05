@@ -55,16 +55,20 @@
 import {
   BASE_MOTION,
   FLICK_PRESETS,
+  HEAD_PAT,
   INTRO_MOTION,
   STATE_MAP,
   decideOnMotionFinish,
   describeFlick,
   fadeProps,
   flickOffset,
-  inTriangle,
   planParamTransition,
   propFadePhases,
+  resolvePokeParams,
 } from './motion-policy.js'
+// ⚠️ 必须是**同目录**的相对路径：`pet://app/` 只服务 renderer/ 目录，
+//    `../hit-test.js` 会被解析成 pet://app/hit-test.js → 404 → 整个模块加载失败 → 静默降级成占位图 ✗（实机踩过）
+import { PART_NAMES, PART_ZONES, pickPartAt, rawToLocal } from './hit-math.js'
 
 /**
  * ⚠️ 这个模型同一时刻**只能有一个表情生效** ——
@@ -415,152 +419,65 @@ function setExpression(name) {
  * 用户问："可以区分昔涟头顶跟面部吗？" → **可以，而且能做部件级**。
  *
  * 依据（两条都不是猜的）：
- *  ① `Cyrene.cdi3.json` 里有**具名部件表**：Part18 脸 / Part8 头发 / Part7 头饰 /
- *     Part9,10 外侧发 / Part30 后发 / Part24 右手动作 / Part25 左手动作 /
- *     Part27 右腿 / Part28 左腿 / Part5 秋千 …（中文名，直接可用）
- *  ② vendored `cubism4.min.js` 提供 `getDrawableParentPartIndex(i)`（画层→部件）、
+ *  ① `Cyrene.cdi3.json` 里有**具名部件表**（`Part18 脸` / `Part7 头饰` / `Part5 秋千` …）
+ *  ② `cubism4` 提供 `getDrawableParentPartIndex(i)`（画层→部件）、
  *     `getDrawableVertexPositions(i)` / `getDrawableVertexIndices(i)`（画层三角形）、
- *     `getPartId(i)` —— 逐个在压缩代码里确认过 ✓
+ *     `getPartId(i)` / `getDrawableRenderOrders(i)`（z 序）
  *
- * 做法：点击点**逆变换到模型局部坐标**，再按**画层 z 序从前往后**做
- * **点-三角形**判定（不是包围盒 —— 那样会把头发和脸混在一起）。
- * 前发盖住额头的地方点下去算"头发"，露出来的才是"脸" ✓ 和她看到的画面一致 ✓
- */
-const PART_NAMES = {
-  Part18: '脸',
-  Part8: '头发',
-  Part7: '头饰',
-  Part9: '外侧发1',
-  Part10: '外侧发2',
-  Part30: '后发',
-  Part22: '头发阴影',
-  Part24: '右手动作',
-  Part25: '左手动作',
-  Part27: '右腿',
-  Part28: '左腿',
-  Part26: '裙摆',
-  Part29: '后裙',
-  Part5: '秋千',
-  Part11: '眼睛',
-  Part6: '眉毛',
-  Part32: '嘴',
-  Part33: '嘴',
-  Part21: '腮红',
-  Part13: '白眼',
-  Part14: '左眼',
-  Part16: '右眼',
-  Part31: '背饰',
-  Part23: '身体',
-}
-
-/**
- * 部件 → 交互区。未列出 = 点了没反应（继续往 z 序后面找）。
+ * 做法：点击点经 `model.toLocal()` 逆变换到**模型局部像素**，再按 **`renderOrder` 从大到小**
+ * （画面最上层 → 下）取第一个包含该点的**画层三角形**，交给该部件的交互区。
  *
- * 用户 2026-10-05 定的：**点脸 → 墨镜**、**点头顶 → 惊喜**。
- * 头发/头饰/外侧发/后发/头发阴影 全归 `head` —— "头顶"在她身上就是这一片 ✓
- */
-const PART_ZONES = {
-  /**
-   * 脸 → 墨镜。普查：30 格，x108..164 **y180..212**（中间）
-   * 对应用户标注图里的**黄圈** ✓
-   */
-  Part18: 'face',
-  /**
-   * 秋千 → 弹一下。普查：94 格，x20..244（**两侧**），z 11..13（最底层）
-   * 对应用户标注图里的**两个红圈**（那对紫色羽毛翅膀）✓
-   */
-  Part5: 'swing',
-  /**
-   * 头顶 → 惊喜。普查：35 格，x68..164 **y92..124**（**最上方**）
-   * 对应用户标注图里的**蓝圈** ✓
-   *
-   * ⚠️ 这个部件在模型里的名字是 **「后裙」**，但它的画面渲染在**头顶**。
-   *
-   * 说明（已用「部件对账」逐条验证过，别误解成"名字不可信"）：
-   *   模型运行时报告 31 个部件，id 与顺序和 `cdi3.json` 的 `Parts` 表**完全一致**
-   *   （`[28] Part29 → 后裙` 两处一字不差）⇒ 名字确实是**模型自己的名字**，没抄错 ✓
-   *   只是**这个"秋千版"里，名字和渲染位置对不上**（作者大概率复用/改过部件）✓
-   *
-   * ⇒ 所以定映射时的规矩是：**名字当线索、位置当依据** —— 以普查测出来的范围为准 ✓
-   *   （我最初按名字挑"头饰/外侧发"当头顶，结果点在头顶毫无反应 ✗ 是用户的标注图纠正的）
-   */
-  Part29: 'head',
-  // ── 其余一律不响应（用户 2026-10-05 定）──
-  // Part30 后发（中间一大片长发，149 格）→ 不响应
-  // 外侧发/头发阴影/背饰/后裙以外的一切 → 不响应
-}
-
-/**
- * ⚠️ **两侧兜底已按用户决定移除**（2026-10-05）。
+ * ⚠️ 三处必须与库一致，否则整体错位（详见 docs/接手复核报告.md §2）：
+ *    · 顶点换算用 `rawToLocal()`（系数 = PixelsPerUnit、**Y 取负**）
+ *    · z 序用 `renderOrder`（本模型它是下标的一个**置换**，不是恒等）
+ *    · 判定用**三角形**而不是包围盒（否则头发和脸会混在一起）
  *
- * 曾经加过一版：命中的部件没配区、且离内容中线够远时算秋千（沿用旧"x 偏离中线"的比例）。
- * 目的是把"点两侧长发也弹一下"补回来。
- * 但用户把三个区都定死之后选了「秋千区 = **只要翅膀本身**」：
- *   - 后发（中间一大片长发）→ **不响应**
- *   - 其它零散部件 → **暂不管**
- *   - 秋千 = 就是那对紫翅膀（`Part5`，普查 94 格）✓
- * 所以兜底会违背这个决定 ✗ 删掉。**精确判定就是唯一判定**：
- * 点在她身上但没配区的部件 → 什么都不发生 ✓ 行为可预测、不会误触 ✓
+ * 部件名表与交互区表都在 `../hit-test.js`（纯数据、可自测）。
  */
 
 /**
- * 模型局部尺寸（像素）—— 单位顶点 ↔ 局部像素 的换算基准。
+ * 模型局部像素的换算基准。
  *
- * ⚠️ 关系来自构图代码本身（`live2d.js` 的 `contentLocal` 计算）：
- *     `windowX = localPx * scale + model.position.x`
- *   而画层顶点是**以中心为原点的归一化值**（实测并集 ±0.48）：
- *     `localPx = (unit + 0.5) * 局部尺寸`
- *   ⇒ 命中测试要么两边都用局部像素、要么两边都用单位 —— **混用就是对不上** ✗
- *     （我一开始正是拿"单位顶点"去比"局部像素的点击点"，所以越靠下越偏 ✗）
+ * ⚠️ 系数是 **`PixelsPerUnit`**（本模型 3500），不是 `originalWidth`（= `CanvasWidth`，本模型 4200）。
+ * 本模型 `CanvasHeight` 恰好等于 `PixelsPerUnit`（都是 3500），所以只错 X 的时候
+ * "Y 看起来是对的" —— 这种巧合最容易骗过自查 ✗
  */
-function localPixelSize() {
+function localCanvas() {
   const im = state.model?.internalModel
+  const ppu = im?.pixelsPerUnit ?? 0
   const w = im?.originalWidth ?? 0
   const h = im?.originalHeight ?? 0
-  if (w > 0 && h > 0) return { w, h }
-  // 兜底：用模型单位尺寸（此时下面的换算退化成"单位 → 单位"，至少不会崩）
-  return { w: state.model?.width || 1, h: state.model?.height || 1 }
+  if (ppu > 0 && w > 0 && h > 0) return { ppu, canvasWidth: w, canvasHeight: h }
+  // 兜底：拿不到 PixelsPerUnit 时退化成"系数=画布尺寸"，至少不崩（会退化但不静默错位到离谱）
+  const fw = im?.width || state.model?.width || 1
+  const fh = im?.height || state.model?.height || 1
+  return { ppu: fw, canvasWidth: fw, canvasHeight: fh }
 }
 
-/** 点是否落在某个画层的三角形网格里（精确，不是包围盒）—— 用**模型局部像素**比 */
-function pointInDrawable(core, index, x, y) {
-  const positions = core.getDrawableVertexPositions?.(index)
-  if (!positions) return false
-  const vertexCount = core.getDrawableVertexCount?.(index) ?? 0
-  if (vertexCount < 3) return false
-  const indices = core.getDrawableVertexIndices?.(index)
-  const { w: sizeW, h: sizeH } = localPixelSize()
-  // 单位（±0.5，以中心为原点）→ 局部像素（0..尺寸）
-  const vx = (vi) => (positions[vi * 2] + 0.5) * sizeW
-  const vy = (vi) => (positions[vi * 2 + 1] + 0.5) * sizeH
-  if (indices && indices.length >= 3) {
-    for (let k = 0; k + 2 < indices.length; k += 3) {
-      const a = indices[k]
-      const b = indices[k + 1]
-      const c = indices[k + 2]
-      if (inTriangle(x, y, vx(a), vy(a), vx(b), vy(b), vx(c), vy(c))) return true
-    }
-    return false
+/** 把当前模型的画层整理成 `pickPartAt` 要的形状（一次点击只做一次） */
+function collectDrawables(core) {
+  const count = core.getDrawableCount?.() ?? 0
+  const out = []
+  for (let i = 0; i < count; i++) {
+    const positions = core.getDrawableVertexPositions?.(i)
+    if (!positions || positions.length < 6) continue
+    out.push({
+      index: i,
+      partId: core.getPartId?.(core.getDrawableParentPartIndex?.(i)),
+      // ⚠️ 用 renderOrders（画的先后），不是下标 —— 本模型两者是一个置换
+      renderOrder: core.getDrawableRenderOrders?.(i) ?? i,
+      positions,
+      indices: core.getDrawableVertexIndices?.(i),
+      visible: core.getDrawableDynamicFlagIsVisible ? !!core.getDrawableDynamicFlagIsVisible(i) : true,
+    })
   }
-  // 没有索引（理论上不会）：退回画层包围盒
-  let minX = Infinity
-  let maxX = -Infinity
-  let minY = Infinity
-  let maxY = -Infinity
-  for (let v = 0; v < vertexCount; v++) {
-    minX = Math.min(minX, vx(v))
-    maxX = Math.max(maxX, vx(v))
-    minY = Math.min(minY, vy(v))
-    maxY = Math.max(maxY, vy(v))
-  }
-  return x >= minX && x <= maxX && y >= minY && y <= maxY
+  return out
 }
 
 /**
  * 调试：列出模型里的**全部部件**（`getPartCount()` + `getPartId(i)`），
- * 附上我方 `PART_NAMES` 表里的名字 —— 用来**对账**：
- *   「cdi3 的 Id→Name 表」和「模型运行时返回的 id」到底是不是同一套 ✗
- * （之前我直接假定是同一套、从没验证过 —— 用户质疑得对 ✓）
+ * 附上我方 `PART_NAMES` 表里的名字 —— 用来**对账**
+ * （`cdi3.json` 的 Id→Name 表 与 模型运行时返回的 id 是不是同一套）。
  */
 export function debugAllParts() {
   const core = state.model?.internalModel?.coreModel
@@ -575,11 +492,11 @@ export function debugAllParts() {
 }
 
 /**
- * 窗口坐标 → **模型局部像素**（与 `pointInDrawable` 里的顶点同一坐标系）。
+ * 窗口坐标 → **模型局部像素**。
  *
- * ⚠️ 用 `model.toLocal()` —— 它和渲染用的是同一套变换 ✓
- *    之前踩的坑不是 `toLocal` 本身，而是**把点击点换算到"单位"、却拿"单位顶点"去比** ✗
- *    （单位顶点是"以中心为原点的归一化值"，得先 `(u+0.5)*局部尺寸` 才是局部像素）
+ * ⚠️ 用 `model.toLocal()` —— 它和渲染是同一套变换，所以换算出来的坐标系
+ *    就是 `rawToLocal()`（= 库的 `getDrawableVertices`）那一套。
+ *    **这正是"两边必须同一套"的含义**：点击点走 toLocal，顶点走 rawToLocal。
  */
 function toLocalPixels(clientX, clientY) {
   try {
@@ -590,9 +507,7 @@ function toLocalPixels(clientX, clientY) {
 }
 
 /**
- * 调试专用：返回**最前面**那个命中的部件名，**不管它有没有配交互区**。
- *
- * 为什么需要：`hitPart()` 会跳过"没配区的部件"继续往后找 ✗
+ * 调试专用：返回**最前面**那个命中的部件，**不管它有没有配交互区**。
  * 排查"点了没反应"时必须知道"到底命中了谁" ✓
  */
 export function debugFrontPartName(clientX, clientY) {
@@ -601,18 +516,27 @@ export function debugFrontPartName(clientX, clientY) {
   if (!model || !core || !state.ready) return null
   const local = toLocalPixels(clientX, clientY)
   if (!local) return null
-  const count = core.getDrawableCount?.() ?? 0
-  for (let i = count - 1; i >= 0; i--) {
-    if (core.getDrawableDynamicFlagIsVisible && !core.getDrawableDynamicFlagIsVisible(i)) continue
-    if (!pointInDrawable(core, i, local.x, local.y)) continue
-    const partId = core.getPartId?.(core.getDrawableParentPartIndex?.(i))
-    return { partId, partName: PART_NAMES[partId] ?? partId, zone: PART_ZONES[partId] ?? null, drawable: i }
+  const hit = pickPartAt(collectDrawables(core), local.x, local.y, localCanvas())
+  if (!hit) return null
+  return {
+    partId: hit.partId,
+    partName: PART_NAMES[hit.partId] ?? hit.partId,
+    zone: PART_ZONES[hit.partId] ?? null,
+    drawable: hit.index,
   }
-  return null
 }
 
 /**
- * 命中哪个部件。
+ * 命中哪个部件 → 属于哪个交互区。
+ *
+ * 语义（2026-10-05 重定）：**最前面的部件说了算** ——
+ *   按 `renderOrder` 从大到小（= 从画面最上层往下）取**第一个**包含点击点的部件；
+ *   它配了区就返回那个区，没配区就返回 `null`（什么都不发生）。
+ *
+ * 为什么不再"跳过没配区的部件继续往后找"：那会让点身体/头发**穿透到最底层的秋千背景板**，
+ * 于是"没配区的部件什么都不做"这条根本不成立 ✗；
+ * 而"点眼睛要算脸"这个原始动机，已经靠**把面部簇整体配成 `face`** 解决了 ✓
+ * （两侧长发点了没反应，正是用户 2026-10-05 要的行为）
  *
  * @param {number} clientX 窗口 CSS 像素
  * @param {number} clientY
@@ -625,20 +549,16 @@ export function hitPart(clientX, clientY) {
   const local = toLocalPixels(clientX, clientY)
   if (!local) return null
 
-  const count = core.getDrawableCount?.() ?? 0
-  // **从前往后**（z 序大的后画 = 在上面）→ 先测到谁就是谁。
-  // 命中"没配区"的部件（眼睛/嘴/裙摆/后发…）→ 继续往后面找：
-  // 它们画在脸/头发上面，但点它们时用户心里点的还是那一块 ✓
-  // 全部找完都没有配区的 → 什么都不发生 ✓（用户定：只有脸/头顶/秋千三个区）
-  for (let i = count - 1; i >= 0; i--) {
-    if (core.getDrawableDynamicFlagIsVisible && !core.getDrawableDynamicFlagIsVisible(i)) continue
-    if (!pointInDrawable(core, i, local.x, local.y)) continue
-    const partId = core.getPartId?.(core.getDrawableParentPartIndex?.(i))
-    const zone = PART_ZONES[partId] ?? null
-    if (zone === null) continue
-    return { zone, partId, drawable: i, partName: PART_NAMES[partId] ?? partId }
+  const hit = pickPartAt(collectDrawables(core), local.x, local.y, localCanvas(), {
+    zoneOf: (partId) => PART_ZONES[partId] ?? null,
+  })
+  if (!hit || !hit.zone) return null
+  return {
+    zone: hit.zone,
+    partId: hit.partId,
+    drawable: hit.index,
+    partName: PART_NAMES[hit.partId] ?? hit.partId,
   }
-  return null
 }
 
 /**
@@ -649,7 +569,7 @@ export function debugZoneBoxes() {
   const model = state.model
   const core = model?.internalModel?.coreModel
   if (!model || !core || !state.ready) return []
-  const { w: sizeW, h: sizeH } = localPixelSize()
+  const canvas = localCanvas()
   const count = core.getDrawableCount?.() ?? 0
   const boxes = []
   for (let i = 0; i < count; i++) {
@@ -664,12 +584,12 @@ export function debugZoneBoxes() {
     let minY = Infinity
     let maxY = -Infinity
     for (let v = 0; v < vertexCount; v++) {
-      const px = (positions[v * 2] + 0.5) * sizeW
-      const py = (positions[v * 2 + 1] + 0.5) * sizeH
-      minX = Math.min(minX, px)
-      maxX = Math.max(maxX, px)
-      minY = Math.min(minY, py)
-      maxY = Math.max(maxY, py)
+      // ⚠️ 与 pickPartAt 用**同一个**换算（rawToLocal），否则框和判定又会对不上
+      const p = rawToLocal(positions[v * 2], positions[v * 2 + 1], canvas)
+      minX = Math.min(minX, p.x)
+      maxX = Math.max(maxX, p.x)
+      minY = Math.min(minY, p.y)
+      maxY = Math.max(maxY, p.y)
     }
     // 局部像素 → 窗口（和渲染同一套变换）
     const tl = model.toGlobal({ x: minX, y: minY })
@@ -809,6 +729,63 @@ function applyState() {
   if (flicked !== null) setParams(flicked)
   // 眨眼也在这里输出 —— 位置在动作之后，才能压过被动作冻结的眼睛参数
   applyBlink(performance.now())
+  // ⚠️ **最后一步**：分区互动的临时参数覆盖（摸头顶）。
+  //    必须排在 `applyBlink()` 之后 —— 否则眨眼接管会把我们压到 0.25 的眼睑又顶回去 ✗
+  applyPokeParams()
+}
+
+/**
+ * 分区互动的**临时参数覆盖层**（"摸头顶"用）。
+ *
+ * 为什么需要它、而不是用现成表情：见 `motion-policy.js` 的 `HEAD_PAT` 注释
+ * （`surprise` 实测几乎看不出来；`happy` 被 `done` 状态占着）。
+ *
+ * ⚠️ 它是**按时间推进**的，不是"贴上去再撤掉"：
+ *    每帧用 `headPatEnvelope()` 算出 0..1 的包络，再喂给 `resolvePokeParams()`，
+ *    所以"歪过去 → 停住 → 回正"是平滑的（用户实测反馈"没有过渡"就是这里改的）。
+ *    到点后**不再写**任何值 —— 下一帧动作/眨眼自然接管，不存在"回弹"。
+ */
+let pokeCfg = null
+let pokeStartAt = 0
+
+/** 在 `applyState()` 的最后调用；返回是否真的写了东西 */
+function applyPokeParams() {
+  if (pokeCfg === null) return false
+  const elapsed = performance.now() - pokeStartAt
+  if (elapsed > pokeCfg.totalMs) {
+    pokeCfg = null
+    return false
+  }
+  const core = state.model?.internalModel?.coreModel
+  if (!core) return false
+  // ⚠️ 读的是"动作 + 眨眼刚写完"的当前值（本函数排在 applyBlink 之后），
+  //    这样 `{to}` 混合的起点、`{add}` 叠加的基准都是**这一帧的真实值**
+  const values = resolvePokeParams(pokeCfg, elapsed, (id) => {
+    try {
+      return core.getParameterValueById(id) ?? 0
+    } catch {
+      return 0
+    }
+  })
+  if (!Object.keys(values).length) return false
+  setParams(values)
+  return true
+}
+
+/**
+ * 开始一次「分区反应」：按 `cfg`（`HEAD_PAT` 那种形状）在 `cfg.totalMs` 内走完缓动包络。
+ * @param {{params:object, riseMs:number, holdMs:number, fallMs:number, totalMs:number}} cfg
+ */
+export function pokeParams(cfg) {
+  if (!state.ready || !state.model || !cfg) return false
+  pokeCfg = cfg
+  pokeStartAt = performance.now()
+  return true
+}
+
+/** 摸头顶 → "舒服得眯起眼 + 轻轻歪头"（含缓动，参数表在 `motion-policy.js` 的 `HEAD_PAT`） */
+export function patHead() {
+  return pokeParams(HEAD_PAT)
 }
 
 /** 初始化：创建 PIXI 应用并加载模型 */
@@ -1592,6 +1569,10 @@ window.xilianLive2D = {
   blink,
   /** 部件级命中测试：返回 { zone, partId, partName, drawable } 或 null（左键分区互动用） */
   hitPart,
+  /** 摸头顶的专属反应："舒服得眯起眼 + 轻轻歪头"，含缓动（参数表在 motion-policy.js 的 HEAD_PAT） */
+  patHead,
+  /** 开始一次分区反应：按 cfg 的缓动包络在 totalMs 内走完（{to}=混合，{add}=叠加） */
+  pokeParams,
   /** 调试：列出有交互区的部件的画层包围盒（配合 PET_ZONE_DEBUG=1 和画面核对） */
   debugZoneBoxes,
   /** 调试：最前面命中的部件名（不管有没有配区），排查"点了没反应"用 */
@@ -1616,3 +1597,10 @@ window.xilianLive2D = {
     }
   },
 }
+
+/**
+ * 秋千连点逻辑在 `motion-policy.js`（纯函数，自测能直接断言）。
+ * 这里转出去，是因为 **`pet.js` 是普通 `<script>`，不能 `import`** ——
+ * 它只能通过已经动态 import 到的 `live2d` 命名空间去拿 ✓
+ */
+export { createSwingCombo, swingComboClick } from './motion-policy.js'

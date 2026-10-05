@@ -161,13 +161,14 @@ function overOpaquePixel(clientX, clientY) {
 }
 
 /**
- * 掩码里的**不透明范围**，换算成窗口 CSS 像素 —— 部件级命中测试的标定基准。
+ * 掩码里的**不透明范围**，换算成窗口 CSS 像素。
  *
- * 为什么要它：模型的画层顶点是"以中心为原点的归一化坐标"（实测并集 `-0.48..0.50`），
- * （坐标换算的正确做法见 live2d.js 的 `localPixelSize` / `toLocalPixels` 注释）。
- * 而"她实际画出来的范围"这件事**两边都是同一个东西**：
- * 顶点并集（单位）↔ 掩码不透明范围（像素）→ 用这一个对应关系标定，
- * 天然对齐、完全自校准，也不怕以后构图逻辑改动 ✓
+ * 用途：只给**调试**用 —— `PET_ZONE_DEBUG=1` 时画内容框、做部件普查/翅膀剖线，
+ * 让人把"框"和画面核对起来。
+ *
+ * ⚠️ 它**不再参与点击判定**。历史教训：上一版拿它去"自标定"顶点换算（`unitMapper`），
+ * 虽然碰巧能对，但那是启发式；正确做法是**按库的公式**换算
+ * （见 `hit-test.js` 的 `rawToLocal` 与 docs/接手复核报告.md §2）✓
  */
 function contentBox() {
   if (alphaMap === null) return null
@@ -273,21 +274,33 @@ window.addEventListener('mousedown', (event) => {
 /**
  * 左键分区互动 —— 每区配什么效果。
  *
- * 用户 2026-10-05 定的：**点脸 → 墨镜**、**点头顶 → 惊喜**。
- * 判定完全交给 `live2d.hitPart()`（部件级：cdi3 的具名部件 + 画层三角形，
- * 详见 live2d.js 里那段注释）—— 这里只负责"哪个区给什么反应"。
+ * 用户 2026-10-05 定的三区：**点脸 → 墨镜**、**点头顶 → 惊喜**、**点秋千 → 弹一下**。
+ * 判定完全交给 `live2d.hitPart()`（部件级：cdi3 的具名部件 + 画层三角形 + renderOrder z 序，
+ * 详见 live2d.js 的 `PART_ZONES` 与 `hit-test.js` 的 `pickPartAt`）——
+ * 这里只负责"哪个区给什么反应"。
  *
- * ⚠️ 为什么不再用"x 偏离中线"判秋千：那是估算 ✗
- *    模型里 `Part5 秋千` 是**具名部件**，直接用它准得多，也不用维护一个比例常数 ✓
+ * ⚠️ 只允许**表情**与**整体物理小动作**两类手段（用户 2026-10-05 选），
+ *    所以没有 Scene 动作、没有台词气泡、没有系统动作 ✓
  */
 const ZONE_EFFECTS = {
   // 脸 → 墨镜。给 2 秒：戴上去要看得清，但也不能一直戴着（那是"状态"不是"反应"）
   face: () => live2d?.pokeExpression('sunglasses', 2000),
-  // 头顶（头发/头饰/外侧发/后发）→ 惊喜。短一点：惊喜是"一激灵"，拖长了就腻 ✓
-  head: () => live2d?.pokeExpression('surprise', 1200),
+  // 头顶（**只有** 头饰 / 头发 / 背饰）→ **"舒服得眯起眼 + 轻轻歪头"**（用户 2026-10-05 选的 ⑤）
+  // ⚠️ 这里**刻意不用现成表情**：`surprise` 实测几乎看不出来（只把瞳孔高光换成星星），
+  //    语义上也错（"被摸头"是亲昵，不是吓一跳）；`happy` 则被 `done`（干完活）占着会撞脸。
+  //    改成临时参数覆盖（`ParamEyeLOpen/ROpen` 压到 0.25 + `ParamAngleZ` 叠加 -8°），
+  //    参数表在 `motion-policy.js` 的 `HEAD_PAT`，有自测 ✓
+  head: () => live2d?.patHead(),
   // 秋千 → 弹一下（用户："像被手指弹了似的"）
   swing: () => live2d?.flick('light'),
 }
+
+/**
+ * 秋千连点计数（用户 2026-10-05 定：**3 秒内点秋千超过 5 次就出晕**）。
+ * 窗口是**固定**的，从"首次点击"起算 3s —— 逻辑在 `motion-policy.js`（纯函数，可自测）。
+ * 惰性初始化：`live2d` 模块是动态 import 的，可能失败。
+ */
+let swingComboState = null
 
 window.addEventListener('mouseup', (event) => {
   if (!dragging) {
@@ -318,10 +331,18 @@ window.addEventListener('mouseup', (event) => {
   )
   if (hit && ZONE_EFFECTS[hit.zone]) {
     ZONE_EFFECTS[hit.zone]()
+    // 秋千：照常"弹一下"，另外数连点 —— 固定窗口内第 6 次 → 出晕（spiral）
+    if (hit.zone === 'swing' && typeof live2d?.swingComboClick === 'function') {
+      swingComboState = swingComboState ?? live2d.createSwingCombo()
+      const r = live2d.swingComboClick(swingComboState, performance.now())
+      swingComboState = r.state
+      api.log(`[点击] 秋千连点 第 ${r.count} 次${r.dizzy ? '（3s 内超过 5 次）→ 出晕' : ''}`)
+      if (r.dizzy) live2d.pokeExpression('spiral', 1500)
+    }
     return
   }
-  // 其它区域：暂时什么都不做。
-  // 剩余分区（左手 / 右手 / 身体 / 腿）待做；未读移除后这里也没有"清未读"副作用了 ✓
+  // 未配区的部件（身体 / 手 / 腿 / 裙摆 / 后裙 / 两侧发 / 后发）→ **什么都不做**。
+  // 这是刻意的：行为可预测、不会误触；不再有"清未读"这层副作用 ✓
 })
 
 // ── 操作面板（独立小窗）─────────────────────────────────────────────

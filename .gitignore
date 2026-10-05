@@ -16,6 +16,11 @@ _env_*.mjs
 tools/_probe-*.mjs
 tools/_crawl-*.mjs
 
+# 接手复核的临时产物（`.audit/`）：探针脚本 + 软件光栅化出来的对照图。
+# ⚠️ 里面的渲染图**含第三方 Live2D 角色**，与 docs/screenshots 同理由，禁止入库/分发。
+# 复核结论文档是 docs/接手复核报告.md（那个要入库）。
+/.audit/
+
 # 编辑器/系统
 .vscode/
 .idea/

@@ -190,6 +190,7 @@ const STAMP_FILES = [
   'renderer/pet.css',
   'renderer/index.html',
   'renderer/live2d.js',
+  'renderer/hit-math.js',
   'renderer/motion-policy.js',
   'renderer/menu.js',
   'renderer/menu.css',

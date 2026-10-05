@@ -332,3 +332,135 @@ export function decideOnMotionFinish({ currentMotion, currentState, stateMap, ba
 
   return { action: 'none', index: null, why: '状态表里没有对应动作' }
 }
+
+// ── 秋千「连点出晕」（左键分区互动）──────────────────────────────────
+//
+// 用户 2026-10-05 定：**3 秒内点击秋千超过 5 次就出晕**。
+// 窗口是**固定**的（从"首次点击"起算 3s），不是滑动窗口 —— 用户明确选了这一档。
+//
+// 放在这个纯模块里是为了**能被自测直接断言**（pet.js 依赖 window/document，Node 里 import 不了）。
+
+/** 秋千连点参数：固定窗口 3s、"超过 5 次"= 第 6 次触发 */
+export const SWING_COMBO = { windowMs: 3000, threshold: 5 }
+
+/** 连点计数器初值（纯数据，方便测） */
+export function createSwingCombo() {
+  return { windowStart: null, count: 0 }
+}
+
+/**
+ * 记一次"点中秋千"，返回新状态与是否该出晕。
+ *
+ * 语义：
+ *  - 没有窗口 / 距窗口起点已 ≥ windowMs → **开一个新窗口**，本次算第 1 次
+ *  - 否则计数 +1
+ *  - `count > threshold`（第 6 次）→ `dizzy: true`，**并立刻关掉窗口**
+ *    （下一次点击重新起算，避免"点一下晕一下"）
+ *
+ * @param {{windowStart:number|null, count:number}} state
+ * @param {number} now 毫秒时间戳（用 performance.now()）
+ * @param {{windowMs:number, threshold:number}} [cfg]
+ * @returns {{state:{windowStart:number|null, count:number}, count:number, dizzy:boolean}}
+ */
+export function swingComboClick(state, now, cfg = SWING_COMBO) {
+  const s = state ?? createSwingCombo()
+  const fresh = s.windowStart === null || now - s.windowStart >= cfg.windowMs
+  const count = fresh ? 1 : s.count + 1
+  const dizzy = count > cfg.threshold
+  return {
+    state: dizzy ? createSwingCombo() : { windowStart: fresh ? now : s.windowStart, count },
+    count,
+    dizzy,
+  }
+}
+
+// ── 左键分区互动的「临时参数覆盖」：摸头顶 ──────────────────────────
+//
+// 用户 2026-10-05 从 6 个候选里选了 **⑤「舒服得眯起眼 + 轻轻歪头」**，
+// 看过实机之后又提了两条：**幅度太小**、**没有过渡**（原来是"瞬间贴上、到点瞬间撤掉"）。
+// 于是本版：① 歪头 -8° → **-16°** 并加了身体一起倾；② 加**缓动包络**（起-停-回）。
+//
+// 为什么不用现成表情：
+//  - 原方案的 `surprise`（`Param=1`）实测只把 2 个画层打开，视觉上仅"瞳孔高光从菱形变星星"，
+//    在她脸上几乎看不出来；
+//  - 语义上"被摸头"要的是**亲昵**，不是"吓一跳" ✗
+//  - 而 `happy`（`><` 眯眼笑）虽然明显，却被 `done`（干完活）状态占着，用它会撞脸。
+//
+// ⚠️ **规格语义**：`{ to }` = 向该值**混合**（保留动作的正常表现）；`{ add }` = 在**当前值**上叠加。
+//    两者都会被下面的包络按 `k` 缩放。**这条不能搞错**：
+//    待机动作（`Scene4`，180 秒）**每帧都在写** `ParamAngleZ` / `ParamEyeLOpen` / `ParamBodyAngleZ`，
+//    对动作驱动的参数直接覆盖 = **把动作停了**（`live2d.js` 里 `stepFlick` 的注释专门记过这个坑）。
+//    所以：歪头/身体倾用 `{add}`（保住秋千的摆动）、眯眼用 `{to}`（本来就是要接管眼睑）。
+export const HEAD_PAT = {
+  // 缓动包络：慢慢歪过去 → 停住 → 慢慢回正。三段加起来就是总时长。
+  // ⚠️ 起、回两段都用 **easeInOutCubic（两头慢）**，不用 easeOutCubic：
+  //    easeOut 是"快起慢停"，80ms 就能走完 58% —— 看起来仍然像"啪一下贴上去"，
+  //    用户反馈的"没有过渡"就是这个感觉。两头慢才看得出"她缓缓靠过来"。
+  riseMs: 420, // 歪过去
+  holdMs: 700, // 停住（保持峰值）
+  fallMs: 620, // 回正
+  totalMs: 420 + 700 + 620, // 1740
+  params: {
+    ParamEyeLSmile: { to: 1 }, // 眼型笑（配合下面两项；单独开几乎看不出，留着无害）
+    ParamEyeRSmile: { to: 1 },
+    ParamEyeLOpen: { to: 0.25 }, // 向 1/4 眼睑混合 → 眯眼
+    ParamEyeROpen: { to: 0.25 },
+    // 幅度：-8° 实机"太小"，实测 -16° 才明显；再加一点身体倾，像"靠过来"
+    ParamAngleZ: { add: -16 },
+    ParamBodyAngleZ: { add: -7 },
+  },
+}
+
+/** easeOutCubic：快起慢停（留在导出里备用；摸头**没有**用它，见上面注释） */
+export function easeOutCubic(x) {
+  const t = Math.min(Math.max(x, 0), 1)
+  return 1 - (1 - t) ** 3
+}
+
+/** easeInOutCubic：两头慢中间快（"歪过去"和"回正"都用它） */
+export function easeInOutCubic(x) {
+  const t = Math.min(Math.max(x, 0), 1)
+  return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2
+}
+
+/**
+ * 摸头反应的**缓动包络** —— 纯函数，可自测。
+ * 0 → 1（riseMs 内，easeInOutCubic）→ 保持 1（holdMs）→ 回 0（fallMs 内，easeInOutCubic）。
+ *
+ * @param {number} elapsedMs 从反应开始算起的毫秒
+ * @param {{riseMs:number, holdMs:number, fallMs:number}} [cfg]
+ * @returns {number} 0..1
+ */
+export function headPatEnvelope(elapsedMs, cfg = HEAD_PAT) {
+  const { riseMs, holdMs, fallMs } = cfg
+  if (!(elapsedMs > 0)) return 0
+  if (elapsedMs < riseMs) return easeInOutCubic(elapsedMs / riseMs)
+  const holdEnd = riseMs + holdMs
+  if (elapsedMs < holdEnd) return 1
+  const t = (elapsedMs - holdEnd) / fallMs
+  return t >= 1 ? 0 : 1 - easeInOutCubic(t)
+}
+
+/**
+ * 把「反应规格」按包络解析成**本帧真正要写的值** —— 纯函数，可自测。
+ *
+ * 两项语义（都会被 `k` 缩放）：
+ *  - `{ to: v }`  → `cur + (v - cur) * k`  向目标混合（k=0 时等于不动）
+ *  - `{ add: d }` → `cur + d * k`          在当前位置上加 d，随包络进出
+ *
+ * @param {{params:Record<string,{to?:number,add?:number}>, riseMs:number, holdMs:number, fallMs:number}} cfg
+ * @param {number} elapsedMs
+ * @param {(id:string)=>number} [readCurrent] 读当前参数值（**必须在动作/眨眼之后**读）
+ * @returns {Record<string, number>} k=0 时返回空对象（＝这一帧什么都不用写）
+ */
+export function resolvePokeParams(cfg, elapsedMs, readCurrent = () => 0) {
+  const k = headPatEnvelope(elapsedMs, cfg)
+  const out = {}
+  if (k <= 0) return out
+  for (const [id, spec] of Object.entries(cfg?.params ?? {})) {
+    const cur = readCurrent(id) ?? 0
+    if (spec && typeof spec.to === 'number') out[id] = cur + (spec.to - cur) * k
+    else if (spec && typeof spec.add === 'number') out[id] = cur + spec.add * k
+  }
+  return out
+}

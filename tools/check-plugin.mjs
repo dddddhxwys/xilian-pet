@@ -13,23 +13,41 @@
 
 import http from 'node:http'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 import { apply, inject as pluginInject } from '../packages/pet-plugin/index.js'
-import { contentBand, hitTest, insideAnyRect } from '../packages/pet-shell/hit-test.js'
+import {
+  PART_NAMES,
+  PART_ZONES,
+  contentBand,
+  hitTest,
+  insideAnyRect,
+  pickPartAt,
+  pointInDrawableLocal,
+  rawToLocal,
+} from '../packages/pet-shell/hit-test.js'
 import {
   BASE_MOTION,
   FLICK_PRESETS,
+  HEAD_PAT,
   INTRO_MOTION,
   STATE_MAP,
+  SWING_COMBO,
+  createSwingCombo,
   decideOnMotionFinish,
   describeFlick,
+  easeInOutCubic,
+  easeOutCubic,
   fadeProps,
   flickOffset,
+  headPatEnvelope,
   inTriangle,
   planParamTransition,
   propFadePhases,
   propTargetsFor,
+  resolvePokeParams,
+  swingComboClick,
 } from '../packages/pet-shell/renderer/motion-policy.js'
 import {
   TURN_END_STATE,
@@ -2052,7 +2070,7 @@ check('每一档的启动文案都能安全生成 【settle 的 move 是 null，
 // ─────────────────────────────────────────────────────────────
 console.log('\n[5] 命中测试（外壳纯函数，不需要 Electron）')
 
-check('部件级命中测试：三角形判定 + 分区接线 【点脸=墨镜 / 点头顶=惊喜】', () => {
+check('部件级命中测试：坐标换算 / renderOrder z 序 / 分区归属 【点脸=墨镜 / 点头顶=惊喜 / 点秋千=弹一下】', () => {
   // 用户："点脸：墨镜。点头顶：惊喜"
   // 判定是**部件级**的：cdi3 的具名部件（Part18 脸 / Part8 头发 / Part5 秋千…）
   // + 画层三角形，而不是"竖直分段"那种估算 ✓
@@ -2066,64 +2084,267 @@ check('部件级命中测试：三角形判定 + 分区接线 【点脸=墨镜 /
   const live2d = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
   const pet = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
 
-  // ② 分区映射 —— **按实测量出的位置**，不是按名字
-  assert.match(live2d, /Part18: 'face'/, 'Part18（实测 y180..212 中间）→ face')
-  assert.match(live2d, /Part5: 'swing'/, 'Part5（实测 x20..244 两侧）→ swing')
-  // ⚠️ 头顶是 `Part29` —— 它的名字叫「后裙」，但**实测渲染在最上方**（y92..124）✗
-  //    用户标注图（蓝圈=头顶）确认了这一点：按名字找「头饰/外侧发」是错的 ✗
-  assert.match(live2d, /Part29: 'head'/, 'Part29（实测 y92..124 最上方）→ head')
-  // 反面断言：按名字猜出来的那几个**不是**头顶（实测都在别处）
-  for (const wrong of ['Part7', 'Part9', 'Part10', 'Part8', 'Part22']) {
-    assert.equal(
-      new RegExp(`${wrong}: 'head'`).test(live2d),
-      false,
-      `${wrong} 不能归 head —— 名字像但不是头顶（实测位置不在最上方），靠名字猜会点不动 ✗`,
-    )
+  // ② 坐标换算 —— 必须与库 `getDrawableVertices()` 同源。用本模型**实测**的 canvasinfo。
+  //    （4200 = CanvasWidth、3500 = CanvasHeight = PixelsPerUnit —— 三者不等，正是当年踩的坑）
+  const canvas = { ppu: 3500, canvasWidth: 4200, canvasHeight: 3500 }
+  assert.deepEqual(rawToLocal(0, 0, canvas), { x: 2100, y: 1750 }, 'raw 画布中心 → 局部中心')
+  assert.deepEqual(rawToLocal(0.5, 0.5, canvas), { x: 3850, y: 0 }, 'raw 右上 → 局部右上角')
+  assert.deepEqual(rawToLocal(-0.6, -0.5, canvas), { x: 0, y: 3500 }, 'raw 左下 → 局部左下角')
+  // ⚠️ 反面断言 1：X 的系数是 **PixelsPerUnit(3500)**，不是 `CanvasWidth(4200)`。
+  //    曾经写成 `(raw+0.5)*originalWidth` → 横向拉伸 1.2 倍，两侧边缘点不中 ✗
+  assert.equal(rawToLocal(0.5, 0, canvas).x, 3850, 'X 系数必须是 PixelsPerUnit')
+  assert.notEqual(rawToLocal(0.5, 0, canvas).x, (0.5 + 0.5) * 4200, 'X 绝不能用 CanvasWidth 当系数')
+  // ⚠️ 反面断言 2：Y **必须取负**。漏负号 = 上下镜像 → 点下半身却去上半身找图形；
+  //    用户症状"秋千靠下的部分一直点不到"就是这么来的（偏差最大 ±200px）✗
+  assert.ok(rawToLocal(0, 0.4, canvas).y < rawToLocal(0, -0.4, canvas).y, 'raw +Y 必须映射到更小的局部 y')
+  assert.equal(rawToLocal(0, 0.5, canvas).y, 0, 'raw 上边 → 局部 y=0')
+  assert.equal(rawToLocal(0, -0.5, canvas).y, 3500, 'raw 下边 → 局部 y=画布高')
+
+  // ③ 最前部件用 `renderOrder`（大 = 后画 = 在上），**不是数组下标**
+  //    造一个局部正方形：raw x 0..0.1 → 局部 x 2100..2450；raw y 0..-0.1 → 局部 y 1750..2100
+  const quad = [0, 0, 0.1, 0, 0.1, -0.1, 0, -0.1]
+  const quadIdx = [0, 1, 2, 0, 2, 3]
+  const mkDrawable = (index, partId, renderOrder) => ({ index, partId, renderOrder, positions: quad, indices: quadIdx })
+  const back = mkDrawable(0, 'PartBack', 10)
+  const front = mkDrawable(1, 'PartFront', 20)
+  const IN = { x: 2200, y: 1800 }
+  assert.equal(pickPartAt([back, front], IN.x, IN.y, canvas).partId, 'PartFront', 'renderOrder 大者在前')
+  assert.equal(
+    pickPartAt([front, back], IN.x, IN.y, canvas).partId,
+    'PartFront',
+    '结果与数组顺序无关（本模型的 renderOrder 是下标的置换，按下标当 z 序会取反）',
+  )
+  assert.equal(pickPartAt([back, front], 100, 100, canvas), null, '不在任何画层里 → null')
+  const degenerate = { index: 2, partId: 'PartDegenerate', renderOrder: 99, positions: [0, 0, 0, 0, 0, 0], indices: [0, 1, 2] }
+  assert.equal(pickPartAt([degenerate], IN.x, IN.y, canvas), null, '零面积画层不能吞掉点击')
+
+  // ④ 分区语义：**最前面的部件说了算** —— 它没配区就什么都不发生。
+  //    （旧语义"跳过没配区的继续往后找"会让点身体/头发穿透到最底层的秋千背景板 ✗）
+  const zoneOf = (partId) => (partId === 'PartBack' ? 'swing' : null)
+  assert.equal(pickPartAt([back, front], IN.x, IN.y, canvas, { zoneOf }), null, '最前面的没配区 → 什么都不发生')
+  assert.equal(
+    pickPartAt([back, front], IN.x, IN.y, canvas, { zoneOf, skipUnzoned: true }).zone,
+    'swing',
+    '旧语义（穿透）才拿得到后面的区 —— 保留作对照',
+  )
+
+  // ⑤ 分区表本身：纯数据，直接断言（**不再对源码做正则** —— 那正是上一条错公式被钉死的原因）
+  assert.equal(PART_ZONES.Part18, 'face', '脸 → face')
+  assert.equal(
+    PART_ZONES.Part2,
+    'face',
+    '模组（额头/刘海那片**最前面**的部件）必须算脸 —— 漏了它点额头就没反应 ✗',
+  )
+  assert.equal(PART_ZONES.Part5, 'swing', '秋千 → swing')
+  for (const p of ['Part7', 'Part8', 'Part31']) assert.equal(PART_ZONES[p], 'head', `${p} 应归 head`)
+  // 用户 2026-10-05 明确收窄：两侧发、后发**不响应**
+  for (const p of ['Part9', 'Part10', 'Part30']) {
+    assert.equal(PART_ZONES[p], undefined, `${p}（两侧发/后发）不该配区 —— 用户要求"点了没反应"`)
   }
-  // ⚠️ 后发**刻意不归"头顶"**（用户 2026-10-05："后发不该被算进头顶"）——
-  //    它是垂在身后的长发，归头顶会让"点头顶=惊喜"在她脑后也触发 ✗
-  assert.equal(/Part30: 'head'/.test(live2d), false, 'Part30（后发）不能归 head')
-  assert.match(live2d, /Part5: 'swing'/, 'Part5（秋千）必须映射到 swing')
-  // ⚠️ 反面断言（普查纠正过的错误）：`Part31 背饰` **不能**归秋千。
-  //    我原来按名字以为它是"背后的翅膀"，实测普查显示它在 x68..180 y196..276
-  //    = **下身中间**那一片 ✗ 归秋千会导致点她肚子/裙摆也弹一下。
-  //    ⇒ 教训：判定部件归属必须靠**实测范围**，不能靠名字。
-  assert.equal(/Part31: 'swing'/.test(live2d), false, 'Part31（背饰）在下身，不能归 swing')
-  // ⚠️ 反面断言：**两侧兜底已按用户决定移除**
-  //    用户把三个区定死后选了「秋千区 = 只要翅膀本身」，并明确"后发不响应" ✓
-  //    兜底会把两侧长发也算成秋千 → 违背决定 ✗
-  assert.equal(/SIDE_FALLBACK_RATIO/.test(live2d), false, '两侧兜底必须删掉（用户要"只要翅膀本身"）')
-  assert.equal(/frontNoZone/.test(live2d), false, '兜底用的中间变量也必须删干净')
-  // 三区齐全（具体映射在下面按"实测位置"逐条断言）
-  assert.match(live2d, /Part18: 'face'/, '脸')
-  assert.match(live2d, /Part5: 'swing'/, '秋千')
-  assert.match(live2d, /Part29: 'head'/, '头顶')
-  // 部件普查要基于 `debugFrontPartName`（**部件**，与有没有配区无关）——
-  // 它回答的是"名字 ↔ 她身上哪一块"，不是"点在哪个区" ✓
-  assert.match(pet, /live2d\?\.debugFrontPartName\?\.\(px, py\)/, '部件普查要用 debugFrontPartName')
-  // ⚠️ **坐标必须两边同一套**（这是"靠下点不到"的真因）：
-  //    点击点用 `model.toLocal()` 换算到**模型局部像素**，
-  //    顶点则要 `(单位 + 0.5) × 局部尺寸` 也换算成局部像素。
-  //    曾经两边混用（单位顶点 vs 局部像素点击点）→ 越靠下偏得越多 ✗
-  assert.match(live2d, /function localPixelSize\(\)/, '要有"单位 → 局部像素"的换算基准')
-  assert.match(live2d, /\(positions\[vi \* 2\] \+ 0\.5\) \* sizeW/, '顶点必须换算成局部像素再比')
-  assert.match(live2d, /function toLocalPixels\(/, '点击点要用 toLocal 换算到局部像素')
-  assert.match(live2d, /\.toLocal\(\{ x: clientX, y: clientY \}\)/, 'toLocal 的参数是点击点')
-  assert.equal(/unitMapper/.test(live2d), false, '旧的"单位标定"必须删干净（就是它导致越靠下越偏）')
+  // 身体/手/腿/裙摆/后裙同样不响应
+  for (const p of ['Part', 'Part4', 'Part23', 'Part24', 'Part25', 'Part26', 'Part27', 'Part28', 'Part29']) {
+    assert.equal(PART_ZONES[p], undefined, `${p} 不该配区`)
+  }
+  // 名字表必须覆盖 cdi3 里全部 **31** 个部件：漏一个就会把"最前面的部件"认成 `(未收录)` → 点了没反应 ✗
+  assert.equal(Object.keys(PART_NAMES).length, 31, 'PART_NAMES 必须覆盖全部 31 个部件')
+  for (const p of ['Part', 'Part2', 'Part3', 'Part4', 'Part12', 'Part15', 'Part17']) {
+    assert.ok(PART_NAMES[p], `${p} 的名字不能缺`)
+  }
+  // 数据自洽：分区名只能是这三个；每个配了区的部件都必须有名字（否则气泡/日志里会出现 `undefined`）
+  const ZONES = new Set(['face', 'head', 'swing'])
+  for (const [part, zone] of Object.entries(PART_ZONES)) {
+    assert.ok(ZONES.has(zone), `${part} 的分区名 ${zone} 不在 face/head/swing 里`)
+    assert.ok(PART_NAMES[part], `${part} 配了区但 PART_NAMES 里没名字`)
+  }
 
-  // ③ 效果接线
+  // ⑥ 接线（wiring：断言"谁调谁"是合理的，数值逻辑已经在上面②③④⑤里真跑过了）
   assert.match(pet, /face: \(\) => live2d\?\.pokeExpression\('sunglasses'/, '点脸 → 墨镜')
-  assert.match(pet, /head: \(\) => live2d\?\.pokeExpression\('surprise'/, '点头顶 → 惊喜')
+  assert.match(pet, /head: \(\) => live2d\?\.patHead\(\)/, '点头顶 → 摸头专属反应（不是 surprise）')
+  assert.equal(
+    /head: \(\) => live2d\?\.pokeExpression\('surprise'/.test(pet),
+    false,
+    '点头顶**不能**再用 surprise —— 实测几乎看不出来，且语义不对（用户 2026-10-05 否掉）',
+  )
   assert.match(pet, /swing: \(\) => live2d\?\.flick\('light'\)/, '点秋千 → 弹一下')
-
-  // ④ 坐标必须**两边同一套**（局部像素）—— 见上面 ③.5 的断言。
-  //    （旧方案"用掩码内容框把单位顶点折算成窗口"已删除：它导致越靠下越偏 ✗）
-  assert.match(pet, /function contentBox\(\)/, 'pet.js 仍需从掩码算内容框（普查/剖线用）')
   assert.match(pet, /live2d\?\.hitPart\?\.\(event\.clientX, event\.clientY\)/, '点击直接把窗口坐标交给 hitPart')
-
-  // ⑤ 旧的"x 偏离中线"估算必须彻底退休（两套判定并存会让行为说不清）
+  assert.match(pet, /live2d\.swingComboClick\(/, '秋千连点要走 motion-policy 的纯函数（可自测）')
+  assert.match(pet, /pokeExpression\('spiral'/, '连点超过 5 次 → 出晕（spiral）')
+  assert.match(pet, /live2d\?\.debugFrontPartName\?\.\(px, py\)/, '部件普查要用 debugFrontPartName')
+  assert.match(pet, /function contentBox\(\)/, 'pet.js 仍需从掩码算内容框（普查/剖线用）')
+  // 旧的"x 偏离中线"估算、"掩码自标定"、"错公式"必须彻底退休（并存会让行为说不清）
   assert.equal(/SWING_ZONE_RATIO/.test(pet), false, '旧的秋千估算常量必须删掉')
   assert.equal(/isSwingZone/.test(pet), false, '旧的秋千估算函数必须删掉')
+  assert.equal(/unitMapper/.test(live2d), false, '旧的"掩码自标定"必须删掉（已由 rawToLocal 取代）')
+  assert.equal(
+    /\(positions\[vi \* 2\] \+ 0\.5\)/.test(live2d),
+    false,
+    '错公式 `(raw+0.5)*尺寸` 必须彻底删除（它导致横向拉伸 + 上下镜像）',
+  )
+})
+
+check('秋千连点：固定 3s 窗口内超过 5 次 → 出晕 【用户 2026-10-05 定】', () => {
+  // 用户原话："在 3s 内点击秋千超过 5 次就会触发晕"，并明确选了**固定窗口**（首次点击起算）
+  const cfg = { windowMs: 3000, threshold: 5 }
+  let st = createSwingCombo()
+  const at = (t) => {
+    const r = swingComboClick(st, t, cfg)
+    st = r.state
+    return r
+  }
+  // 3s 内连点 5 次：都不出晕
+  for (let i = 1; i <= 5; i++) {
+    const r = at(1000 + i * 100)
+    assert.equal(r.count, i, `第 ${i} 次的计数`)
+    assert.equal(r.dizzy, false, `第 ${i} 次（≤5）不该出晕`)
+  }
+  // 第 6 次（>5）→ 出晕，且窗口归零
+  const sixth = at(1000 + 600)
+  assert.equal(sixth.count, 6, '第 6 次计数为 6')
+  assert.equal(sixth.dizzy, true, '3s 内第 6 次必须出晕')
+  assert.equal(st.count, 0, '出晕后计数归零（避免"点一下晕一下"）')
+  assert.equal(st.windowStart, null, '出晕后窗口关闭')
+
+  // 窗口是**固定**的：从首次点击起算 3s；到点后重新起算
+  let s2 = createSwingCombo()
+  let r = swingComboClick(s2, 0, cfg)
+  s2 = r.state
+  assert.equal(r.count, 1, '首次点击从 1 开始')
+  r = swingComboClick(s2, 2999, cfg)
+  s2 = r.state
+  assert.equal(r.count, 2, '仍在窗口内 → 累计')
+  r = swingComboClick(s2, 3000, cfg)
+  assert.equal(r.count, 1, '距首次点击已满 3000ms → 开新窗口、重新从 1 数')
+  // 反面断言：若是**滑动**窗口，这一次会被算成第 3 次
+  assert.notEqual(r.count, 3, '必须是固定窗口，不是滑动窗口')
+  // 默认参数就是用户定的 3s / 5 次
+  assert.equal(SWING_COMBO.windowMs, 3000, '默认窗口 3s')
+  assert.equal(SWING_COMBO.threshold, 5, '默认阈值 5 次')
+})
+
+check('摸头顶反应：缓动包络 + 混合/叠加语义 + 幅度 【用户 2026-10-05：要先有过渡、幅度要够】', () => {
+  // 用户否掉了原来的 surprise（"惊喜的效果并不适配摸头顶"），选了「舒服得眯起眼 + 轻轻歪头」；
+  // 实机看过之后又提了两条硬要求：**幅度太小**、**没有过渡**（原来是瞬间贴上、到点瞬间撤掉）。
+  // 这条用例就是锁这两条 —— 再退回"瞬间生效"或"幅度缩水"都会红。
+
+  // ① 时长自洽
+  assert.equal(
+    HEAD_PAT.totalMs,
+    HEAD_PAT.riseMs + HEAD_PAT.holdMs + HEAD_PAT.fallMs,
+    'totalMs 必须等于 rise+hold+fall（否则包络与生命周期对不上）',
+  )
+  assert.ok(HEAD_PAT.totalMs >= 1200, `总时长要够长才感觉得到过渡，实际 ${HEAD_PAT.totalMs}ms`)
+  assert.ok(HEAD_PAT.riseMs >= 200 && HEAD_PAT.fallMs >= 200, '起、回都要有足够时间，不能是"瞬间"')
+
+  // ② 包络形状：0 → 1 → 0，且单调
+  assert.equal(headPatEnvelope(-1, HEAD_PAT), 0, '还没开始 → 0')
+  assert.equal(headPatEnvelope(0, HEAD_PAT), 0, 't=0 → 0（不能一开始就贴上去）')
+  assert.ok(headPatEnvelope(HEAD_PAT.riseMs * 0.5, HEAD_PAT) > 0, '上升段中间应 > 0')
+  assert.equal(headPatEnvelope(HEAD_PAT.riseMs, HEAD_PAT), 1, '上升段结束 → 1')
+  assert.equal(headPatEnvelope(HEAD_PAT.riseMs + HEAD_PAT.holdMs / 2, HEAD_PAT), 1, '保持段 → 1')
+  const nearEnd = headPatEnvelope(HEAD_PAT.totalMs - 1, HEAD_PAT)
+  assert.ok(nearEnd > 0 && nearEnd < 1, `回落段末尾应在 (0,1) 之间，实际 ${nearEnd}`)
+  assert.equal(headPatEnvelope(HEAD_PAT.totalMs, HEAD_PAT), 0, '到点 → 0（平滑回正，不是突然撤）')
+  assert.equal(headPatEnvelope(HEAD_PAT.totalMs + 500, HEAD_PAT), 0, '超时 → 0')
+  // 单调性：上升段严格不减、回落段严格不增
+  let prev = -1
+  for (let t = 0; t <= HEAD_PAT.riseMs; t += HEAD_PAT.riseMs / 20) {
+    const v = headPatEnvelope(t, HEAD_PAT)
+    assert.ok(v >= prev - 1e-9, `上升段必须单调不减（t=${t.toFixed(0)}）`)
+    prev = v
+  }
+  prev = 2
+  for (let t = HEAD_PAT.riseMs + HEAD_PAT.holdMs; t <= HEAD_PAT.totalMs; t += HEAD_PAT.fallMs / 20) {
+    const v = headPatEnvelope(t, HEAD_PAT)
+    assert.ok(v <= prev + 1e-9, `回落段必须单调不增（t=${t.toFixed(0)}）`)
+    prev = v
+  }
+  // 过渡必须"平缓起步"：前 10% 时间里的位移不能已经吃掉大半（否则看起来还是瞬移）
+  assert.ok(headPatEnvelope(HEAD_PAT.riseMs * 0.1, HEAD_PAT) < 0.35, '起步要平缓（10% 时不该到位）')
+  // ⚠️ 关键回归保护：起步必须**两头慢**，不能用 easeOutCubic。
+  //    实测 easeOut 在 80ms 就走完 58% → 用户反馈"没有过渡、看着像啪一下贴上去" ✗
+  const q = HEAD_PAT.riseMs / 4 // 上升段走过 1/4 时间时
+  assert.ok(
+    headPatEnvelope(q, HEAD_PAT) < 0.2,
+    `上升段 1/4 时间处必须仍很小（两头慢），实际 ${headPatEnvelope(q, HEAD_PAT).toFixed(3)} —— 用 easeOutCubic 会到 0.58`,
+  )
+  assert.ok(Math.abs(headPatEnvelope(HEAD_PAT.riseMs / 2, HEAD_PAT) - 0.5) < 1e-6, '上升段中点 = 0.5（对称）')
+  // 缓动函数本身
+  assert.equal(easeInOutCubic(0), 0); assert.equal(easeInOutCubic(1), 1); assert.equal(easeInOutCubic(0.5), 0.5)
+  assert.equal(easeOutCubic(0), 0); assert.equal(easeOutCubic(1), 1)
+  assert.ok(easeOutCubic(0.25) > easeInOutCubic(0.25), 'easeOut 起步比 easeInOut 猛（这正是要避开它的原因）')
+
+  // ③ 规格语义：`{to}` = 混合、`{add}` = 叠加；两者都随包络缩放
+  const cur = { ParamAngleZ: 6, ParamBodyAngleZ: 2, ParamEyeLOpen: 1, ParamEyeROpen: 1, ParamEyeLSmile: 0, ParamEyeRSmile: 0 }
+  const read = (id) => cur[id] ?? 0
+  const atStart = resolvePokeParams(HEAD_PAT, 0, read)
+  assert.deepEqual(atStart, {}, 't=0 时**什么都不写** —— 这是"有过渡"的关键（不能瞬间贴上去）')
+  const atPeak = resolvePokeParams(HEAD_PAT, HEAD_PAT.riseMs + 10, read)
+  assert.ok(Math.abs(atPeak.ParamEyeLOpen - 0.25) < 1e-6, '峰值：眼睑混合到 0.25')
+  assert.ok(Math.abs(atPeak.ParamAngleZ - (6 - 16)) < 1e-6, '峰值：ParamAngleZ = 当前 + (-16)')
+  assert.ok(Math.abs(atPeak.ParamBodyAngleZ - (2 - 7)) < 1e-6, '峰值：ParamBodyAngleZ = 当前 + (-7)')
+  const atMid = resolvePokeParams(HEAD_PAT, (HEAD_PAT.riseMs + HEAD_PAT.holdMs + HEAD_PAT.totalMs) / 2, read)
+  assert.ok(Math.abs(atMid.ParamAngleZ - 6) < Math.abs(atPeak.ParamAngleZ - 6), '回落中段应比峰值更接近原状')
+
+  // ④ 幅度：-8° 被用户判为"太小"，这里锁住下限，防止又调回去
+  assert.ok(HEAD_PAT.params.ParamAngleZ.add <= -12, `歪头幅度至少要 12°，实际 ${HEAD_PAT.params.ParamAngleZ.add}°`)
+
+  // ⑤ 动作驱动的参数**必须用 `{add}`**：待机动作 Scene4（180s）每帧都在写它们，
+  //    用 `{to}` 覆盖会把秋千的头部/身体摆动停掉 ✗
+  for (const id of ['ParamAngleZ', 'ParamBodyAngleZ']) {
+    assert.ok(HEAD_PAT.params[id] && 'add' in HEAD_PAT.params[id], `${id} 必须用 {add}（动作每帧在写它）`)
+    assert.equal('to' in HEAD_PAT.params[id], false, `${id} 不能用 {to} 覆盖`)
+  }
+  // 眼睑则是**覆盖式混合**（眯眼本来就要接管眼睑）
+  for (const id of ['ParamEyeLOpen', 'ParamEyeROpen']) {
+    assert.ok('to' in HEAD_PAT.params[id], `${id} 应该是 {to} 混合`)
+  }
+
+  // ⑥ 接线：pet.js 走 patHead()；live2d.js 每帧在 applyBlink() **之后**应用
+  const pet = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+  const live2d = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
+  assert.match(pet, /head: \(\) => live2d\?\.patHead\(\)/, 'pet.js 头顶走 patHead()')
+  assert.match(live2d, /export function patHead\(\)/, 'live2d.js 要导出 patHead()')
+  const blinkIdx = live2d.indexOf('applyBlink(performance.now())')
+  const pokeIdx = live2d.indexOf('applyPokeParams()')
+  assert.ok(blinkIdx >= 0 && pokeIdx >= 0, 'applyBlink / applyPokeParams 都要在 applyState 里')
+  assert.ok(pokeIdx > blinkIdx, '参数覆盖必须排在眨眼接管**之后** —— 否则眨眼会把眯眼顶回去')
+  // 到点后必须**停止写入**（让动作自然接管），而不是"贴一个新值回去"
+  assert.match(live2d, /elapsed > pokeCfg\.totalMs/, 'live2d.js 要按 elapsed 判断结束')
+  assert.equal(/pokeParamsTimer/.test(live2d), false, '不应该再用 setTimeout 硬撤（那样没有回落段）')
+})
+
+check('渲染端模块守卫：renderer/ 里的相对 import 必须落在 renderer/ 内且文件存在', () => {
+  // ⚠️ 实机踩过（2026-10-05）：把 renderer/live2d.js 的 import 写成 '../hit-test.js'。
+  //    `pet://app/` 协议**只服务 renderer/ 目录**（main.js 的 RENDERER_DIR），
+  //    浏览器把 '../hit-test.js' 解析成 pet://app/hit-test.js → **404**
+  //    → **整个 live2d.js 模块加载失败** → 静默降级成占位图。
+  //    用户只看到"桌宠变成小熊了"，日志里才有一行 `Live2D 模块加载失败` ✗
+  //    所以这里静态扫一遍：宁可在自测里红，也不要到实机上静默降级。
+  const dir = new URL('../packages/pet-shell/renderer/', import.meta.url)
+  const rootPath = decodeURIComponent(dir.pathname)
+  const files = readdirSync(fileURLToPath(dir)).filter((f) => f.endsWith('.js'))
+  assert.ok(files.length >= 4, `renderer/ 下应扫到多个模块，实际 ${files.length} 个`)
+
+  const problems = []
+  for (const f of files) {
+    const src = readFileSync(new URL(f, dir), 'utf8')
+    const specs = []
+    // 静态 `import ... from 'x'` / `export ... from 'x'`
+    for (const m of src.matchAll(/(?:^|\n)\s*(?:import|export)[^'"\n]*?from\s*['"]([^'"]+)['"]/g)) specs.push(m[1])
+    // 动态 `import('x')`
+    for (const m of src.matchAll(/import\(\s*['"]([^'"]+)['"]\s*\)/g)) specs.push(m[1])
+    for (const spec of specs) {
+      if (!spec.startsWith('.')) continue // 裸模块名/绝对 URL：不归本条管
+      const target = new URL(spec, new URL(f, dir))
+      const rel = decodeURIComponent(target.pathname)
+      if (!rel.startsWith(rootPath)) {
+        problems.push(`${f} → '${spec}'：跑出了 renderer/（pet:// 只服务 renderer/，会 404 并静默降级）`)
+      } else if (!existsSync(fileURLToPath(target))) {
+        problems.push(`${f} → '${spec}'：文件不存在`)
+      }
+    }
+  }
+  assert.deepEqual(problems, [], `渲染端相对 import 有问题：\n  ${problems.join('\n  ')}`)
 })
 
 check('插件在线小点已从桌宠挪进操作面板 【用户："整合到菜单里面去"】', () => {
