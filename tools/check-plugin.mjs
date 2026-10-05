@@ -2080,10 +2080,15 @@ check('部件级命中测试：三角形判定 + 分区接线 【点脸=墨镜 /
   //    = **下身中间**那一片 ✗ 归秋千会导致点她肚子/裙摆也弹一下。
   //    ⇒ 教训：判定部件归属必须靠**实测范围**，不能靠名字。
   assert.equal(/Part31: 'swing'/.test(live2d), false, 'Part31（背饰）在下身，不能归 swing')
-  // ⚠️ 两侧兜底：精确判定把两侧的长发/后裙也排除掉了，用户仍觉得"秋千区过小" ✗
-  //    → 命中的部件没配区、且离内容中线够远时，算秋千 ✓
-  assert.match(live2d, /SIDE_FALLBACK_RATIO = 0\.22/, '要有两侧兜底比例（沿用旧手感值）')
-  assert.match(live2d, /frontNoZone/, '要记住最前面那个"没配区"的部件来兜底')
+  // ⚠️ 反面断言：**两侧兜底已按用户决定移除**
+  //    用户把三个区定死后选了「秋千区 = 只要翅膀本身」，并明确"后发不响应" ✓
+  //    兜底会把两侧长发也算成秋千 → 违背决定 ✗
+  assert.equal(/SIDE_FALLBACK_RATIO/.test(live2d), false, '两侧兜底必须删掉（用户要"只要翅膀本身"）')
+  assert.equal(/frontNoZone/.test(live2d), false, '兜底用的中间变量也必须删干净')
+  // 三区齐全且各自唯一
+  assert.match(live2d, /Part18: 'face'/, '脸')
+  assert.match(live2d, /Part5: 'swing'/, '秋千')
+  assert.match(live2d, /Part7: 'head'/, '头饰')
   // 部件普查要基于 `debugFrontPartName`（**部件**，与有没有配区无关）——
   // 它回答的是"名字 ↔ 她身上哪一块"，不是"点在哪个区" ✓
   assert.match(pet, /live2d\?\.debugFrontPartName\?\.\(px, py, contentBox\(\)\)/, '部件普查要用 debugFrontPartName')

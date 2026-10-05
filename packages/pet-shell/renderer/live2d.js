@@ -483,17 +483,17 @@ const PART_ZONES = {
 }
 
 /**
- * 两侧兜底：离**内容中线**超过这个比例的地方，若命中的部件没配区，就算秋千。
+ * ⚠️ **两侧兜底已按用户决定移除**（2026-10-05）。
  *
- * ⚠️ 为什么需要（用户："秋千区域过小的问题还没有改善"）：
- *    部件级判定很准，准到把两侧的**长发（后发）/后裙**都排除了 ✗
- *    但用户心里那些位置就是"她两侧的翅膀附近" ✓
- *    所以：**精确判定负责中间（脸/头顶），两侧交给兜底负责** ——
- *    既不误伤"点头顶=惊喜"，又恢复了原来那种宽敞的手感 ✓
- *
- * 0.22 沿用旧"x 偏离中线"判定的取值，手感对得上 ✓
+ * 曾经加过一版：命中的部件没配区、且离内容中线够远时算秋千（沿用旧"x 偏离中线"的比例）。
+ * 目的是把"点两侧长发也弹一下"补回来。
+ * 但用户把三个区都定死之后选了「秋千区 = **只要翅膀本身**」：
+ *   - 后发（中间一大片长发）→ **不响应**
+ *   - 其它零散部件 → **暂不管**
+ *   - 秋千 = 就是那对紫翅膀（`Part5`，普查 94 格）✓
+ * 所以兜底会违背这个决定 ✗ 删掉。**精确判定就是唯一判定**：
+ * 点在她身上但没配区的部件 → 什么都不发生 ✓ 行为可预测、不会误触 ✓
  */
-const SIDE_FALLBACK_RATIO = 0.22
 
 /**
  * 把"单位顶点坐标"折算到**窗口像素** —— 用 **alpha 掩码的内容框**做标定。
@@ -622,26 +622,17 @@ export function hitPart(clientX, clientY, contentBox) {
   const { ux, uy } = mapper.toUnit(clientX, clientY)
 
   const count = core.getDrawableCount?.() ?? 0
-  // **从前往后**（z 序大的后画 = 在上面）→ 先测到谁就是谁
-  let frontNoZone = null
+  // **从前往后**（z 序大的后画 = 在上面）→ 先测到谁就是谁。
+  // 命中"没配区"的部件（眼睛/嘴/裙摆/后发…）→ 继续往后面找：
+  // 它们画在脸/头发上面，但点它们时用户心里点的还是那一块 ✓
+  // 全部找完都没有配区的 → 什么都不发生 ✓（用户定：只有脸/头顶/秋千三个区）
   for (let i = count - 1; i >= 0; i--) {
     if (core.getDrawableDynamicFlagIsVisible && !core.getDrawableDynamicFlagIsVisible(i)) continue
     if (!pointInDrawable(core, i, ux, uy)) continue
     const partId = core.getPartId?.(core.getDrawableParentPartIndex?.(i))
     const zone = PART_ZONES[partId] ?? null
-    if (zone !== null) {
-      return { zone, partId, drawable: i, partName: PART_NAMES[partId] ?? partId, precise: true }
-    }
-    // 记下**最前面**那个"没配区"的部件：兜底要用它（说明这个像素确实是她的）
-    if (frontNoZone === null) frontNoZone = { partId, partName: PART_NAMES[partId] ?? partId }
-  }
-  // 两侧兜底：命中了她的像素、但那个部件没配区，且点离内容中线够远 → 算秋千 ✓
-  // （见 SIDE_FALLBACK_RATIO 的注释：精确判定负责中间，两侧交给它）
-  if (frontNoZone && contentBox && contentBox.width > 0) {
-    const center = contentBox.left + contentBox.width / 2
-    if (Math.abs(clientX - center) > contentBox.width * SIDE_FALLBACK_RATIO) {
-      return { zone: 'swing', partId: frontNoZone.partId, partName: frontNoZone.partName, fallback: true }
-    }
+    if (zone === null) continue
+    return { zone, partId, drawable: i, partName: PART_NAMES[partId] ?? partId }
   }
   return null
 }
