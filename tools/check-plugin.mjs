@@ -1974,6 +1974,26 @@ check('「被弹一下」的阻尼振荡：起手为 0、真会振荡、结尾�
   assert.ok(FLICK_PRESETS.medium.durationMs < FLICK_PRESETS.strong.durationMs)
 })
 
+check('"被弹"的位移必须相对构图基准 【否则累积漂移、跑出窗口】', () => {
+  // 实机 bug：用户报"现在会出现模型显示不完全的情况"。
+  // 根因：我在 `flick()` 里记下"当时的 model.position"当基准 ✗
+  //   → 弹到一半再点一次（或构图在此期间重跑）时，基准被记成**偏移后**的位置
+  //   → 弹完还原到错位置 → 越来越偏、最后跑出窗口 ✓
+  // 正确：基准只由构图（fit）提供（`fitBase`），"弹"永远是 `fitBase + 偏移`。
+  const src = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
+  const flickStart = src.indexOf('export function flick(')
+  assert.ok(flickStart > 0, '找不到 flick()')
+  const flickBody = src.slice(flickStart, src.indexOf('\nfunction ', flickStart))
+  assert.ok(!flickBody.includes('base: {'), '"弹"里绝不能记基准 —— 那会累积漂移（实机踩过）')
+  const stepStart = src.indexOf('function stepFlick(')
+  const stepBody = src.slice(stepStart, src.indexOf('\nfunction ', stepStart))
+  assert.ok(stepBody.includes('fitBase.x + offset *'), '整体位移必须写成 fitBase + 偏移')
+  assert.ok(stepBody.includes('fitBase.rotation + offset *'), '倾斜同理')
+  // 基准只能在构图里被改写：3 处 = 1 处声明（`let fitBase = {0,0,0}`）+ 2 处构图代码
+  const fitAssignments = (src.match(/fitBase = \{/g) ?? []).length
+  assert.equal(fitAssignments, 3, `fitBase 只应由声明 + 两处构图更新（实际 ${fitAssignments} 处）`)
+})
+
 // ─────────────────────────────────────────────────────────────
 console.log('\n[5] 命中测试（外壳纯函数，不需要 Electron）')
 

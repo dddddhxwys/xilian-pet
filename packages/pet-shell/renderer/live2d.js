@@ -233,6 +233,7 @@ export function fit() {
   const scale = Math.min(cw / mw, ch / mh)
   model.scale.set(scale)
   model.position.set((cw - mw * scale) / 2, ch - mh * scale)
+  fitBase = { x: model.position.x, y: model.position.y, rotation: model.rotation }
   state.log(`初步适配（按画布）${mw.toFixed(0)}×${mh.toFixed(0)} → 舞台 ${cw}×${ch}，scale=${scale.toFixed(4)}`)
 }
 
@@ -329,6 +330,11 @@ function layoutFromContent() {
   const dX = (cssW - contentLocal.w * s2) / 2 // 水平居中
   const dY = cssH - FIT_MARGIN_PX - contentLocal.h * s2 // 贴底（像站在桌面上）
   model.position.set(dX - contentLocal.x * s2, dY - contentLocal.y * s2)
+  // ⚠️ 记下"构图给出的基准位置/旋转" —— "被弹"的位移是**相对它**的偏移。
+  //    之前是"弹的时候记一份当时的变换当基准"，结果：
+  //    弹的过程中再点一次（或构图在此期间重跑）→ 基准被记成**偏移后**的位置
+  //    → 弹完还原到错位置 → 越来越偏、最后跑出窗口（用户实测："显示不完全"）✗
+  fitBase = { x: model.position.x, y: model.position.y, rotation: model.rotation }
 
   state.log(
     `构图：内容 ${(contentLocal.w * s2).toFixed(0)}×${(contentLocal.h * s2).toFixed(0)} CSS px / ` +
@@ -1118,8 +1124,15 @@ function stepHandPoseMix(now) {
 }
 
 /**
+ * 构图（fit）给出的**基准**变换 —— "被弹"的位移是相对它的偏移。
+ * ⚠️ 只能由 fit 更新；"弹"绝不能反过来改它（否则会累积漂移，实测踩过）。
+ */
+let fitBase = { x: 0, y: 0, rotation: 0 }
+
+/**
  * 「被弹了一下」的当前状态（点秋千触发）。
- * @type {{t0:number, preset:ReturnType<typeof Object>}|null}
+ * 只存时间与预设 —— **不存基准位置**（基准由 fitBase 统一提供，避免漂移）。
+ * @type {{t0:number, preset:object}|null}
  */
 let flickState = null
 
@@ -1131,8 +1144,8 @@ let flickState = null
  *  2. 身体/头部角度参数（内部跟着颤）
  *  3. 秋千与腿脚摇晃参数（挂着的部件跟着荡）
  *
- * ⚠️ 第 1 层必须**记录基准并在结束时还原**：
- *    构图（fit）会重设 `model.position/scale`，弹完不还原她就会停在偏移位置上 ✗
+ * ⚠️ 整体位移是 `fitBase + 偏移`，**每次都用 fitBase 重算**：
+ *    这样重复点、弹到一半再点都不会累积漂移（踩过：漂到最后跑出窗口）。
  *
  * @param {'light'|'medium'|'strong'} level
  */
@@ -1140,11 +1153,7 @@ export function flick(level = 'light') {
   const model = state.model
   if (!model) return
   const preset = FLICK_PRESETS[level] ?? FLICK_PRESETS.light
-  flickState = {
-    t0: performance.now(),
-    preset,
-    base: { x: model.position.x, y: model.position.y, rotation: model.rotation },
-  }
+  flickState = { t0: performance.now(), preset }
   state.log(`被弹了一下（${level}，${preset.durationMs}ms；整体位移 ±${preset.move.px}px / 旋转 ±${preset.move.rot}rad）`)
 }
 
@@ -1161,22 +1170,18 @@ function stepFlick(now) {
   if (flickState === null) return null
   const model = state.model
   const elapsed = now - flickState.t0
-  const { preset, base } = flickState
-  if (elapsed > preset.durationMs) {
-    if (model) {
-      // 还原整体变换 —— 不还原她会停在偏移位置（构图下次也不一定跑）
-      model.position.set(base.x, base.y)
-      model.rotation = base.rotation
-    }
-    flickState = null
-    return null
-  }
-  const offset = flickOffset(elapsed, preset)
+  const { preset } = flickState
+  const offset = elapsed > preset.durationMs ? 0 : flickOffset(elapsed, preset)
+  if (elapsed > preset.durationMs) flickState = null
+
   if (model) {
-    // ① 整个模型：横向来回 + 向上跳（用 |offset| 保证两次都是"弹起来"）+ 轻微倾斜
-    model.position.set(base.x + offset * preset.move.px, base.y - Math.abs(offset) * preset.move.up)
-    model.rotation = base.rotation + offset * preset.move.rot
+    // ① 整个模型：横向来回 + 向上跳（用 |offset| 保证两次都是"弹起来"）+ 轻微倾斜。
+    //    基准永远取 `fitBase`（构图给的），所以偏移不会累积。
+    model.position.set(fitBase.x + offset * preset.move.px, fitBase.y - Math.abs(offset) * preset.move.up)
+    model.rotation = fitBase.rotation + offset * preset.move.rot
   }
+  if (elapsed > preset.durationMs) return null // 已复位，内部参数不用再写
+
   // ② 内部参数：身体/头/秋千跟着颤
   const out = {}
   for (const [id, amp] of Object.entries(preset.amp)) {
