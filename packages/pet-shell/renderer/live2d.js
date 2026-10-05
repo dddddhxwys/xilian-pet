@@ -1001,15 +1001,15 @@ function playStateMotion(next, animate = true) {
  * 动作/表情/物理都已跑完，所以读到的是动作本帧的值、写下去也能压住它。
  */
 /**
- * 第一段（"把手卸掉"）的时长。
+ * 手部过渡的两段时长。
  *
- * ⚠️ 刻意**很短**：手是互斥资源，不能同时出现两只（否则三只手），所以必须先卸掉再上新；
- *    但"卸掉"这一段太长就会被看成"手先放下、再抬起来"两个动作
- *    （用户原话："我能看到昔涟的手会快速放下然后放到正确的位置"）✗
- *    压到 70ms 后它只是一次几乎察觉不到的松开，紧接着第二段把新手抬到位 ✓
+ * ⚠️ 用户反馈演进："手会快速放下然后放到正确的位置" → "把整体动作都放慢"。
+ *    "先卸掉再上新"是必须的（手是互斥资源，同时出现 = 三只手），
+ *    但**太快**时两段会被看成两次闪动；放慢 + 两头都缓之后，
+ *    它读起来就是**一次自然的"把手从秋千绳挪到下巴"** ✓
  */
-const HAND_MIX_OUT_MS = 70
-const HAND_MIX_IN_MS = 240
+const HAND_MIX_OUT_MS = 260
+const HAND_MIX_IN_MS = 420
 /** "手部姿势全关"的中性值（第一段目标） */
 const NEUTRAL_HANDS = {
   Param9: 0,
@@ -1073,7 +1073,9 @@ function stepHandPoseMix(now) {
   if (handMix === null) return null
   const current = handMix.steps[handMix.step]
   const progress = current.durMs <= 0 ? 1 : Math.min(1, (now - handMix.t0) / current.durMs)
-  const eased = 1 - Math.pow(1 - progress, 3) // easeOutCubic
+  // ⚠️ 用 **easeInOutCubic**（两头都缓），不是 easeOut：
+  //    手的位移如果"急起"，看起来就像跳帧/闪动；两头缓才像一次自然的挪动。
+  const eased = progress < 0.5 ? 4 * progress * progress * progress : 1 - Math.pow(-2 * progress + 2, 3) / 2
   const out = {}
   if (current.to) {
     // 混向目标：起点 = **我们上一次写下的值**（没有才退回动作本帧的值）
