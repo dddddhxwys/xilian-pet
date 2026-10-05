@@ -62,7 +62,7 @@ echo.
 set "PET_NODE="
 
 rem 0) a Node runtime shipped INSIDE this package (the "full" package has one)
-rem    -> checked first: most predictable, and needs no prerequisites at all
+rem    checked first: most predictable, and needs no prerequisites at all
 for %%P in (
   "%~dp0node\node.exe"
   "%~dp0tools\node\node.exe"

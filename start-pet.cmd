@@ -23,7 +23,7 @@ cd /d "%~dp0"
 set "PET_NODE="
 
 rem 0) Node shipped INSIDE this package (the "all-in-one" build has one)
-rem    -> keeps the launcher working with zero prerequisites
+rem    keeps the launcher working with zero prerequisites
 for %%P in (
   "%~dp0node\node.exe"
   "%~dp0tools\node\node.exe"

@@ -2961,6 +2961,20 @@ check('两个 `.cmd` 都要能找到包内的便携 Node（零前置版的关键
   }
 })
 
+check('`.cmd` 的注释里不能出现 `>`（cmd 会先做重定向，凭空造出文件）', () => {
+  // ⚠️ 实测：`rem    -> keeps the launcher working...` 在运行后于**当前目录**
+  //    留下一个名为 `keeps` 的空文件 —— 因为重定向在 rem 执行之前就被处理了。
+  //    写 `rem a -> b` 这种箭头注释非常自然，所以必须用测试挡住。
+  for (const rel of ['安装.cmd', 'start-pet.cmd']) {
+    const lines = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8').split('\n')
+    lines.forEach((line, index) => {
+      if (/^\s*rem\b/i.test(line)) {
+        assert.ok(!line.includes('>'), `${rel}:${index + 1} 注释里有 ">"，会造出文件：${line.trim()}`)
+      }
+    })
+  }
+})
+
 console.log(`\n${'─'.repeat(56)}`)
 console.log(`通过 ${passed} 项，失败 ${failed} 项`)
 if (warnings.length > 0) console.log(`插件告警 ${warnings.length} 条：\n  ${warnings.slice(0, 5).join('\n  ')}`)
