@@ -474,11 +474,15 @@ const PART_ZONES = {
    * 头顶 → 惊喜。普查：35 格，x68..164 **y92..124**（**最上方**）
    * 对应用户标注图里的**蓝圈** ✓
    *
-   * ⚠️⚠️ **这个部件的名字叫「后裙」，但它渲染在头顶** —— 就是这么离谱 ✗
-   * 这个模型的 `cdi3` 部件名和实际位置几乎全对不上：
-   *   `Part29 后裙` → 头顶   ｜ `Part7 头饰` → 下方   ｜ `Part31 背饰` → 下身中间
-   * ⇒ **判定部件归属只能靠实测位置（普查表），绝不能靠名字** ✓
-   *   （我按名字把「头饰/外侧发」当头顶，结果点在头顶毫无反应 ✗ 用户标注图纠正了这一点）
+   * ⚠️ 这个部件在模型里的名字是 **「后裙」**，但它的画面渲染在**头顶**。
+   *
+   * 说明（已用「部件对账」逐条验证过，别误解成"名字不可信"）：
+   *   模型运行时报告 31 个部件，id 与顺序和 `cdi3.json` 的 `Parts` 表**完全一致**
+   *   （`[28] Part29 → 后裙` 两处一字不差）⇒ 名字确实是**模型自己的名字**，没抄错 ✓
+   *   只是**这个"秋千版"里，名字和渲染位置对不上**（作者大概率复用/改过部件）✓
+   *
+   * ⇒ 所以定映射时的规矩是：**名字当线索、位置当依据** —— 以普查测出来的范围为准 ✓
+   *   （我最初按名字挑"头饰/外侧发"当头顶，结果点在头顶毫无反应 ✗ 是用户的标注图纠正的）
    */
   Part29: 'head',
   // ── 其余一律不响应（用户 2026-10-05 定）──
@@ -583,6 +587,24 @@ function pointInDrawable(core, index, ux, uy) {
     maxY = Math.max(maxY, vy(v))
   }
   return x >= minX && x <= maxX && y >= minY && y <= maxY
+}
+
+/**
+ * 调试：列出模型里的**全部部件**（`getPartCount()` + `getPartId(i)`），
+ * 附上我方 `PART_NAMES` 表里的名字 —— 用来**对账**：
+ *   「cdi3 的 Id→Name 表」和「模型运行时返回的 id」到底是不是同一套 ✗
+ * （之前我直接假定是同一套、从没验证过 —— 用户质疑得对 ✓）
+ */
+export function debugAllParts() {
+  const core = state.model?.internalModel?.coreModel
+  if (!core) return []
+  const n = core.getPartCount?.() ?? 0
+  const out = []
+  for (let i = 0; i < n; i++) {
+    const id = core.getPartId?.(i)
+    out.push({ index: i, id, name: PART_NAMES[id] ?? '(未收录)' })
+  }
+  return out
 }
 
 /**
@@ -1594,6 +1616,8 @@ window.xilianLive2D = {
   debugZoneBoxes,
   /** 调试：最前面命中的部件名（不管有没有配区），排查"点了没反应"用 */
   debugFrontPartName,
+  /** 调试：列出模型里的全部部件（id + 我方表里的名字），用于对账 */
+  debugAllParts,
   /** 读回渲染画布的 alpha 通道，供命中测试使用（{ alpha, width, height }） */
   readAlpha,
   /** 供 alpha 掩码取样用的渲染画布（空白表示不可交互） */

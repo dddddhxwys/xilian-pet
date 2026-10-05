@@ -625,6 +625,20 @@ async function startLive2D() {
         for (const row of cellPart) {
           api.log(`[部件普查] ${row.map((r) => (r ? letterOf.get(r.partName) : ' ')).join('')}`)
         }
+
+        // ── 对账：模型**全部**部件 vs 我方的名字表 ────────────────
+        // 用户质疑"部件名不可信"这个说法（"我认为是你从一开始就理解错了"）——
+        // 那就把两边摆出来：模型运行时返回的 id 是什么、我方表里配的名字是什么、
+        // 以及它实际渲染在哪（格数 + 位置）。
+        const all = live2d?.debugAllParts?.() ?? []
+        api.log(`[部件对账] 模型报告 ${all.length} 个部件（index / 模型返回的 id / 我方表里的名字 / 实测可见格数）`)
+        for (const p of all) {
+          const e = parts.get(p.name)
+          api.log(
+            `[部件对账] ${String(p.index).padStart(2)} ${String(p.id).padEnd(10)} ${String(p.name).padEnd(8)} ` +
+              (e ? `${String(e.cells).padStart(3)}格 x ${Math.round(e.minX)}..${Math.round(e.maxX)} y ${Math.round(e.minY)}..${Math.round(e.maxY)}` : '（从没在最前面）'),
+          )
+        }
       }
       requestAnimationFrame(paint)
     }
