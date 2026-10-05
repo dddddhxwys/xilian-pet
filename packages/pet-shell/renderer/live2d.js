@@ -507,12 +507,15 @@ function applyState() {
   if (state.currentState === 'error') setParams(ERROR_FACE)
   // 道具渐变（两段式过渡）：位置在状态参数之后，才能盖过它们
   stepPropFade(performance.now())
-  // ⚠️ **最后一步**：压掉"动作每帧会写回来"的参数（`force`）。
+  // ⚠️ **最后一步**：压掉"动作每帧会写回来"的参数。
   //    本函数就挂在 `beforeModelUpdate`（动作/表情/物理都跑完之后、提交渲染之前），
   //    所以这里的写入能压过动作。
   //    实机教训：秋千动作（Scene4）自己会把 `Param9`「思考」推到 1 →
   //    荡秋千时冒出一只"思考的手"，加上抓绳两只 = **三只手**。
-  if (mapped.force) setParams(mapped.force)
+  //    手部姿势优先走"两段式混合"（不跳变、也不重叠）；没在过渡时才直接写 force。
+  const mixed = stepHandPoseMix(performance.now())
+  if (mixed !== null) setParams(mixed)
+  else if (mapped.force) setParams(mapped.force)
   // 眨眼也在这里输出 —— 位置在动作之后，才能压过被动作冻结的眼睛参数
   applyBlink(performance.now())
 }
@@ -972,11 +975,103 @@ function playStateMotion(next, animate = true) {
   applyStateMotion(next, animate)
 }
 
+/**
+ * 手部姿势的两段式**混合**（`running` 切入切出用）。
+ *
+ * 两个约束同时成立，所以不能简单处理：
+ *  ① **手是互斥资源** —— 不能交叉淡化，否则"旧手没淡完、新手已淡入"→ 三只手（踩过）
+ *  ② **必须有过渡** —— 直接切参数会跳变（用户："润一下，不要跳变"）
+ *  ③ 秋千动作还在每帧写这些参数，所以混合要**跟着动作的当前值**走，不能写死绝对值
+ *
+ * 做法：
+ *  - 第一段 `HAND_MIX_OUT_MS`：把**所有**手部姿势混向"全关"（把手卸掉）
+ *  - 第二段 `HAND_MIX_IN_MS`：混向本状态的目标（running 的思考姿势），
+ *    或者（离开 running 时）**混回动作自己的值**（让秋千的抓绳姿势自然回来）
+ *
+ * 每帧公式都是 `lerp(动作刚写下的值, 目标, 进度)` —— 在 `beforeModelUpdate` 里执行，
+ * 动作/表情/物理都已跑完，所以读到的是动作本帧的值、写下去也能压住它。
+ */
+const HAND_MIX_OUT_MS = 160
+const HAND_MIX_IN_MS = 220
+/** "手部姿势全关"的中性值（第一段目标） */
+const NEUTRAL_HANDS = {
+  Param9: 0,
+  Param16: 0,
+  Param10: 0,
+  Param11: 0,
+  Param12: 0,
+  Param13: 0,
+  Param14: 0,
+  Param17: 0,
+  Param18: 0,
+}
+let handMix = null
+/** 上一次"手部姿势特殊"的状态（决定要不要起过渡） */
+let handState = null
+
+function readParamValue(id) {
+  try {
+    return state.model?.internalModel?.coreModel?.getParameterValueById?.(id) ?? 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * 起一段两段式手部过渡。
+ * @param {Record<string, number>|null} inTarget 第二段目标；null = 混回动作自己的值（离开 running）
+ */
+function startHandPoseMix(inTarget) {
+  const secondStep = inTarget === null ? { release: NEUTRAL_HANDS, durMs: HAND_MIX_IN_MS } : { to: inTarget, durMs: HAND_MIX_IN_MS }
+  handMix = { steps: [{ to: NEUTRAL_HANDS, durMs: HAND_MIX_OUT_MS }, secondStep], step: 0, t0: performance.now() }
+}
+
+/** 推进手部过渡；返回本帧该写的参数（没在过渡则返回 null） */
+function stepHandPoseMix(now) {
+  if (handMix === null) return null
+  const current = handMix.steps[handMix.step]
+  const progress = current.durMs <= 0 ? 1 : Math.min(1, (now - handMix.t0) / current.durMs)
+  const eased = 1 - Math.pow(1 - progress, 3) // easeOutCubic
+  const out = {}
+  if (current.to) {
+    // 混向目标：起点是"动作本帧的值"
+    for (const id of Object.keys(current.to)) {
+      const motion = readParamValue(id)
+      out[id] = motion + (current.to[id] - motion) * eased
+    }
+  } else if (current.release) {
+    // 混回动作：从"我们压住的值"回到动作自己的值
+    for (const id of Object.keys(current.release)) {
+      const motion = readParamValue(id)
+      out[id] = motion + (current.release[id] - motion) * (1 - eased)
+    }
+  }
+  if (progress >= 1) {
+    handMix.step += 1
+    handMix.t0 = now
+    if (handMix.step >= handMix.steps.length) handMix = null
+  }
+  return out
+}
+
 /** 真正切动作。animate=false 表示"只是读到了现状"，不播入场动画 */
 function applyStateMotion(next, animate) {
   const mapped = STATE_MAP[next] ?? STATE_MAP.idle
   clearTimeout(oneShotTimer)
   clearTimeout(lingerTimer) // 切状态时取消上一条待撤的特效
+
+  // ── 手部姿势过渡 ─────────────────────────────────────────────
+  // `running` 是唯一"手部姿势特殊"的状态（思考的手 + 不抓绳）。
+  // 进/出它的时候要**两段式混合**：先把手卸掉、再上新姿势（或混回动作的抓绳姿势）。
+  // ⚠️ 不能交叉淡化（手是互斥资源 → 会同时出现两只手），也不能直接切（跳变）。
+  if (handState === 'running' && next !== 'running') {
+    startHandPoseMix(null) // 离开：混回动作自己的值（秋千的抓绳姿势自然回来）
+    state.log('手部姿势：离开 running → 两段式混回动作')
+  } else if (next === 'running' && handState !== 'running') {
+    startHandPoseMix(STATE_MAP.running.force) // 进入：先卸掉所有手部姿势，再上思考姿势
+    state.log('手部姿势：进入 running → 两段式混向思考姿势')
+  }
+  handState = next === 'running' ? 'running' : null
 
   // ⚠️ `motion === null` = **这个状态不播任何动作**（目前只有 running）。
   //    停掉当前动作，只留 `Param9`「思考」这类参数效果 —— 她保持"手放下巴"的姿势。
