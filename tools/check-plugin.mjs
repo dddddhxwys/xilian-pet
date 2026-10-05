@@ -2066,10 +2066,19 @@ check('部件级命中测试：三角形判定 + 分区接线 【点脸=墨镜 /
   const live2d = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
   const pet = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
 
-  // ② 分区映射：脸 / 头发 / 秋千 各自归到正确的区
-  assert.match(live2d, /Part18: 'face'/, 'Part18（脸）必须映射到 face')
-  for (const part of ['Part8', 'Part7', 'Part9', 'Part10', 'Part22']) {
-    assert.match(live2d, new RegExp(`${part}: 'head'`), `${part}（头发/头饰/发）必须映射到 head`)
+  // ② 分区映射 —— **按实测量出的位置**，不是按名字
+  assert.match(live2d, /Part18: 'face'/, 'Part18（实测 y180..212 中间）→ face')
+  assert.match(live2d, /Part5: 'swing'/, 'Part5（实测 x20..244 两侧）→ swing')
+  // ⚠️ 头顶是 `Part29` —— 它的名字叫「后裙」，但**实测渲染在最上方**（y92..124）✗
+  //    用户标注图（蓝圈=头顶）确认了这一点：按名字找「头饰/外侧发」是错的 ✗
+  assert.match(live2d, /Part29: 'head'/, 'Part29（实测 y92..124 最上方）→ head')
+  // 反面断言：按名字猜出来的那几个**不是**头顶（实测都在别处）
+  for (const wrong of ['Part7', 'Part9', 'Part10', 'Part8', 'Part22']) {
+    assert.equal(
+      new RegExp(`${wrong}: 'head'`).test(live2d),
+      false,
+      `${wrong} 不能归 head —— 名字像但不是头顶（实测位置不在最上方），靠名字猜会点不动 ✗`,
+    )
   }
   // ⚠️ 后发**刻意不归"头顶"**（用户 2026-10-05："后发不该被算进头顶"）——
   //    它是垂在身后的长发，归头顶会让"点头顶=惊喜"在她脑后也触发 ✗
@@ -2085,10 +2094,10 @@ check('部件级命中测试：三角形判定 + 分区接线 【点脸=墨镜 /
   //    兜底会把两侧长发也算成秋千 → 违背决定 ✗
   assert.equal(/SIDE_FALLBACK_RATIO/.test(live2d), false, '两侧兜底必须删掉（用户要"只要翅膀本身"）')
   assert.equal(/frontNoZone/.test(live2d), false, '兜底用的中间变量也必须删干净')
-  // 三区齐全且各自唯一
+  // 三区齐全（具体映射在下面按"实测位置"逐条断言）
   assert.match(live2d, /Part18: 'face'/, '脸')
   assert.match(live2d, /Part5: 'swing'/, '秋千')
-  assert.match(live2d, /Part7: 'head'/, '头饰')
+  assert.match(live2d, /Part29: 'head'/, '头顶')
   // 部件普查要基于 `debugFrontPartName`（**部件**，与有没有配区无关）——
   // 它回答的是"名字 ↔ 她身上哪一块"，不是"点在哪个区" ✓
   assert.match(pet, /live2d\?\.debugFrontPartName\?\.\(px, py, contentBox\(\)\)/, '部件普查要用 debugFrontPartName')
