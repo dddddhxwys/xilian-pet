@@ -46,6 +46,8 @@ export const EXCLUDED_FILE_PATTERNS = [
   /^Cyrene\.zip$/i,
   /^\.DS_Store$/i,
   /\.bak$/i,
+  // 安装脚本自己产生的日志（不该跟着发行包走；它们由 setup.mjs / 安装.cmd 每次运行时重写）
+  /^(setup|install)-log\.txt$/i,
 ]
 
 /** vendor 里的必需文件（少一个 Live2D 就加载不了） */

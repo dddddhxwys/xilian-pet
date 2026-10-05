@@ -23,9 +23,13 @@ tools/_crawl-*.mjs
 
 # 打发行包的产物（tools/package-release.mjs 生成）
 #   .release/     —— 暂存目录（复制一份完整源码树）
-#   dist-release/ —— 成品 zip（精简版 ~1.7 MB / 完整版 ~150 MB）
+#   dist-release/ —— 成品 zip（精简版 ~1.7 MB / 完整版 ~155 MB）
 /.release/
 /dist-release/
+
+# 安装脚本运行时产生的日志（tools/setup.mjs / 安装.cmd 每次运行都会重写）
+/setup-log.txt
+/install-log.txt
 
 # 编辑器/系统
 .vscode/

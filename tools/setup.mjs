@@ -30,6 +30,27 @@ const DRY_RUN = argv.includes('--dry-run')
 const profileArg = argv.find((a) => a.startsWith('--profile='))?.split('=')[1]
 
 const counts = { ok: 0, warn: 0, fail: 0 }
+/**
+ * 输出**同时**进屏幕和日志文件。
+ *
+ * 为什么必须存日志：朋友是远程的，黑窗口一关，几十行输出就没了 ——
+ * 只能靠他截图/复述，而我们连"哪一步失败了"都问不出来（实测就是这样：只拿到
+ * 一句"按任意键继续"，什么诊断信息都没有）。
+ */
+const LOG_PATH = join(ROOT, 'setup-log.txt')
+const logLines = []
+process.on('exit', () => {
+  try {
+    writeFileSync(LOG_PATH, `${logLines.join('\n')}\n`, 'utf8')
+  } catch {
+    /* 写不了就算了，别让收尾逻辑把安装搞挂 */
+  }
+})
+const line = (s = '') => {
+  const text = String(s)
+  logLines.push(text)
+  console.log(text)
+}
 const ok = (title, detail = '') => {
   counts.ok++
   line(`  ✅ ${title}`)
@@ -46,7 +67,6 @@ const bad = (title, detail = '') => {
   if (detail) line(`     ${detail}`)
 }
 
-const line = (s = '') => console.log(s)
 const run = (file, args, label) => {
   line(`    → ${label ?? `${file} ${args.join(' ')}`}`)
   if (DRY_RUN) return 0
@@ -200,6 +220,9 @@ line('')
 // ── 汇总 ──────────────────────────────────────────────────────────
 line('─'.repeat(56))
 line(`结果：${counts.ok} 项就绪 · ${counts.warn} 项告警 · ${counts.fail} 项失败`)
+line('')
+line(`本次输出已存到：${LOG_PATH}`)
+line('（出问题时把这个文件发给我 —— 比截图全，也比复述准）')
 line('')
 if (counts.fail > 0) {
   line('按上面的提示处理后，**重跑一次本安装即可**（幂等，不会重复挂载）。')

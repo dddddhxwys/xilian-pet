@@ -2909,6 +2909,14 @@ check('zip 写入器：目录条目齐全（不依赖解压工具隐式建目录
   }
 })
 
+check('发行包清单：安装脚本的日志不该跟着发行包走', () => {
+  // 这两个文件是 setup.mjs / 安装.cmd 每次运行时重写的，进了包会让下一批测试者
+  // 看到上一批人的日志（也白涨体积）
+  for (const rel of ['setup-log.txt', 'install-log.txt']) {
+    assert.equal(shouldInclude(rel, { withModel: true }), false, `${rel} 不该进包`)
+  }
+})
+
 console.log(`\n${'─'.repeat(56)}`)
 console.log(`通过 ${passed} 项，失败 ${failed} 项`)
 if (warnings.length > 0) console.log(`插件告警 ${warnings.length} 条：\n  ${warnings.slice(0, 5).join('\n  ')}`)
