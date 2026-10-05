@@ -64,8 +64,14 @@ export const DEFAULT_REMINDERS = {
     probability: 0.35,
   },
   spend: {
-    /** 每个会话每累计这么多 token 提一次 */
-    everyTokens: 200_000,
+    /**
+     * 每个会话每累计这么多 token 提一次。
+     *
+     * ⚠️ **默认 0 = 关闭**（2026-10-05 用户："把这个弹窗去掉" —— 截图是"这段时间又用了约 376k tokens"）。
+     * 关掉的只是**默认开关**，机制本身还在：显式配一个正数就能开回来 ✓
+     * （`if (everyTokens > 0)` 那段逻辑未改动，见文件末尾「4. 花销（基线制）」）
+     */
+    everyTokens: 0,
   },
 }
 

@@ -455,6 +455,27 @@ check('花销：基线制 —— 历史账不提醒，只对本次启动后的�
   assert.equal(more.fires.length, 1, '再跨一个阈值应再提醒')
 })
 
+check('花销提醒默认关闭 【用户："把这个弹窗去掉"】', () => {
+  // 截图里那条"这段时间又用了约 376k tokens" = 花销提醒。
+  // 用户要求去掉 → 默认 `everyTokens: 0`（关掉的只是默认开关，机制还在，显式配就能开回来）。
+  const config = mergeReminderConfig({})
+  assert.equal(config.spend.everyTokens, 0, '默认必须是 0（关闭）')
+
+  // 就算 token 暴涨，默认配置也一条都不该发
+  const big = 10_000_000
+  let r = decideReminders({ now: 0, spendBySession: { s1: big }, config })
+  r = decideReminders({ state: r.state, now: 1000, spendBySession: { s1: big + 5_000_000 }, config })
+  r = decideReminders({ state: r.state, now: 2000, spendBySession: { s1: big + 50_000_000 }, config })
+  assert.equal(
+    r.fires.filter((f) => f.notice === 'spend').length,
+    0,
+    '默认配置下不该再弹花销提醒',
+  )
+
+  // 机制保留：显式配置仍能开回来（上一条测试覆盖了行为）
+  assert.equal(mergeReminderConfig({ spend: { everyTokens: 500_000 } }).spend.everyTokens, 500_000)
+})
+
 check('reminders.enabled=false 时一条都不发', () => {
   const config = mergeReminderConfig({ enabled: false })
   const r = decideReminders({ now: 4_000_000, pendingApprovals: 5, hasActivity: true, config, random: () => 0 })
