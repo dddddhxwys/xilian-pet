@@ -891,6 +891,19 @@ app.whenReady().then(async () => {
   } catch (error) {
     log(`GPU 详情读取失败：${error.message}`)
   }
+  // ── 子进程死亡（尤其 GPU 进程）───────────────────────────────────
+  // 这是"为什么整场都在软件渲染"最直接的证据：混合输出（双显卡）的笔记本上，
+  // 如果 Chromium 试图用**被系统挂起的独显**，GPU 进程会 launch-failed / crashed，
+  // 然后整场退回软件渲染（日志里就是 gpu_compositing=disabled_software）。
+  // 光看 featureStatus 只能看到"软件渲染"这个现象，看不出是谁把 GPU 弄没的。
+  app.on('child-process-gone', (_event, details) => {
+    log(`⚠️ 子进程退出：type=${details?.type} reason=${details?.reason} exitCode=${details?.exitCode} serviceName=${details?.serviceName ?? '-'}`)
+    if (details?.type === 'GPU') {
+      log('   → GPU 进程没了。若这是混合输出笔记本，常见的根因是**独显被系统挂起**、')
+      log('     而 Windows 又指派 Electron 去用那张卡；可到「设置 → 系统 → 显示 → 图形」')
+      log('     把 electron.exe 显式指定为「省电（核显）」，或在显卡控制面板里改。')
+    }
+  })
 
   registerModelProtocol()
   const settings = findModelSettings()
