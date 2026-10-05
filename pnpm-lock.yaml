@@ -23,7 +23,7 @@ importers:
         version: 7.4.3
     devDependencies:
       electron:
-        specifier: latest
+        specifier: 44.5.1
         version: 44.5.1
 
 packages:

@@ -29,12 +29,31 @@ const electronDir = join(root, 'node_modules', 'electron')
 const distDir = join(electronDir, 'dist')
 const cacheDir = join(root, '.cache', 'electron')
 
-if (!existsSync(join(electronDir, 'package.json'))) {
-  console.error('找不到 node_modules/electron —— 先在仓库根目录执行 pnpm install')
+// ── 版本来源 ────────────────────────────────────────────────────────
+// ⚠️ **不能**只依赖 `node_modules/electron/package.json`：发给朋友的**精简包**里
+//    没有 node_modules（只有下载来的 dist/），旧写法会直接报"先跑 pnpm install"。
+//     1. 优先读实际装好的 electron 包（最准）
+//     2. 否则读 packages/pet-shell/package.json 里声明的版本（**必须钉死具体版本**）
+const installedPkg = join(electronDir, 'package.json')
+const shellPkgPath = join(root, 'packages', 'pet-shell', 'package.json')
+const declared = existsSync(shellPkgPath)
+  ? JSON.parse(readFileSync(shellPkgPath, 'utf8'))?.devDependencies?.electron
+  : undefined
+
+const version = existsSync(installedPkg)
+  ? JSON.parse(readFileSync(installedPkg, 'utf8')).version
+  : String(declared ?? '').replace(/^[^\d]*/, '')
+
+if (!/^\d+\.\d+\.\d+/.test(version)) {
+  console.error(
+    `无法确定 Electron 版本。\n` +
+      `  node_modules/electron/package.json : ${existsSync(installedPkg) ? '有' : '没有'}\n` +
+      `  packages/pet-shell 声明的是       : ${declared ?? '(没有声明)'}\n` +
+      `请在 packages/pet-shell/package.json 里把 electron 钉成具体版本（例如 "44.5.1"），\n` +
+      `或先在仓库根目录跑一次 pnpm install。`,
+  )
   process.exit(1)
 }
-
-const version = JSON.parse(readFileSync(join(electronDir, 'package.json'), 'utf8')).version
 const platform = process.platform
 const arch = process.arch
 const exeName = platform === 'win32' ? 'electron.exe' : 'electron'

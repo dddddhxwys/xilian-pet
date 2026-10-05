@@ -21,6 +21,12 @@ tools/_crawl-*.mjs
 # 复核结论文档是 docs/接手复核报告.md（那个要入库）。
 /.audit/
 
+# 打发行包的产物（tools/package-release.mjs 生成）
+#   .release/     —— 暂存目录（复制一份完整源码树）
+#   dist-release/ —— 成品 zip（精简版 ~1.7 MB / 完整版 ~150 MB）
+/.release/
+/dist-release/
+
 # 编辑器/系统
 .vscode/
 .idea/

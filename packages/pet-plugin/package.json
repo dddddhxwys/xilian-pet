@@ -4,9 +4,24 @@
   "private": true,
   "type": "module",
   "description": "昔涟桌宠 Host 插件：会话事件 → 桌宠状态，经同源 SSE 推送，并提供反向操控入口",
-  "exports": {
-    ".": "./index.js"
+  "meta": {
+    "title": "昔涟桌宠",
+    "description": "把 DSH 的状态变成桌面上一只昔涟：干活时她荡秋千思考，有审批积压会冒泡提醒你。支持点击互动与拖拽。"
   },
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "reducer.js",
+    "reminders.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale/*.json"
+  ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

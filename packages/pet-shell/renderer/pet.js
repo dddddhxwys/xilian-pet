@@ -36,6 +36,8 @@ let mapW = 0
 let mapH = 0
 let interactive = null
 let dragging = false
+/** 拖拽期间给主进程续期的定时器（主进程有 6s 看门狗，见 main.js 的 DRAG_STALE_MS） */
+let dragRenewTimer = null
 let dragX = 0
 let dragY = 0
 let bubbleTimer = null
@@ -253,13 +255,32 @@ window.addEventListener(
 
 window.addEventListener('mousedown', (event) => {
   if (event.button !== 0) return // 右键留给菜单小窗，不参与拖拽
-  if (!shouldBeInteractive(event.clientX, event.clientY)) return
+  // ⚠️ 这里**故意不再**用 shouldBeInteractive() 复核一遍 —— 实测它吞掉了 **9.5% 的按下**
+  //    （476 次按下 / 45 次"松手时并不在拖拽态"）。原因：两边判据不等价：
+  //      · 主进程：4×4 取最大值的**降采样**掩码（每格覆盖 ~2 CSS px，偏宽松）
+  //      · 这里  ：**全分辨率逐像素**查（抗锯齿/半透明边缘判不过）
+  //    于是边缘处主进程放行、这里否决 → 按下被静默丢掉（没有拖拽、也没有分区反应）。
+  //    而事件能送到这里，本身就说明**主进程已判定此处可交互**（否则
+  //    setIgnoreMouseEvents(true) 会让事件直接穿透到桌面，我们根本收不到）—— 它才是权威。
+  //    真按在空白处也无害：松手时 movedFar=false，照常走分区判定，没分区就没反应 ✓
   dragging = true
   movedFar = false
   // 告诉主进程进入拖拽态：拖拽期间它会让窗口一直保持可交互，
   // 否则鼠标快速移出角色（超出不透明区域）的那一瞬间窗口就会变回穿透，拖拽被"甩掉"。
   // （按下就先告诉它，是为了保住拖拽手感；是不是"点击"稍后用 movedFar 判。）
   api.setDragging(true)
+  // 拖拽期间每 2s 续期一次：主进程有 6s 看门狗，丢一次 mouseup（松手在窗口外）
+  // 或渲染端卡死都不会让窗口永久卡在"吞掉所有点击"的状态。
+  if (dragRenewTimer === null) {
+    dragRenewTimer = setInterval(() => {
+      if (!dragging) {
+        clearInterval(dragRenewTimer)
+        dragRenewTimer = null
+        return
+      }
+      api.setDragging(true)
+    }, 2000)
+  }
   dragX = event.screenX
   dragY = event.screenY
   pressX = event.screenX
@@ -309,6 +330,10 @@ window.addEventListener('mouseup', (event) => {
   }
   dragging = false
   api.setDragging(false)
+  if (dragRenewTimer !== null) {
+    clearInterval(dragRenewTimer)
+    dragRenewTimer = null
+  }
   if (!live2dActive) img.classList.remove('squish')
   document.body.style.cursor = 'grab'
   api.log(`[拖动] 松手 movedFar=${movedFar}`)

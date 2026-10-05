@@ -96,6 +96,27 @@ export function contentBand(mask, maskWidth, maskHeight, winHeight, threshold = 
   return { top, bottom, centerY: (top + bottom) / 2 }
 }
 
+/**
+ * 拖拽态是否该被**强制复位**。
+ *
+ * 为什么要这条兜底：`draggingNow` 唯一的清零处是渲染端的 `mouseup`。
+ * 松手发生在窗口外、或渲染端崩了/卡了，那个事件永远不来
+ * → 窗口永久停在"一直保持可交互"，把落在窗口范围内的点击**全部吞掉**
+ * （包括本该给桌面其他窗口的点击）。
+ *
+ * 抽成纯函数是为了能自测 —— 这种"永远不该发生的那次丢 mouseup"，手动点是验不出来的。
+ *
+ * @param {{draggingNow:boolean, lastAt:number, now:number, staleMs:number}} input
+ * @returns {boolean} true = 已经太久没续期，应当复位
+ */
+export function draggingExpired({ draggingNow, lastAt, now, staleMs }) {
+  if (draggingNow !== true) return false
+  // 没记到时间戳（或时间戳不合法）时不复位：宁可多等一轮，也别在刚按下时误伤拖拽
+  if (!Number.isFinite(lastAt) || lastAt <= 0) return false
+  if (!Number.isFinite(now) || !Number.isFinite(staleMs)) return false
+  return now - lastAt > staleMs
+}
+
 // ── 部件级命中测试：真源在 `renderer/hit-math.js`（渲染端只能 fetch 到 renderer/ 内的文件）──
 // 这里 re-export，好让**主进程**（main.js）与**自测**（tools/check-plugin.mjs）照旧从本文件取。
 export {

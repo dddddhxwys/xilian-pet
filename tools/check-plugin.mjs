@@ -21,6 +21,7 @@ import {
   PART_NAMES,
   PART_ZONES,
   contentBand,
+  draggingExpired,
   hitTest,
   insideAnyRect,
   pickPartAt,
@@ -28,6 +29,8 @@ import {
   rawToLocal,
 } from '../packages/pet-shell/hit-test.js'
 import { createSseLink } from '../packages/pet-shell/sse-link.js'
+import { addPluginRow, looksLikeProfilePatch, pluginRowSnippet } from './lib/patch-edit.mjs'
+import { requiredInRelease, shouldInclude } from './lib/release-files.mjs'
 import {
   BASE_MOTION,
   FLICK_PRESETS,
@@ -2683,6 +2686,120 @@ await checkAsync('SSE 连不上时不能谎报"已连接"', async () => {
     assert.ok(!links.some((l) => l.connected), '连不上却报了 connected:true')
   } finally {
     link.close()
+  }
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[7] 一键安装与打包（纯逻辑）')
+
+/** 一份贴近真实的 profile patch 样本（含注释 + 其他插件行） */
+const SAMPLE_PATCH = `# Your patch layer for this dsh profile, applied after every bundle layer:
+- id: ui-chat
+  name: "@deepseek-ai/dsh-client-ui-chat"
+  config:
+    transcriptView: standard
+
+- insert:
+    - id: some-other-plugin
+      name: '@local/other'
+`
+
+check('patch 改写：幂等（连加两次只多一段）', () => {
+  const once = addPluginRow(SAMPLE_PATCH, { pluginEntry: 'C:/x/packages/pet-plugin/index.js', config: { pathPrefix: '/xilian-pet' } })
+  assert.equal(once.changed, true, '第一次应当有改动')
+  const twice = addPluginRow(once.text, { pluginEntry: 'C:/x/packages/pet-plugin/index.js' })
+  assert.equal(twice.changed, false, '第二次不该再追加')
+  assert.equal(twice.text, once.text, '第二次应原样返回')
+  assert.equal(once.text.split('id: xilian-pet').length - 1, 1, 'xilian-pet 行只应出现一次')
+})
+
+check('patch 改写：不破坏原有内容，缩进符合 Loader 方言', () => {
+  const { text } = addPluginRow(SAMPLE_PATCH, { pluginEntry: 'C:/x/p/index.js', config: { pathPrefix: '/xilian-pet', captureRawShapes: 20 } })
+  assert.ok(text.startsWith(SAMPLE_PATCH), '原有内容必须原样保留在开头')
+  assert.match(
+    text,
+    /\n- insert:\n {4}- id: xilian-pet\n {6}name: 'C:\/x\/p\/index\.js'\n {6}config:\n {8}pathPrefix: '\/xilian-pet'\n {8}captureRawShapes: 20\n$/,
+    `产出的 YAML 形状不对：\n${text.slice(-260)}`,
+  )
+})
+
+check('patch 改写：末尾没有换行时也要正确分隔', () => {
+  const noNewline = SAMPLE_PATCH.trimEnd()
+  const { text } = addPluginRow(noNewline, { pluginEntry: 'C:/p/index.js' })
+  assert.ok(text.includes('\n\n- insert:'), '缺少空行分隔会让 YAML 黏在一起')
+  assert.ok(text.startsWith(noNewline), '原有内容仍要完整保留')
+})
+
+check('patch 改写：缺 pluginEntry 要大声报错（而不是写出半截 YAML）', () => {
+  assert.throws(() => pluginRowSnippet({}), /pluginEntry/)
+  assert.throws(() => pluginRowSnippet({ pluginEntry: '' }), /pluginEntry/)
+})
+
+check('patch 识别：能认出 patch，不把无关文本当 patch', () => {
+  assert.equal(looksLikeProfilePatch(SAMPLE_PATCH), true)
+  assert.equal(looksLikeProfilePatch('- id: a\n'), true)
+  assert.equal(looksLikeProfilePatch('hello world'), false)
+  assert.equal(looksLikeProfilePatch(''), false)
+})
+
+check('拖拽看门狗：只在"超时未续期"时复位', () => {
+  const base = { draggingNow: true, lastAt: 1000, now: 3000, staleMs: 6000 }
+  assert.equal(draggingExpired(base), false, '未超时不该复位')
+  assert.equal(draggingExpired({ ...base, now: 7000 }), false, '正好等于阈值不该复位（用 > 判）')
+  assert.equal(draggingExpired({ ...base, now: 7001 }), true, '超过阈值必须复位')
+  assert.equal(draggingExpired({ ...base, draggingNow: false }), false, '不在拖拽态就无事发生')
+  assert.equal(draggingExpired({ ...base, lastAt: 0 }), false, '没记到时间戳时别误伤刚按下的拖拽')
+  assert.equal(draggingExpired({ ...base, lastAt: NaN }), false)
+  assert.equal(draggingExpired({ ...base, now: NaN }), false)
+})
+
+check('拖拽看门狗：阈值必须远大于渲染端的续期间隔（否则正常拖拽会被误复位）', () => {
+  const mainSrc = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+  const petSrc = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+  const stale = Number(mainSrc.match(/const DRAG_STALE_MS = (\d+)/)?.[1])
+  const renew = Number(petSrc.match(/setInterval\(\(\) => \{[\s\S]*?\}, (\d+)\)/)?.[1])
+  assert.ok(Number.isFinite(stale), 'main.js 里应有 DRAG_STALE_MS')
+  assert.ok(Number.isFinite(renew), 'pet.js 里应能找到续期间隔（setInterval 的第二个参数）')
+  assert.ok(stale >= renew * 2, `看门狗阈值(${stale}ms)至少要是续期间隔(${renew}ms)的 2 倍`)
+})
+
+check('发行包清单：vendor 必须收（它是 gitignore 掉但发行必需的）', () => {
+  for (const rel of ['packages/pet-shell/renderer/vendor/pixi.min.js', 'packages/pet-shell/renderer/vendor/live2dcubismcore.min.js']) {
+    assert.equal(shouldInclude(rel, {}), true, `${rel} 必须进包，否则朋友要跑 pnpm`)
+  }
+})
+
+check('发行包清单：开发产物与机器相关内容一律不收', () => {
+  const excluded = [
+    '.git/config',
+    'node_modules/electron/package.json',
+    'packages/pet-shell/.state/pet.log',
+    '.audit/report.md',
+    '.cache/electron/x.zip',
+    '.pnpm-store/x',
+    'dist/x.7z',
+    'chajian/环境体检报告.md',
+    'docs/screenshots/peak-0.png',
+  ]
+  for (const rel of excluded) {
+    assert.equal(shouldInclude(rel, {}), false, `${rel} 不该进包`)
+  }
+})
+
+check('发行包清单：第三方素材与模型按开关收', () => {
+  for (const rel of ['3597924035_Cyrene昔涟前瞻小人桌宠.wpk', 'Cyrene.zip', 'packages/x.bak']) {
+    assert.equal(shouldInclude(rel, { withModel: true }), false, `${rel} 永远不该进包`)
+  }
+  assert.equal(shouldInclude('assets/live2d/Cyrene/Cyrene.moc3', {}), false)
+  assert.equal(shouldInclude('assets/live2d/Cyrene/Cyrene.moc3', { withModel: true }), true)
+  assert.equal(shouldInclude('node_modules/electron/dist/electron.exe', {}), false)
+  assert.equal(shouldInclude('node_modules/electron/dist/electron.exe', { withElectron: true }), true)
+  assert.equal(shouldInclude('node_modules/pixi.js/dist/pixi.min.js', { withElectron: true }), false, '--with-electron 不该把整个 node_modules 放进来')
+})
+
+check('发行包必需清单：列出的文件**真的都在仓库里**', () => {
+  for (const rel of requiredInRelease({ withModel: true })) {
+    assert.ok(existsSync(new URL(`../${rel}`, import.meta.url)), `发行包必需文件缺失：${rel}`)
   }
 })
 

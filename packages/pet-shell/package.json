@@ -6,7 +6,7 @@
   "description": "Electron 透明置顶窗外壳：加载宠物页面，订阅 Host 插件的 SSE 事件",
   "main": "main.js",
   "devDependencies": {
-    "electron": "latest"
+    "electron": "44.5.1"
   },
   "dependencies": {
     "@pixi/unsafe-eval": "^7.4.3",

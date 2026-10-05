@@ -15,21 +15,48 @@
 
 import { createRequire } from 'node:module'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
 const here = dirname(fileURLToPath(import.meta.url))
 const packageDir = join(here, '..')
+const rootDir = join(packageDir, '..', '..')
 
 const checkOnly = process.argv.includes('--check')
 
+/**
+ * 找 Electron 可执行文件。
+ *
+ * ⚠️ **不能**只靠 `require('electron')`：发给朋友的**精简包**里没有
+ *    `node_modules/electron` 这个 npm 包（只有 `tools/fetch-electron.mjs` 下载来的
+ *    `dist/`），那时 `require('electron')` 会抛 —— 启动器直接挂掉。
+ *    所以直连 dist 路径，require 只作为"pnpm 正常安装过"时的兜底。
+ */
+function resolveElectronPath() {
+  const exeName = process.platform === 'win32' ? 'electron.exe' : 'electron'
+  const candidates = [
+    process.env.ELECTRON_OVERRIDE_DIST_PATH
+      ? join(process.env.ELECTRON_OVERRIDE_DIST_PATH, exeName)
+      : null,
+    join(rootDir, 'node_modules', 'electron', 'dist', exeName),
+  ].filter(Boolean)
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  return require('electron')
+}
+
 let electronPath
 try {
-  electronPath = require('electron')
+  electronPath = resolveElectronPath()
 } catch (error) {
-  console.error('[launch] 找不到 electron，先在仓库根目录执行 pnpm install：', error.message)
+  console.error(
+    '[launch] 找不到 Electron 可执行文件。\n' +
+      '  先跑一次下载：node tools/fetch-electron.mjs\n' +
+      `  原因：${error.message}`,
+  )
   process.exit(1)
 }
 

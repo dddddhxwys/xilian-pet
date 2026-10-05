@@ -15,7 +15,7 @@ import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import http from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'node:fs'
-import { contentBand, hitTest } from './hit-test.js'
+import { contentBand, draggingExpired, hitTest } from './hit-test.js'
 import { createSseLink } from './sse-link.js'
 import { readFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize } from 'node:path'
@@ -559,6 +559,17 @@ let alphaMask = null
 let uiRects = []
 /** 拖拽中必须一直保持可交互：否则鼠标快速移出角色时窗口会"甩掉"拖拽 */
 let draggingNow = false
+/**
+ * 拖拽态的最后一次续期时间 + 看门狗阈值。
+ *
+ * ⚠️ 为什么需要看门狗：`draggingNow` 唯一的清零处是渲染端的 `mouseup`。
+ *    如果松手发生在窗口之外、或渲染端崩了/卡了，`setDragging(false)` 永远不来
+ *    → 窗口**永久**停在"一直可交互"，把落在 260×300 里的所有点击都吞掉
+ *    （连给桌面其他窗口的点击也一起吃掉）。
+ *    渲染端在拖拽期间每 2s 续期一次（pet.js），所以静默超过 6s 就是真的掉了。
+ */
+let draggingLastAt = 0
+const DRAG_STALE_MS = 6000
 let lastIgnore = null
 let ignoreLogs = 0
 
@@ -579,6 +590,11 @@ function startHitTestLoop(win) {
   let lastDebugAt = 0
   const timer = setInterval(() => {
     if (win.isDestroyed()) return
+    if (draggingExpired({ draggingNow, lastAt: draggingLastAt, now: Date.now(), staleMs: DRAG_STALE_MS })) {
+      const silent = Math.round((Date.now() - draggingLastAt) / 1000)
+      log(`⚠️ 拖拽态卡住 ${silent}s 没有续期（松手丢了 / 渲染端卡了）→ 强制复位，否则窗口会一直吞掉点击`)
+      draggingNow = false
+    }
     if (draggingNow) {
       applyIgnore(win, false)
       return
@@ -789,6 +805,15 @@ app.whenReady().then(async () => {
   })
   ipcMain.on('pet:dragging', (_event, value) => {
     draggingNow = Boolean(value)
+    // 续期时间戳：看门狗据此判断拖拽态是不是"卡住了"
+    if (draggingNow) draggingLastAt = Date.now()
+  })
+  // 窗口失焦也复位一次（用户可能 Alt+Tab 走了，mouseup 收不到）
+  win.on('blur', () => {
+    if (draggingNow) {
+      draggingNow = false
+      log('窗口失焦 → 复位拖拽态')
+    }
   })
   // 构图缓存：省掉每次启动的 3 秒测量，也避免"打开一会突然变大"
   ipcMain.handle('pet:fit-cache-get', (_event, modelKey) => {
