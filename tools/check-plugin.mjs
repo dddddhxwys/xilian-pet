@@ -31,12 +31,12 @@ import {
   propTargetsFor,
 } from '../packages/pet-shell/renderer/motion-policy.js'
 import {
+  TURN_END_STATE,
   activityLabel,
   aggregate,
   cacheHitRate,
   createPetState,
   hasActivity,
-  markRead,
   normalizeAgentError,
   normalizeAgentStatus,
   normalizeSessionEvent,
@@ -117,11 +117,21 @@ check('审批压过完成：done + approval → approval', () => {
   assert.equal(aggregate(s), 'approval')
 })
 
-check('done 记未读，running 清未读', () => {
-  let s = emit(createPetState(), 'turn/end', 's1', 0)
-  assert.equal(snapshot(s).unread, 1)
-  s = emit(s, 'turn/start', 's1', 1000)
-  assert.equal(snapshot(s).unread, 0)
+check('未读功能已整体移除：快照里不再有 unread 字段 【用户："把未读功能去除"】', () => {
+  // 曾经的语义：done / error 记未读、running 清未读、渲染端显示 +N 背板。
+  // 2026-10-05 用户要求整体去除 → 这条断言把"真的没了"钉住，
+  // 避免哪天有人顺手把它加回来（那会连带恢复一组已经删掉的 UI 和路由）。
+  const s = emit(createPetState(), 'turn/end', 's1', 0)
+  assert.equal(aggregate(s), 'done', 'done 状态本身要保留（动作靠它触发）')
+  assert.equal('unread' in snapshot(s), false, '快照里不该再有 unread')
+  assert.equal('sessions' in snapshot(s), true)
+  for (const sess of snapshot(s).sessions) {
+    assert.equal('unread' in sess, false, '每个会话也不该再有 unread')
+  }
+  // 状态帧同样不该带 unread（渲染端已经没有徽标可收）
+  for (const f of emit(s, 'turn/start', 's1', 1000).frames ?? []) {
+    if (f.type === 'state') assert.equal('unread' in f, false, 'state 帧不该带 unread')
+  }
 })
 
 check('升优先级立即生效', () => {
@@ -212,19 +222,29 @@ check('agent/status idle 把运行中的会话降回空闲', () => {
   assert.equal(aggregate(s), 'idle')
 })
 
-check('agent/status idle **不**冲掉 done（未读语义要保留）', () => {
+check('agent/status idle **会把 done 降回 idle** 【未读移除后的新语义】', () => {
+  // 以前 done 带"未读"，刻意不让 idle 抹掉它（要等用户看过）。
+  // 未读功能移除后，"刚结束"只是一瞬间的事 —— `agent/status: idle` 一到就该回待机 ✓
+  // （动作不受影响：done 的一次性动作是在**状态切换时**触发的，
+  //   从 done 降回 idle 正是"演完回去荡秋千"的正常路径 ✓）
   let s = emit(createPetState(), 'turn/end', 's1', 0)
   assert.equal(aggregate(s), 'done')
   s = reduceAgentStatus(s, { sessionId: 's1', status: 'idle' }, 1000).state
-  assert.equal(aggregate(s), 'done', 'done 带未读，不能被 idle 抹掉')
-  assert.equal(snapshot(s).unread, 1)
+  assert.equal(aggregate(s), 'idle', 'done 必须能被 idle 降档，否则状态会挂住')
 })
 
-check('agent/status running 清未读', () => {
+check('agent/status idle 也能把 error 降回 idle', () => {
+  // error 同理：没有未读就没有"必须等用户看过"的理由
+  let s = reduceAgentError(createPetState(), { sessionId: 's1', message: 'boom' }, 0).state
+  assert.equal(aggregate(s), 'error')
+  s = reduceAgentStatus(s, { sessionId: 's1', status: 'idle' }, 1000).state
+  assert.equal(aggregate(s), 'idle')
+})
+
+check('agent/status running → running', () => {
   let s = emit(createPetState(), 'turn/end', 's1', 0)
   s = reduceAgentStatus(s, { sessionId: 's1', status: 'running' }, 2000).state
   assert.equal(aggregate(s), 'running')
-  assert.equal(snapshot(s).unread, 0)
 })
 
 check('agent/status 非法值被忽略', () => {
@@ -255,32 +275,28 @@ check('approval/decided 计数 -1 且不会变负', () => {
 })
 
 // ── agent/error ─────────────────────────────────────────────────
-check('agent/error → 出错档 + 未读 + notice 帧', () => {
+check('agent/error → 出错档 + notice 帧', () => {
   const r = reduceAgentError(createPetState(), { sessionId: 's1', message: 'boom' }, 0)
   assert.equal(aggregate(r.state), 'error')
-  assert.equal(snapshot(r.state).unread, 1)
   assert.equal(r.frames.find((f) => f.type === 'notice')?.notice, 'error')
 })
 
 // ── turn/end 按 reason 分流 ─────────────────────────────────────
-check('turn/end completed → done + 未读', () => {
+check('turn/end completed → done', () => {
   const s = emit(createPetState(), 'turn/end', 's1', 0, { data: { reason: { kind: 'completed' } } })
   assert.equal(aggregate(s), 'done')
-  assert.equal(snapshot(s).unread, 1)
 })
 
-check('turn/end interrupted → 空闲且**不**产生未读（用户自己打断的）', () => {
+check('turn/end interrupted → 空闲（用户自己打断的）', () => {
   const s = emit(createPetState(), 'turn/end', 's1', 0, { data: { reason: { kind: 'interrupted' } } })
   assert.equal(aggregate(s), 'idle')
-  assert.equal(snapshot(s).unread, 0)
 })
 
-check('turn/end error → 出错 + 未读', () => {
+check('turn/end error → 出错', () => {
   const s = emit(createPetState(), 'turn/end', 's1', 0, {
     data: { reason: { kind: 'error', error: { message: 'llm failed' } } },
   })
   assert.equal(aggregate(s), 'error')
-  assert.equal(snapshot(s).unread, 1)
 })
 
 check('turn/end 未知 reason 保守当 completed', () => {
@@ -578,7 +594,6 @@ check('缓存命中率 = cacheRead / (cacheRead + uncachedInput)；无输入时�
       a: {
         sessionId: 'a',
         state: 'idle',
-        unread: false,
         tokenBuckets: { uncachedInputTokens: 100, outputTokens: 0, cacheReadTokens: 300, cacheWriteTokens: 0 },
       },
     },
@@ -587,27 +602,29 @@ check('缓存命中率 = cacheRead / (cacheRead + uncachedInput)；无输入时�
   assert.equal(snap.sessions[0].spendTokens, 400, 'spendTokens 现在由四桶推导，兼容旧消费者')
 })
 
-check('markRead：清未读并推一帧 state；没有未读时是空操作', () => {
-  const base = {
-    current: 'done',
-    currentSince: 0,
-    seq: 7,
-    minHoldMs: 0,
-    sessions: {
-      a: { sessionId: 'a', state: 'done', unread: true },
-      b: { sessionId: 'b', state: 'running', unread: false },
-    },
-  }
-  const noop = markRead(base, 'b')
-  assert.equal(noop.state, base, 'b 本来就没未读 → 原样返回')
-  assert.equal(noop.frames.length, 0)
-  const all = markRead(base)
-  assert.equal(all.state.sessions.a.unread, false)
-  assert.equal(all.frames.length, 1)
-  assert.equal(all.frames[0].type, 'state')
-  assert.equal(all.frames[0].unread, 0, '帧里必须带 unread=0，窗口才会把徽标收掉')
-  const one = markRead(base, 'a')
-  assert.equal(one.state.sessions.a.unread, false)
+check('未读相关代码已从 reducer 彻底删除 【静态钉住，防止被顺手加回来】', () => {
+  const src = readFileSync(new URL('../packages/pet-plugin/reducer.js', import.meta.url), 'utf8')
+  const code = src
+    .split('\n')
+    .filter((line) => !/^\s*(?:\*|\/\/|\/\*)/.test(line)) // 去掉注释行（注释里会提到 unread 说明历史）
+    .join('\n')
+  assert.equal(/unread/.test(code), false, 'reducer 的**代码**里不该再出现 unread')
+  assert.equal(/export function markRead/.test(code), false, 'markRead 已删除')
+  assert.equal(/export function unreadCount/.test(code), false, 'unreadCount 已删除')
+  // TURN_END_STATE 只表达状态了
+  assert.deepEqual(TURN_END_STATE.completed, { state: 'done' })
+  assert.deepEqual(TURN_END_STATE.error, { state: 'error' })
+})
+
+check('插件不再注册 POST /read 路由 【静态】', () => {
+  const src = readFileSync(new URL('../packages/pet-plugin/index.js', import.meta.url), 'utf8')
+  const code = src
+    .split('\n')
+    .filter((line) => !/^\s*(?:\*|\/\/|\/\*)/.test(line))
+    .join('\n')
+  assert.equal(/pathPrefix\}\/read/.test(code), false, '`${pathPrefix}/read` 路由必须已删除')
+  assert.equal(/markRead\(/.test(code), false, '不该再引用 markRead')
+  assert.equal(/unreadCount\(/.test(code), false, '不该再引用 unreadCount')
 })
 
 check('primaryTokens：右键菜单的用量视图取「最近活跃」那个会话', () => {
@@ -864,8 +881,8 @@ check('负向对照：mock 确实会因缺 inject 而抛错（证明上面两条
   )
 })
 
-check('apply 注册了 13 条 exact 路由', () => {
-  assert.equal(routes.size, 13, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
+check('apply 注册了 12 条 exact 路由 【未读移除后由 13 减为 12】', () => {
+  assert.equal(routes.size, 12, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
 })
 
 check('审批探针默认完全不注册（连 ctx.on 都不调）', () => {
@@ -1433,38 +1450,18 @@ await checkAsync('POST /debug/notice → 推 notice 帧（A7 显示侧的手动�
   assert.equal(soft.frame.urgent, false, 'urgent:false 要能透传（低优先通知会自动消失）')
 })
 
-await checkAsync('POST /read → 真的清掉插件侧的未读并推 state 帧（徽标立刻收）', async () => {
-  // 先制造一个未读：turn/end completed → done + unread=true
-  for (const fn of listeners.get('session/event') ?? []) {
-    fn({ id: 's-read' }, { type: 'turn/end', seq: 20, data: { turn: 1, reason: { kind: 'completed' } } })
-  }
-  const before = await (await fetch(`${base}/xilian-pet/state`)).json()
-  assert.ok(before.unread >= 1, `应先有未读，实际 ${before.unread}`)
-
-  const sse = await openSse(`${base}/xilian-pet/events`)
-  await sse.readUntil((b) => b.includes('"snapshot"'), 3000)
+await checkAsync('POST /read 已随未读功能移除（返回 404，不再有这层副作用）', async () => {
+  // 未读移除后，这个路由**必须真的不存在** —— 渲染端也删掉了调用方，
+  // 但如果路由还留着，就会出现"接口在、没人用"的半吊子状态（以后容易被误用）。
   const res = await fetch(`${base}/xilian-pet/read`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({}),
   })
-  assert.equal(res.status, 200)
-  const body = await res.json()
-  assert.equal(body.ok, true)
-  assert.equal(body.unread, 0, '响应里未读应已归零')
-  const text = await sse.readUntil((b) => /"unread":0/.test(b), 3000)
-  sse.close()
-  assert.match(text, /"unread":0/, '要推一帧 state 出去，窗口才能立刻收掉徽标')
-
-  const after = await (await fetch(`${base}/xilian-pet/state`)).json()
-  assert.equal(after.unread, 0, '插件侧的未读必须真的被清掉，否则下一个 state 帧又会把它报回来')
-
-  // 收尾：把 s-read 推回 running。
-  // 否则它停在 done（优先级 3 > running 1），会污染后面 SSE 测试的聚合状态
-  // —— 实测就是这么把"观测到 turn/start → 推 running"那条测试带崩的。
-  for (const fn of listeners.get('session/event') ?? []) {
-    fn({ id: 's-read' }, { type: 'turn/start', seq: 21, data: { turn: 2 } })
-  }
+  assert.equal(res.status, 404, 'POST /read 应该已经没有注册了')
+  // `/state` 里也不该再有 unread 字段
+  const snap = await (await fetch(`${base}/xilian-pet/state`)).json()
+  assert.equal('unread' in snap, false, '/state 不该再返回 unread')
 })
 
 await checkAsync('token 数据源：能读到宿主投影 → 以宿主为准（durable，DSH 重启不丢）', async () => {

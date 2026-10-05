@@ -1209,7 +1209,7 @@ app.whenReady().then(async () => {
     // 于是强制状态被当成一次真实转变 —— 测不出真实场景（实测踩过）。
     // 另外要在开场手势演完之前送达，才能覆盖"状态排队等手势"那条路径。
     if (process.env.PET_FORCE_STATE) {
-      const forced = { type: 'state', state: process.env.PET_FORCE_STATE, unread: 0 }
+      const forced = { type: 'state', state: process.env.PET_FORCE_STATE }
       setTimeout(() => {
         if (!win.isDestroyed()) {
           win.webContents.send('pet:frame', forced)

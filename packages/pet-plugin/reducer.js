@@ -68,17 +68,20 @@ export const EVENT_STATE = {
  * 依据（asar 类型清单原文）：
  *   completed | aborted{reason} | blocked | error{error} | max-tokens | interrupted | forked
  *
- * 关键区别：**被打断（用户主动）不该亮"完成 + 未读"** —— 那是用户自己干的，
+ * 关键区别：**被打断（用户主动）不该亮"完成"** —— 那是用户自己干的，
  * 给他一个红点提醒纯属噪音。
+ *
+ * ⚠️ 2026-10-05：**未读功能已整体移除**（用户："把未读功能去除"）。
+ *    所以这里不再有 `unread` 字段 —— 只表达"这一回合以什么状态收尾"。
  */
 export const TURN_END_STATE = {
-  completed: { state: 'done', unread: true },
-  'max-tokens': { state: 'done', unread: true },
-  forked: { state: 'done', unread: true },
-  aborted: { state: 'idle', unread: false },
-  interrupted: { state: 'idle', unread: false },
-  blocked: { state: 'idle', unread: false },
-  error: { state: 'error', unread: true },
+  completed: { state: 'done' },
+  'max-tokens': { state: 'done' },
+  forked: { state: 'done' },
+  aborted: { state: 'idle' },
+  interrupted: { state: 'idle' },
+  blocked: { state: 'idle' },
+  error: { state: 'error' },
 }
 
 /** 工具名 → 一句人话。桌宠气泡只显示这个，**不显示 AI 原文**（用户反馈：输出太多看不清）。 */
@@ -280,41 +283,6 @@ export function setSessionTitle(state, sessionId, title) {
   return { ...state, sessions: { ...state.sessions, [sessionId]: { ...prev, title } } }
 }
 
-/** 未读计数：done / error 且未被查看的会话数（用于 +N 背板） */
-export function unreadCount(state) {
-  return Object.values(state.sessions).filter((s) => s.unread).length
-}
-
-/**
- * 标记已读：把会话的 `unread` 清掉（"我看过了"）。
- *
- * 为什么要插件来做：`unread` 是**插件侧**的状态 —— 渲染端自己把徽标设成 0 没用，
- * 下一个 `state` 帧照样会把 `unread: N` 报回来（实测就是这个现象）。
- *
- * @param state 当前状态
- * @param sessionId 只清这个会话；不传 = 全清
- * @returns {{state, frames}} 与 commit() 同形；frames 带一帧 `state`，窗口立刻收掉徽标
- */
-export function markRead(state, sessionId) {
-  let changed = false
-  const sessions = { ...state.sessions }
-  for (const [id, s] of Object.entries(sessions)) {
-    if (sessionId !== undefined && id !== sessionId) continue
-    if (s.unread) {
-      sessions[id] = { ...s, unread: false }
-      changed = true
-    }
-  }
-  if (!changed) return { state, frames: [] }
-  const next = { ...state, sessions }
-  return {
-    state: next,
-    frames: [
-      { type: 'state', seq: next.seq, state: aggregate(next), unread: unreadCount(next), tokens: primaryTokens(next) },
-    ],
-  }
-}
-
 /** 待审批总数（A7 主动提醒的原料） */
 export function pendingApprovalCount(state) {
   return Object.values(state.sessions).reduce((sum, s) => sum + (s.pendingApprovals ?? 0), 0)
@@ -436,7 +404,7 @@ export function evaluate(state, now) {
   const rising = STATE_PRIORITY[agg] > STATE_PRIORITY[state.current]
   if (rising || !held) {
     const next = { ...state, current: agg, currentSince: now, seq: state.seq + 1 }
-    frames.push({ type: 'state', seq: next.seq, state: agg, unread: unreadCount(next), tokens: primaryTokens(next) })
+    frames.push({ type: 'state', seq: next.seq, state: agg, tokens: primaryTokens(next) })
     return { state: next, frames }
   }
   return { state, frames }
@@ -455,7 +423,6 @@ function sessionOf(state, sessionId, now) {
     state.sessions[sessionId] ?? {
       sessionId,
       state: 'idle',
-      unread: false,
       since: now,
       title: undefined,
       tail: '',
@@ -476,7 +443,6 @@ function commit(state, session, sessionId, now, extraFrames = []) {
       type: 'state',
       seq: evaluated.state.seq,
       state: evaluated.state.current,
-      unread: unreadCount(evaluated.state),
     })
   }
   return { state: evaluated.state, frames }
@@ -493,7 +459,6 @@ export function reduceTurnEnd(state, ev, now = 0) {
   const session = { ...prev }
   if (ev.title !== undefined) session.title = ev.title
   session.state = mapped.state
-  session.unread = mapped.unread
   session.since = now
 
   const extraFrames = []
@@ -581,8 +546,6 @@ export function reducePetEvent(state, ev, now = 0) {
     })
   }
 
-  if (target === 'done' || target === 'error') session.unread = true
-  if (target === 'running' || target === 'approval' || target === 'question') session.unread = false
   if (target !== prev.state) session.since = now
   session.state = target
 
@@ -592,8 +555,11 @@ export function reducePetEvent(state, ev, now = 0) {
 /**
  * 应用 `agent/status`（权威运行/空闲信号）。
  *
- * 刻意**不冲掉** done / error —— 它们携带未读语义，等用户看过再降档。
- * 这条同时治掉了"状态挂住"：以前没有任何事件能把会话降回 idle。
+ * ⚠️ 2026-10-05：**未读功能移除后，done / error 也能被降回 idle 了**。
+ *    以前刻意不冲掉它们 —— 它们携带"未读"语义，要等用户看过再降档；
+ *    现在没有未读概念，`done` 只表示"刚结束"，`agent/status: idle` 一到就该回待机 ✓
+ *    （动作那边不受影响：`done` 的一次性动作是在**状态切换时**触发的，
+ *      从 done 降回 idle 反而正是"演完回去荡秋千"的正常路径 ✓）
  */
 export function reduceAgentStatus(state, { sessionId, status }, now = 0) {
   const prev = sessionOf(state, sessionId, now)
@@ -603,12 +569,12 @@ export function reduceAgentStatus(state, { sessionId, status }, now = 0) {
   if (status === 'running') {
     if (session.state !== 'running') {
       session.state = 'running'
-      session.unread = false
       session.since = now
       changed = true
     }
   } else if (status === 'idle') {
-    if (session.state === 'running' || session.state === 'approval' || session.state === 'question') {
+    // 除了运行中/等确认/等回答，**done / error 也一起降回 idle**（未读移除后的新语义）
+    if (session.state !== 'idle') {
       session.state = 'idle'
       session.since = now
       changed = true
@@ -618,10 +584,10 @@ export function reduceAgentStatus(state, { sessionId, status }, now = 0) {
   return commit(state, session, sessionId, now)
 }
 
-/** 应用 `agent/error`（agent 级错误，带未读）。 */
+/** 应用 `agent/error`（agent 级错误）。 */
 export function reduceAgentError(state, { sessionId, message }, now = 0) {
   const prev = sessionOf(state, sessionId, now)
-  const session = { ...prev, state: 'error', unread: true, since: now, lastError: message }
+  const session = { ...prev, state: 'error', since: now, lastError: message }
   return commit(state, session, sessionId, now, [
     { type: 'notice', notice: 'error', sessionId, message },
   ])
@@ -641,7 +607,6 @@ export function reduceStreamChunk(state, chunk, now = 0) {
   const looksBusy = chunk.frameType === 'start' || chunk.chunkType === 'text-delta'
   if (looksBusy && (session.state === 'idle' || session.state === 'done')) {
     session.state = 'running'
-    session.unread = false
     session.since = now
   }
 
@@ -688,7 +653,6 @@ export function primarySessionId(state) {
 export function snapshot(state) {
   return {
     state: state.current,
-    unread: unreadCount(state),
     pendingApprovals: pendingApprovalCount(state),
     seq: state.seq,
     // 渲染端拿不到 sessionId 时的兜底目标（也是 /prompt、/interrupt 的兜底目标）
@@ -700,7 +664,6 @@ export function snapshot(state) {
       return {
         sessionId: s.sessionId,
         state: s.state,
-        unread: s.unread,
         pendingApprovals: s.pendingApprovals ?? 0,
         // 四桶口径（见文件上方注释）：spendTokens 只为兼容旧消费者而保留
         spendTokens: bucketsTotal(buckets),

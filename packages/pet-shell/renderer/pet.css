@@ -66,11 +66,10 @@ body {
   transform: scale(0.94, 0.9);
 }
 
-/* 曾经这里有 #halo（她背后的状态光晕）：按用户要求于 2026-10-05 去掉，
-   连同 done/error 的虚线圈未读标记 —— 未读仍由 #badge 的 +N 背板表达。 */
+/* 曾经这里有 #halo（她背后的状态光晕）和 #badge（未读 +N 背板）：
+   均按用户要求于 2026-10-05 去掉（"把那个光球特效去掉" / "把未读功能去除"）。 */
 
 /* UI 控件必须在模型之上 */
-#badge,
 #bubble,
 #notice,
 #status {
@@ -91,25 +90,7 @@ body {
   75% { transform: translateX(3px); }
 }
 
-/* 未读 +N 汇总背板 */
-#badge {
-  position: absolute;
-  top: 26px;
-  right: 30px;
-  min-width: 24px;
-  height: 24px;
-  padding: 0 7px;
-  border-radius: 12px;
-  background: rgba(255, 96, 96, 0.95);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 24px;
-  text-align: center;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-  /* 可点击：点它 = 清未读 */
-  cursor: pointer;
-}
+/* （未读 +N 汇总背板 #badge 已随"未读功能去除"一并删除，2026-10-05） */
 
 /* 气泡 */
 #bubble {

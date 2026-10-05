@@ -8,8 +8,8 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 2306 行 / 外壳 18 文件 4837 行 / 工具 14 文件 3675 行，122 个提交 |
-| 自测 | `& $NODE tools\check-plugin.mjs` → **110 项全绿** |
+| 规模 | 插件 5 文件 2253 行 / 外壳 18 文件 4779 行 / 工具 14 文件 3672 行，123 个提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **116 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
 > 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
@@ -148,7 +148,11 @@ cd "C:\Users\怒C大伟出奇迹\dsh-projects\xilian pet"
 | 悬停在角色不透明处 | 窗口接管鼠标（透明区域鼠标**穿过去**，不挡下层） |
 | 按住角色拖动 | 移动位置，位置自动记住 |
 | **右键角色** | 唤出**操作面板**（独立小窗：会话切换 / 派活 / 打断 / 用量） |
-| 单击角色 | 清未读标记（也可以点右下角徽标） |
+| 单击**两侧秋千** | **弹她一下**（整体位移 + 上跳 + 轻微倾斜 + 身体内部跟着颤） |
+| 拖动松手 | **秋千余摆 + 眨一下眼**（像是"被放下后稳了一下"） |
+
+> ⚠️ 单击**其它区域**（头 / 左手 / 右手 / 身体 / 腿）的分区互动**还没做** —— 目前无反应。
+> 曾经的"单击清未读"已按用户要求**整体移除**（2026-10-05："把未读功能去除"）。
 
 > 双击曾经也是"唤出面板"，**已按用户要求去掉**（只剩右键一条路）。
 
@@ -530,7 +534,6 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
 /xilian-pet/debug/notice        手动放一条通知（A7 显示侧的手动验证入口）
 /xilian-pet/prompt              反向操控：派活
 /xilian-pet/interrupt           反向操控：打断
-/xilian-pet/read                标记已读（清未读；body {sessionId?}，不传=全清）
 /xilian-pet/approval            审批：桌宠点「允许/拒绝」（body {id, decision}）
 /xilian-pet/focus               会话聚焦（Phase 0 未实现，返回 501）
 ```
@@ -897,7 +900,7 @@ docs/
   Live2D约稿单.md                    委托说明（已暂缓，将来换自研形象可启用）
   screenshots/                      实机自检截图（含第三方角色，默认 gitignore）
 tools/
-  check-plugin.mjs                  自测（110 项断言，含外壳命中测试，不需要 DSH）
+  check-plugin.mjs                  自测（116 项断言，含外壳命中测试，不需要 DSH）
   tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）

@@ -18,7 +18,6 @@ const api = window.xilianPet
 const stage = document.getElementById('stage')
 const canvas = document.getElementById('live2dCanvas')
 const img = document.getElementById('petSprite')
-const badge = document.getElementById('badge')
 const bubble = document.getElementById('bubble')
 const bubbleText = document.getElementById('bubbleText')
 // 原底部输入条（#composer）已**整个删除** —— 它压着裙摆和脚（实测重叠 28px），
@@ -41,7 +40,6 @@ let dragY = 0
 let bubbleTimer = null
 let noticeTimer = null
 let latestSessionId = undefined
-let unread = 0
 // 用量视图：插件在状态帧里带（见 reducer 的 primaryTokens），右键时交给菜单小窗显示
 let tokensView = null
 
@@ -84,7 +82,7 @@ function visibleUiRects() {
   const rects = []
   // ⚠️ 只收**能接住点击**的控件。气泡是 pointer-events:none 的被动展示，
   // 把它算进来会在它覆盖的区域形成一个"点了没反应、也不穿透"的死区。
-  for (const el of [notice, badge]) {
+  for (const el of [notice]) {
     if (el.hidden) continue
     const r = el.getBoundingClientRect()
     if (r.width <= 0 || r.height <= 0) continue
@@ -170,7 +168,7 @@ function insideRect(el, clientX, clientY) {
 /** 只有「落在不透明像素上」或「悬停在 UI 控件上」时才接管鼠标，其余保持穿透 */
 function shouldBeInteractive(clientX, clientY) {
   if (overOpaquePixel(clientX, clientY)) return true
-  return insideRect(bubble, clientX, clientY) || insideRect(notice, clientX, clientY) || insideRect(badge, clientX, clientY)
+  return insideRect(bubble, clientX, clientY) || insideRect(notice, clientX, clientY)
 }
 
 /**
@@ -275,14 +273,8 @@ window.addEventListener('mouseup', (event) => {
     live2d?.flick('light')
     return
   }
-  // 其它区域暂时仍是"清未读"（用户已决定去掉未读，等分区做完一起改）
-  markRead()
-})
-
-// 点右下角的未读徽标 = 清未读（徽标本身就是"未读"，直接点它最直观）
-badge.addEventListener('click', (event) => {
-  event.stopPropagation()
-  markRead()
+  // 其它区域：暂时什么都不做。
+  // 剩余分区（头 / 左手 / 右手 / 身体 / 腿）待做；未读移除后这里不再有"清未读"副作用。
 })
 
 // ── 操作面板（独立小窗）─────────────────────────────────────────────
@@ -329,41 +321,12 @@ function setState(state) {
   }
 }
 
-function setBadge(count) {
-  unread = count
-  if (count > 0) {
-    badge.textContent = `+${count}`
-    badge.hidden = false
-  } else {
-    badge.hidden = true
-  }
-}
-
 /**
- * 清未读 —— **必须告诉插件**，不能只清本地显示。
- *
- * 以前这里只 `setBadge(0)`，是假清：插件的会话 `unread` 还是 true，
- * 下一个 `state` 帧又把 `unread: N` 报回来，徽标立刻复原。
- * 而且它原本还是**死代码** —— `mousedown` 无条件把 `dragging` 置 true，
- * mouseup 里那个 `if (!dragging)` 分支永远走不到（见下面的点击判定）。
+ * ⚠️ 2026-10-05：**未读功能整体移除**（用户："把未读功能去除"）。
+ *    删掉了 `setBadge()` / `markRead()` / `+N` 背板 / 单击清未读，
+ *    以及插件侧的 `unread` 统计与 `POST /read` 路由。
+ *    现在单击只做**分区互动**（点秋千 = 弹一下），没有"清未读"这层副作用 ✓
  */
-async function markRead() {
-  const before = unread
-  if (before > 0) setBadge(0) // 先本地收掉，手感即时
-  try {
-    const result = await api.control('read', {})
-    if (result?.status === 200 && typeof result.body?.unread === 'number') {
-      setBadge(result.body.unread) // 以插件的数字为准
-      api.log(`已标记已读（未读剩 ${result.body.unread}）`)
-    } else {
-      api.log(`清未读失败：${result?.status} ${JSON.stringify(result?.body)}`)
-      if (before > 0) setBadge(before)
-    }
-  } catch (error) {
-    api.log(`清未读异常：${error?.message ?? error}`)
-    if (before > 0) setBadge(before)
-  }
-}
 
 function showBubble(text) {
   if (typeof text !== 'string' || text.trim() === '') return
@@ -437,11 +400,9 @@ api.onFrame((frame) => {
       break
     case 'snapshot':
       setState(frame.state)
-      setBadge(frame.unread ?? 0)
       break
     case 'state':
       setState(frame.state)
-      setBadge(frame.unread ?? 0)
       break
     // approval / approval-resolved 帧由**主进程**处理（handleApprovalFrame → 审批专用小窗），
     // 本窗口刻意不显示任何审批 UI：她头顶只有 ~87px 留白，放不下，必然遮住她。
