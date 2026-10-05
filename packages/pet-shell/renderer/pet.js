@@ -241,6 +241,9 @@ window.addEventListener('mousedown', (event) => {
  */
 const SWING_ZONE_RATIO = 0.22
 
+/** 拖动超过这么远，松手时用"中"档弹（拖一屏只颤一下会很违和） */
+const DRAG_FLICK_FAR_PX = 260
+
 function isSwingZone(clientX) {
   const width = document.getElementById('live2dCanvas')?.clientWidth ?? window.innerWidth
   if (!(width > 0)) return false
@@ -253,7 +256,14 @@ window.addEventListener('mouseup', (event) => {
   api.setDragging(false)
   if (!live2dActive) img.classList.remove('squish')
   document.body.style.cursor = 'grab'
-  if (movedFar) return // 拖过了，不算点击
+  if (movedFar) {
+    // 拖完松手 → 也弹一下（用户要求）：像把她放下时的那一下回弹。
+    // 拖得越远弹得越重 —— 拖了一整屏再只颤一下会很违和。
+    // ⚠️ 拖动移动的是**窗口**，弹的是**模型相对窗口**的位移，两者互不干扰 ✓
+    const far = Math.hypot(event.screenX - pressX, event.screenY - pressY)
+    live2d?.flick(far > DRAG_FLICK_FAR_PX ? 'medium' : 'light')
+    return
+  }
   // ── 左键分区互动 ───────────────────────────────────────────────
   // 秋千区（两侧翅膀）→ 弹她一下（用户要求："像被手指弹了似的"）
   if (isSwingZone(event.clientX)) {

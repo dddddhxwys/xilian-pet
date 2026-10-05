@@ -1994,6 +1994,19 @@ check('"被弹"的位移必须相对构图基准 【否则累积漂移、跑出�
   assert.equal(fitAssignments, 3, `fitBase 只应由声明 + 两处构图更新（实际 ${fitAssignments} 处）`)
 })
 
+check('拖动结束后也要弹一下 【用户要求】', () => {
+  // 用户："现在让拖动结束后也有这个被弹一下的效果"
+  // 拖动移动的是**窗口**，弹的是**模型相对窗口**的位移 —— 两者互不干扰。
+  const src = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+  const upStart = src.indexOf("window.addEventListener('mouseup'")
+  assert.ok(upStart > 0, '找不到 mouseup 处理器')
+  const body = src.slice(upStart, src.indexOf('// 点右下角的未读徽标', upStart))
+  assert.ok(body.includes('if (movedFar) {'), '拖动结束那条分支不能只是 return，要弹一下')
+  assert.ok(body.includes('live2d?.flick('), '拖动结束要调用 flick')
+  // 拖得越远弹得越重（别拖一屏只颤一下）
+  assert.ok(src.includes('DRAG_FLICK_FAR_PX'), '要有"拖远了用更重的档"的阈值')
+})
+
 // ─────────────────────────────────────────────────────────────
 console.log('\n[5] 命中测试（外壳纯函数，不需要 Electron）')
 
