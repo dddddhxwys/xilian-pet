@@ -1826,22 +1826,34 @@ check('动作播完的决策：done 状态下待机动作播完必须重开 【�
   assert.notEqual(a.action, 'none')
 })
 
-check('running 完全不播动作（只留 Param9「思考」）【用户 2026-10-05 最终要求】', () => {
-  // 用户原话："就用 param9，不用荡秋千" —— running 时**不播任何动作**，只开 Param9。
-  // 这是三次实测教训的结论：
-  //   ① `Scene[0]`（原方案）内含"右手比嘘"，而 running 是循环播放的 → 干活时一遍遍比嘘（"很聒噪"）
-  //   ② 荡秋千 + Param9 → 秋千占了两只手、Param9 又加一只手 = **三只手**（用户截图）
-  //   ③ 所以 motion 必须是 null：停掉动作，只保留 Param9 的姿势 ✓
-  assert.equal(STATE_MAP.running.motion, null, 'running 必须不播动作（motion: null）')
-  assert.equal(STATE_MAP.running.params?.Param9, 1, 'running 仍要保留 Param9「思考」')
-  // 不播动作的状态收到 motionFinish 时必须什么都不做 —— 否则会把秋千又开起来 → 三只手
-  const d = decideOnMotionFinish({
-    currentMotion: null,
-    currentState: 'running',
-    stateMap: STATE_MAP,
-    baseMotion: BASE_MOTION,
-  })
-  assert.equal(d.action, 'none', 'running 收到 motionFinish 不该重开任何动作')
+check('running：也在荡秋千，但手不抓绳、手放下巴 【用户 2026-10-05 要求】', () => {
+  // 用户原话："让思考时也在荡秋千，但是手不抓着秋千绳"
+  assert.equal(STATE_MAP.running.motion, BASE_MOTION, 'running 也播荡秋千（会一直摆）')
+  assert.equal(STATE_MAP.running.force?.Param9, 1, '思考的手要压成 1（手放下巴）')
+  assert.equal(STATE_MAP.running.force?.Param16, 0, '绳子要压成 0（手不抓绳）')
+  // ⚠️ 关键：模型 cdi3 里这些参数**同属参数组 5 = 互斥的手部姿势**
+  //    （思考 / 手指 / 招牌 / 秋千抓绳 / 叉腰）。**抓绳的姿势是 Param13/14 秋千画的**，
+  //    光关 Param16（绳子道具）没用 —— 必须把组 5 除 Param9 外全部压 0，
+  //    同时**保留组 6**（摆动/秋千本体）→ 她在荡、但手不抓绳。
+  for (const id of ['Param10', 'Param11', 'Param12', 'Param13', 'Param14', 'Param17', 'Param18']) {
+    assert.equal(STATE_MAP.running.force?.[id], 0, `running 必须把组5的 ${id} 压成 0（否则手会去抓绳）`)
+  }
+  // 组 6（摆动/秋千本体）**不能**被压 —— 否则她就不摆了
+  for (const id of ['Param19', 'Param23', 'Param24', 'Param31', 'Param32']) {
+    assert.equal(STATE_MAP.running.force?.[id], undefined, `组6的 ${id} 不能压 0，否则秋千不摆了`)
+  }
+
+  // ⚠️ 真因回归：**秋千动作自己会把 Param9 推到 1**（模型里 Scene4 的曲线就是 0~1）→
+  //    荡秋千时会冒出一只"思考的手"，加上抓绳两只 = 三只手
+  //    （用户原话："现在这么还是三只手"）。所以**除 running 外的每个状态**
+  //    都必须每帧把 Param9 压回 0。
+  for (const s of ['idle', 'done', 'approval', 'question', 'error']) {
+    assert.equal(
+      STATE_MAP[s].force?.Param9,
+      0,
+      `${s} 必须把 Param9 压成 0 —— 否则荡秋千时会冒出思考的手（三只手）`,
+    )
+  }
   // 开场手势保留（用户确认）
   assert.equal(INTRO_MOTION, 0)
 })

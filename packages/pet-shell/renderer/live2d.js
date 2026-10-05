@@ -505,8 +505,14 @@ function applyState() {
   const mapped = STATE_MAP[state.currentState] ?? STATE_MAP.idle
   if (mapped.params && Object.keys(mapped.params).length) setParams(mapped.params)
   if (state.currentState === 'error') setParams(ERROR_FACE)
-  // 道具渐变（running 的"荡秋千 → 思考"过渡）：位置在状态参数之后，才能盖过它们
+  // 道具渐变（两段式过渡）：位置在状态参数之后，才能盖过它们
   stepPropFade(performance.now())
+  // ⚠️ **最后一步**：压掉"动作每帧会写回来"的参数（`force`）。
+  //    本函数就挂在 `beforeModelUpdate`（动作/表情/物理都跑完之后、提交渲染之前），
+  //    所以这里的写入能压过动作。
+  //    实机教训：秋千动作（Scene4）自己会把 `Param9`「思考」推到 1 →
+  //    荡秋千时冒出一只"思考的手"，加上抓绳两只 = **三只手**。
+  if (mapped.force) setParams(mapped.force)
   // 眨眼也在这里输出 —— 位置在动作之后，才能压过被动作冻结的眼睛参数
   applyBlink(performance.now())
 }

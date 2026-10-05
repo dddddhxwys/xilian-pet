@@ -21,39 +21,79 @@
 /** 待机/基础动作：荡秋千（180 秒长循环） */
 export const BASE_MOTION = 3
 
+/**
+ * 手/姿势类道具：模型 `cdi3.json` 里**同属参数组 5**，是**互斥**的姿势开关。
+ *
+ * ```
+ * 组5: Param9 思考 | Param12 手指 | Param10/11 招牌 | Param13/14 秋千(抓绳) | Param17/18 叉腰
+ * 组6: Param32 秋千开关 | Param31 秋千特殊 | Param19~24 摇晃      ← 这才是"摆"
+ * ```
+ *
+ * ⚠️ 这条是"手不抓着秋千绳"的**关键**：光关 `Param16 绳子`（道具）没用 ——
+ *    **抓绳的姿势**是组 5 里的 `Param13/14 秋千` 画出来的 ✗
+ *    所以在 running 里必须把组 5 **除 `Param9` 外全部压 0**，
+ *    同时**保留组 6**（摆动/秋千本体）→ 她在荡、但手不抓绳、手放下巴 ✓
+ */
+const HAND_POSE_PARAMS = ['Param10', 'Param11', 'Param12', 'Param13', 'Param14', 'Param17', 'Param18']
+
+/** running 的压制：留"思考"，关掉其它手部姿势 + 绳子道具 */
+const THINKING_ONLY = {
+  Param9: 1,
+  Param16: 0, // 绳子不画
+  ...Object.fromEntries(HAND_POSE_PARAMS.map((id) => [id, 0])),
+}
+
+/** 非 running 状态：把"思考的手"压回 0（秋千动作自己会把它推到 1，会多出一只手） */
+const THINKING_OFF = { Param9: 0 }
+
 /** 启动时先演一次的动作：**Scene[0]**（一只手放下巴 + 右手比嘘）。演完落待机。 */
 export const INTRO_MOTION = 0
 
 export const STATE_MAP = {
   // 待机：默认就荡秋千。180 秒长循环，最像"自己待着"
-  idle: { motion: BASE_MOTION, expression: 'reset' },
+  idle: { motion: BASE_MOTION, expression: 'reset', force: THINKING_OFF },
   /**
-   * 工作中：**不播任何动作**，只开 `Param9`「思考」—— 她保持"一只手放下巴"的思考姿势。
+   * 工作中：**也在荡秋千**，但**不抓绳**、手放在下巴（思考）。
    *
-   * 为什么是"不播动作"（用户 2026-10-05 最终确认："就用 param9，不用荡秋千"）：
-   *  - 用 `Scene[0]`（原方案）：它**内含"右手比嘘"**，而 running 是循环播放的 →
-   *    干活时右手一遍又一遍比嘘（用户实测："很聒噪"）
-   *  - 用荡秋千 + `Param9`：秋千占了两只手，`Param9` 又加一只手 → **三只手**（用户实测截图）
-   *  - 所以：**停掉动作**，只留 `Param9` 的效果 —— 既不会比嘘，也不会叠加肢体 ✓
+   * 用户 2026-10-05 要求："让思考时也在荡秋千，但是手不抓着秋千绳"。
+   *  - 动作 = 荡秋千（`BASE_MOTION`）→ 她一直摆 ✓
+   *  - `force.Param9 = 1` → 思考的手（放下巴）✓
+   *  - `force.Param16 = 0` → **绳子不画** → 手不去抓绳 ✓
    *
-   * `motion: null` 是"这个状态不播动作"的显式标记，由 live2d.js 的 applyStateMotion 处理
-   * （会 stopAllMotions 并清空 currentMotion），巡检也会跳过它。
+   * ⚠️ 必须用 `force` 而不是 `params`：秋千动作**每帧**都会把这些参数写回去
+   *    （模型文件里 Scene4 的 `Param9` 曲线就是 0~1），只有"动作之后、渲染之前"
+   *    （`beforeModelUpdate`）再写一遍才压得住。这也是"三只手"反复出现的真因。
+   *
+   * ⚠️ 历史：这里试过 `motion: null`（完全不播动作）—— 那样不会比嘘，
+   *    但荡秋千也一起没了；用户后来要求"思考时也在荡秋千"，所以改回播动作 + 压制道具。
    */
-  running: { motion: null, expression: 'reset', params: { Param9: 1 } },
+  running: {
+    motion: BASE_MOTION,
+    expression: 'reset',
+    params: { Param9: 1 },
+    force: THINKING_ONLY,
+  },
   // 待确认：闭眼笑 + 星光 + 惊喜特效（最能抓住注意力）。**只播一次**再回待机，
   // 否则"等你确认"会一直闪星星，反而变成噪音。
   // 特效刻意**留着**（keepEffect）：它表达的正是"还在等你"。
-  approval: { motion: 1, durationMs: 4000, once: true, expression: 'surprise', keepEffect: true },
+  approval: {
+    motion: 1,
+    durationMs: 4000,
+    once: true,
+    expression: 'surprise',
+    keepEffect: true,
+    force: THINKING_OFF,
+  },
   // 提问：招牌姿势 + 张嘴 + 问号。**保持循环** —— 要一直等用户回答。
-  question: { motion: 2, expression: 'question' },
+  question: { motion: 2, expression: 'question', force: THINKING_OFF },
   // 完成：闭眼笑 + 星光 + 开心。**只播一次**，然后回去荡秋千；
   // 注意桌宠状态仍是 done（未读背板继续显示），只是动作不再重复。
   // 特效**演完就撤**（不设 keepEffect）—— 用户实测后明确要求：
   //   "从叉腰切换成待机后笑眼不再留存"。
-  done: { motion: 1, durationMs: 4000, once: true, expression: 'happy' },
+  done: { motion: 1, durationMs: 4000, once: true, expression: 'happy', force: THINKING_OFF },
   // ⚠️ 出错：模型**没有**"困扰/失败"这类参数，只能靠眉毛+眼睛手工凑（见 ERROR_FACE），
   //    动作沿用最平静的荡秋千，避免"出错还蹦得欢"的违和感
-  error: { motion: BASE_MOTION, expression: 'reset' },
+  error: { motion: BASE_MOTION, expression: 'reset', force: THINKING_OFF },
 }
 
 /**
