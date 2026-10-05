@@ -514,16 +514,25 @@ function applyState() {
   //    荡秋千时冒出一只"思考的手"，加上抓绳两只 = **三只手**。
   //    手部姿势优先走"两段式混合"（不跳变、也不重叠）；没在过渡时才直接写 force。
   const mixed = stepHandPoseMix(performance.now())
-  if (mixed !== null) setParams(mixed)
-  else if (mapped.force) setParams(mapped.force)
+  if (mixed !== null) {
+    setParams(mixed)
+  } else if (mapped.force) {
+    setParams(mapped.force)
+    // ⚠️ **必须同步记下**：稳态也往这些参数里写值，不记的话
+    //    下一次过渡会拿"动作的原始值"当起点 —— 于是第一帧先跳回动作值、再往下走 = **弹两下**
+    //    （实机日志实测：`阶段0 p=0.00 9=0.987`，而稳态时它明明是 0）。
+    lastHandValues = { ...mapped.force }
+    lastForce = { ...mapped.force }
+  }
   // 眨眼也在这里输出 —— 位置在动作之后，才能压过被动作冻结的眼睛参数
   applyBlink(performance.now())
 }
 
 /** 初始化：创建 PIXI 应用并加载模型 */
-export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cachedFit, onFitReady }) {
+export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, handDebug: handDebugFlag, cachedFit, onFitReady }) {
   state.canvas = canvas
   state.log = log ?? (() => {})
+  handDebug = handDebugFlag === true
   if (!window.PIXI?.live2d?.Live2DModel) {
     throw new Error('PIXI.live2d 未就绪 —— vendor 脚本没加载成功？')
   }
@@ -1008,6 +1017,8 @@ const NEUTRAL_HANDS = {
 let handMix = null
 /** 上一次"手部姿势特殊"的状态（决定要不要起过渡） */
 let handState = null
+/** 逐帧诊断开关（`PET_HAND_DEBUG=1`；见 stepHandPoseMix） */
+let handDebug = false
 /**
  * 我们**上一次真正写下去**的手部参数值。
  *
@@ -1018,6 +1029,16 @@ let handState = null
  *    （读动作的值只在"从没写过"时用作兜底。）
  */
 let lastHandValues = {}
+/**
+ * 上一个状态在稳态里**压过的参数值**。
+ *
+ * ⚠️ 这是"过渡第一帧会跳回去"的兜底：启动时状态可能在**第一帧之前**就到达
+ *    （模型还没渲染过），此时 `lastHandValues` 还是空的 ✗
+ *    若退回"读动作的原始值"，第一帧就会从动作值（实测 `Param9=0.993`）起算 →
+ *    先跳一下再往下走 = 弹 ✓
+ *    而"她当时实际显示的值"就是上一个状态压过的值 → 用它兜底才对。
+ */
+let lastForce = null
 
 function readParamValue(id) {
   try {
@@ -1032,6 +1053,8 @@ function readParamValue(id) {
  * @param {Record<string, number>|null} inTarget 第二段目标；null = 混回动作自己的值（离开 running）
  */
 function startHandPoseMix(inTarget) {
+  // 从稳态开始时，把"上一个状态压过的值"当作已知的显示值 —— 过渡才不会从动作原始值跳起
+  if (handMix === null) lastHandValues = { ...(lastForce ?? {}) }
   const secondStep =
     inTarget === null ? { release: NEUTRAL_HANDS, durMs: HAND_MIX_IN_MS } : { to: inTarget, durMs: HAND_MIX_IN_MS }
   handMix = { steps: [{ to: NEUTRAL_HANDS, durMs: HAND_MIX_OUT_MS }, secondStep], step: 0, t0: performance.now() }
@@ -1059,6 +1082,15 @@ function stepHandPoseMix(now) {
     }
   }
   lastHandValues = { ...out }
+  // 每段只记**首末两帧**（4~6 行/次过渡）：这样"过渡有没有回弹"可以从用户那边的
+  // 日志直接判定，不必让他盯动画数帧。逐帧全量打印另有 `PET_HAND_DEBUG=1`。
+  if (handDebug || progress <= 0.08 || progress >= 0.99) {
+    const fmt = (id) => (out[id] === undefined ? '—' : out[id].toFixed(3))
+    state.log(
+      `[手部过渡] 阶段${handMix.step}/${handMix.steps.length - 1} p=${progress.toFixed(2)} ` +
+        `9=${fmt('Param9')} 16=${fmt('Param16')} 13=${fmt('Param13')} 17=${fmt('Param17')}`,
+    )
+  }
   if (progress >= 1) {
     handMix.step += 1
     handMix.t0 = now

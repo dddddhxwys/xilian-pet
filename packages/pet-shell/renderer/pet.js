@@ -471,6 +471,7 @@ async function startLive2D() {
     log: (message) => api.log(`[live2d] ${message}`),
     forceMotion: info.forceMotion,
     sampleMs: info.sampleMs,
+    handDebug: info.handDebug,
     cachedFit,
     onFitReady: (box, fromCache) => {
       if (!fromCache && box) {

@@ -1932,6 +1932,20 @@ check('手部过渡必须以"上次写下的值"为起点 【否则两段交界�
     '混向目标的起点必须是 lastHandValues（读动作值只能做兜底），否则两段交界会弹',
   )
   assert.ok(body.includes('lastHandValues = { ...out }'), '每帧都要记住实际写下去的值')
+
+  // 第二处漏同步（启动/稳态之后那次过渡）：**稳态直接写 force 时也必须记**，
+  // 否则下一次过渡会拿"动作的原始值"当起点 → 第一帧先跳一下。
+  const applyStart = src.indexOf('function applyState()')
+  const applyBody = src.slice(applyStart, src.indexOf('\nfunction ', applyStart + 10))
+  assert.ok(
+    applyBody.includes('lastHandValues = { ...mapped.force }'),
+    '稳态写 force 时要同步 lastHandValues，否则下次过渡第一帧会跳',
+  )
+  assert.ok(applyBody.includes('lastForce = { ...mapped.force }'), '还要记住"上一状态压过的值"作兜底')
+  assert.ok(
+    src.includes('if (handMix === null) lastHandValues = { ...(lastForce ?? {}) }'),
+    '起过渡时要用上一状态压过的值兜底（启动时可能还没渲染过）',
+  )
 })
 
 // ─────────────────────────────────────────────────────────────
