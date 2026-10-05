@@ -30,6 +30,8 @@ const DRY_RUN = argv.includes('--dry-run')
 const profileArg = argv.find((a) => a.startsWith('--profile='))?.split('=')[1]
 
 const counts = { ok: 0, warn: 0, fail: 0 }
+/** 没找到 DSH profile（不是致命错误，见步骤①） */
+let profileMissing = false
 /**
  * 输出**同时**进屏幕和日志文件。
  *
@@ -98,10 +100,14 @@ try {
 const profileDir = profileCandidates.find((p) => existsSync(join(p, 'cordis.patch.yml')))
 line('① 找 DSH profile')
 if (!profileDir) {
-  bad(
-    '找不到 DSH 的 profile（没有 cordis.patch.yml）',
+  // ⚠️ 这是**警告不是失败**：桌宠可以脱离 DSH 单独跑（待机 + 点击互动 + 拖拽都在渲染端），
+  //    只是不会跟随 DSH 状态、没有审批提醒和派活面板。
+  //    之前判成失败会让"没装 DSH 的朋友"看到一句 FAILED 却其实装得成。
+  profileMissing = true
+  warn(
+    '没找到 DSH 的 profile —— 她仍能显示和互动，但**不会跟随 DSH 状态**',
     `找过这些位置：\n      ${profileCandidates.join('\n      ')}\n` +
-      '  请确认 DSH 已安装、并**至少启动过一次**；或用 --profile=<名字> 指定。',
+      '  想接上 DSH：装好 DSH 并启动一次，然后重跑本安装即可（幂等）。',
   )
 } else {
   ok(`profile：${profileDir}`)
@@ -111,7 +117,7 @@ line('')
 // ── ② 检查/写入插件行 ───────────────────────────────────────────────
 line('② 挂载 Host 插件')
 if (!profileDir) {
-  bad('跳过（上一步没找到 profile）')
+  warn('跳过（上一步没找到 DSH profile）')
 } else {
   const patchFile = join(profileDir, 'cordis.patch.yml')
   const entry = join(ROOT, 'packages', 'pet-plugin', 'index.js')
@@ -229,6 +235,13 @@ if (counts.fail > 0) {
   process.exit(1)
 }
 line('下一步：')
+if (profileMissing) {
+  line('  ⚠️ 这台机器上没有 DSH，所以只装好了"桌宠本体"：')
+  line('     · 她会出现在桌面上，能点击互动、能拖动（这些都在渲染端，不需要 DSH）')
+  line('     · **但不会跟随 DSH 状态**，也没有审批提醒 / 派活面板')
+  line('     · 想接上：装好 DSH 并启动一次 → 重跑本安装（幂等，不会重复挂载）')
+  line('')
+}
 line('  1. **重启 DSH**（首次挂载插件需要重新加载；桌宠那侧有自愈，不用管）')
 line('  2. 双击仓库根目录的 `start-pet.cmd` → 她会出现在桌面上')
 line('  3. 退出：按 Ctrl+Shift+Q')

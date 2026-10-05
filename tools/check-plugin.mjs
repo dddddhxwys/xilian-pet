@@ -2909,6 +2909,22 @@ check('zip 写入器：目录条目齐全（不依赖解压工具隐式建目录
   }
 })
 
+check('`.cmd` 必须纯 ASCII —— 注释也算（cmd.exe 按 GBK 解析，中文会变成乱码"命令"）', () => {
+  // ⚠️ 这条是踩出来的：我在安装脚本里写了中文注释，cmd 把 UTF-8 字节按 GBK 解析，
+  //    结果屏幕上冒出 `'串（实测踩过：屏幕打出' is not recognized as an internal
+  //    or external command` 这种鬼东西 —— 而脚本本身还"看起来"能跑。
+  const files = ['安装.cmd', 'start-pet.cmd']
+  for (const rel of files) {
+    const bytes = readFileSync(new URL(`../${rel}`, import.meta.url))
+    const bad = []
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] > 0x7f) bad.push(`${i}:0x${bytes[i].toString(16)}`)
+      if (bad.length >= 5) break
+    }
+    assert.equal(bad.length, 0, `${rel} 含非 ASCII 字节（${bad.join(', ')}）—— 注释也要写英文`)
+  }
+})
+
 check('发行包清单：安装脚本的日志不该跟着发行包走', () => {
   // 这两个文件是 setup.mjs / 安装.cmd 每次运行时重写的，进了包会让下一批测试者
   // 看到上一批人的日志（也白涨体积）
