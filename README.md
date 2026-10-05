@@ -836,6 +836,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **全局环形缓冲被高频通道刷爆** | `/debug/shapes` 80 条样本全是流式帧 | 按 channel 分别限量 |
 | **`agent/status` 样本预览全丢（20/20）** | 该通道样本 `<unserializable>`，而这恰是状态机最权威的输入 | ⚠️ **两个错**：① 根因判断错（写成"循环引用"，实际是**代理属性守卫**：`agent` 是 Cordis context 代理，读 `toJSON` 就抛 `cannot get property "…" without inject`）；② **测试造法比真实宿主宽松**（用普通对象造循环，而真机是"读属性就抛"的代理）→ 测试一直绿。修法：`sanitizeForPreview()` 逐属性 try/catch 清洗 + 回归测试改用**会抛的 Proxy** |
 | **绝不能用 pwsh 改含中文的源码** | 注释变乱码、吞换行 | 一律用 edit/write 工具 |
+| **SSE 断了却不知道，桌宠"假活"** | 小绿点常绿（关掉 DSH 也不变红）+ 状态冻结在 `idle`（表现为"干活时没有思考动作"） | ⚠️ `startSse` 只监听 `res.on('end')` 与 `req.on('error')`，而**非正常断开时 Node 两个都不发**（实测事件序列 `res.aborted → req.close → res.error:ECONNRESET → res.close`）⇒ 既不通知界面、也不重连。已抽出 `packages/pet-shell/sse-link.js`：**该监听的事件全监听** + **心跳静默看门狗**（插件每 15s 发 `: ping`，45s 没来即判掉线）+ 指数退避重连 |
 | **`Invoke-RestMethod -Body <字符串>` 发中文变 `?????`** | 通知 / 派活里的中文到了宿主就是问号 | PowerShell 5.1 对字符串 body 默认按 ASCII 编码 → 传**字节**：`-Body ([Text.Encoding]::UTF8.GetBytes($json))` + `charset=utf-8` |
 | **绝对定位 + flex 会把中文挤成一列** | 通知条变成"一个字一行"的高柱，几乎占满整个窗口（实测截图） | 绝对定位元素宽度是"收缩适应"，flex 文本项会被压到近 0 宽 → 改**固定宽度 + 块级布局** |
 | **只按进程名找 DSH 窗口找不到** | 点通知没反应：`detail=no-window pids=2` | DSH 的窗口**不属于**那两个同名进程 → 改成「PID 命中 **或** 标题含 `Harness/DSH/DeepSeek`」再取**面积最大**者。另：`Process.MainWindowHandle` 实测恒为 0，**别用它** |

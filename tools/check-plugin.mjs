@@ -27,6 +27,7 @@ import {
   pointInDrawableLocal,
   rawToLocal,
 } from '../packages/pet-shell/hit-test.js'
+import { createSseLink } from '../packages/pet-shell/sse-link.js'
 import {
   BASE_MOTION,
   FLICK_PRESETS,
@@ -2521,6 +2522,168 @@ check('contentBand：空白掩码返回 null；低于阈值的像素不算内容
   assert.equal(contentBand(faint, 10, 10, 300), null, '淡到阈值的像素不算她')
   faint[55] = 200
   assert.ok(contentBand(faint, 10, 10, 300), '超过阈值才算')
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[6] SSE 链路自愈（外壳 sse-link.js，真 HTTP 服务端）')
+
+/** 起服务并拿到端口 */
+function listenOnce(server) {
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)))
+}
+/** 轮询等待某个条件成立 */
+function waitFor(predicate, timeoutMs = 3000, stepMs = 20) {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs
+    const tick = () => {
+      if (predicate()) return resolve(true)
+      if (Date.now() > deadline) return reject(new Error('等待超时'))
+      setTimeout(tick, stepMs)
+    }
+    tick()
+  })
+}
+const sseHead = (res) => res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
+
+await checkAsync('SSE 回归：服务端**非正常断开**时必须判定掉线 【小绿点常绿 + 永不重连的根因】', async () => {
+  // ⚠️ 这条是本项目最隐蔽的一个坑：Node 客户端在连接被非正常断开时
+  //    **不发** `res.on('end')`、也**不发** `req.on('error')`。
+  //    实测事件序列：res.data → res.aborted → req.close → res.error:ECONNRESET → res.close。
+  //    老实现只监听 end/req.error ⇒ 断线后：小绿点常绿、永不重连、状态冻结（"没有思考动作"）。
+  const server = http.createServer((req, res) => {
+    sseHead(res)
+    res.write(': ping\n\n')
+    setTimeout(() => {
+      try {
+        res.socket.destroy()
+      } catch {
+        /* ignore */
+      }
+    }, 80)
+  })
+  const port = await listenOnce(server)
+  const links = []
+  const link = createSseLink({
+    url: `http://127.0.0.1:${port}/events`,
+    onLink: (l) => links.push(l),
+    log: () => {},
+  })
+  try {
+    await waitFor(() => links.some((l) => l.connected), 3000)
+    await waitFor(() => links.some((l) => l.connected === false), 3000)
+    assert.ok(
+      links.some((l) => l.connected === false),
+      '连接已经没了却没人通知 ⇒ 小绿点会一直"已连接"，状态也永远冻结',
+    )
+  } finally {
+    link.close()
+    server.close()
+  }
+})
+
+await checkAsync('SSE 自愈：掉线后必须自动重连（不需要用户重启桌宠）', async () => {
+  let conns = 0
+  const server = http.createServer((req, res) => {
+    conns += 1
+    sseHead(res)
+    res.write(': ping\n\n')
+    if (conns === 1) {
+      // 第一条故意掐断；之后的都保持
+      setTimeout(() => {
+        try {
+          res.socket.destroy()
+        } catch {
+          /* ignore */
+        }
+      }, 60)
+    }
+  })
+  const port = await listenOnce(server)
+  const links = []
+  const link = createSseLink({
+    url: `http://127.0.0.1:${port}/events`,
+    onLink: (l) => links.push(l),
+    log: () => {},
+  })
+  try {
+    await waitFor(() => links.filter((l) => l.connected).length >= 2, 6000)
+    assert.ok(links.filter((l) => l.connected).length >= 2, `掉线后应自动重连，实际只有 ${links.filter((l) => l.connected).length} 次连接`)
+    assert.equal(link.connected, true, '重连后应处于已连接')
+  } finally {
+    link.close()
+    server.close()
+  }
+})
+
+await checkAsync('SSE 看门狗：**心跳静默**超阈值也要判定掉线（半开连接唯一能抓住的手段）', async () => {
+  // 服务端接受连接、发一次 ping，然后**永远沉默**（模拟半开：socket 不断但没数据）
+  const server = http.createServer((req, res) => {
+    sseHead(res)
+    res.write(': ping\n\n')
+  })
+  const port = await listenOnce(server)
+  const links = []
+  const link = createSseLink({
+    url: `http://127.0.0.1:${port}/events`,
+    silenceMs: 250, // 自测里把阈值调小，免得等 45s
+    watchIntervalMs: 40,
+    onLink: (l) => links.push(l),
+    log: () => {},
+  })
+  try {
+    await waitFor(() => links.some((l) => l.connected), 2000)
+    await waitFor(() => links.some((l) => l.connected === false), 3000)
+    assert.ok(links.some((l) => l.connected === false), '静默超过阈值必须判定掉线')
+  } finally {
+    link.close()
+    server.close()
+  }
+})
+
+await checkAsync('SSE 帧解析：`data:` 帧照常送达，`: ping` 注释行不能干扰', async () => {
+  const server = http.createServer((req, res) => {
+    sseHead(res)
+    res.write(': ping\n\n')
+    res.write('data: {"type":"state","state":"running"}\n\n')
+    res.write(': ping\n\n')
+    res.write('data: {"type":"notice","text":"hi"}\n\n')
+  })
+  const port = await listenOnce(server)
+  const frames = []
+  const link = createSseLink({
+    url: `http://127.0.0.1:${port}/events`,
+    onFrame: (f) => frames.push(f),
+    onLink: () => {},
+    log: () => {},
+  })
+  try {
+    await waitFor(() => frames.length >= 2, 3000)
+    assert.deepEqual(
+      frames.map((f) => f.type),
+      ['state', 'notice'],
+      `注释/心跳行不该被当成帧：${JSON.stringify(frames)}`,
+    )
+    assert.equal(frames[0].state, 'running')
+  } finally {
+    link.close()
+    server.close()
+  }
+})
+
+await checkAsync('SSE 连不上时不能谎报"已连接"', async () => {
+  const links = []
+  // 端口 1 必然连不上
+  const link = createSseLink({
+    url: 'http://127.0.0.1:1/events',
+    onLink: (l) => links.push(l),
+    log: () => {},
+  })
+  try {
+    await new Promise((r) => setTimeout(r, 300))
+    assert.ok(!links.some((l) => l.connected), '连不上却报了 connected:true')
+  } finally {
+    link.close()
+  }
 })
 
 console.log(`\n${'─'.repeat(56)}`)

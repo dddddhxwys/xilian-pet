@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto'
 import http from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'node:fs'
 import { contentBand, hitTest } from './hit-test.js'
+import { createSseLink } from './sse-link.js'
 import { readFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -186,6 +187,7 @@ function initLogFile() {
 const STAMP_FILES = [
   'main.js',
   'hit-test.js',
+  'sse-link.js',
   'renderer/pet.js',
   'renderer/pet.css',
   'renderer/index.html',
@@ -358,10 +360,11 @@ function saveWindowState(win) {
 }
 
 // ── SSE 订阅（放在主进程：没有 CORS/origin 问题，重连也好管）──────────
-let sseRequest
-let sseRetryMs = 1000
-let sseConnected = false
-let retryTimer
+// ⚠️ 具体实现在 `sse-link.js`（纯 Node，可被自测用真 HTTP 服务端验行为）。
+//    这里**不要再自己写 res.on('end') 那套**：非正常断开时 Node 不发 `end`、
+//    也不发 `req.error`（实测事件序列 res.aborted → req.close → res.error → res.close），
+//    只监听 end/error 会让桌宠"假活"—— 小绿点常绿 + 永不重连 + 状态冻结。
+let sseLink = null
 
 // 实测踩过：createWindow() 之后立刻连 SSE，'pet:link' 会在渲染端注册好 handler
 // **之前**发出去，被直接丢掉 —— 于是日志说"SSE 已连接"，右下角状态点却一直是红的。
@@ -411,75 +414,37 @@ let frameEffects = null
  */
 const FORCED_STATE = process.env.PET_FORCE_STATE ?? null
 
+/**
+ * 建立 SSE 订阅。**断线检测与重连全在 `sse-link.js` 里**：
+ *   · 非正常断开（宿主重启/进程消失/连接重置）→ 立刻判定掉线并重连
+ *   · 心跳静默超阈值（半开连接）→ 看门狗兜底
+ * 这里只负责"把帧翻译成窗口动作"。
+ */
 function startSse(win) {
   const url = new URL(`${ROUTE_PREFIX}/events`, DSH_URL)
-  sseRequest = http.get(url, (res) => {
-    if (res.statusCode !== 200) {
-      log(`SSE ${url.pathname} → HTTP ${res.statusCode}（插件未加载或被前缀路由吞掉）`)
-      res.resume()
-      scheduleRetry(win)
-      return
-    }
-    sseConnected = true
-    sseRetryMs = 1000
-    log(`SSE 已连接 ${url.href}`)
-    pushLink(win, { connected: true, url: url.href })
-
-    res.setEncoding('utf8')
-    let buffer = ''
-    res.on('data', (chunk) => {
-      buffer += chunk
-      let index
-      while ((index = buffer.indexOf('\n\n')) !== -1) {
-        const block = buffer.slice(0, index)
-        buffer = buffer.slice(index + 2)
-        for (const line of block.split('\n')) {
-          if (!line.startsWith('data:')) continue
-          try {
-            const frame = JSON.parse(line.slice(5).trim())
-            if (frame.type === 'snapshot') lastSnapshot = frame
-            // ⚠️ 副作用**单独 try**：它出错绝不能把下面那句 send 带走。
-            //    踩过：处理函数作用域不对 → ReferenceError → 外层 catch 吞掉整块
-            //    → 每一条帧都被丢弃，桌宠整个冻住（状态/通知/审批全都没了）。
-            try {
-              frameEffects?.(frame)
-            } catch (error) {
-              log('frame effect failed:', error?.message ?? error)
-            }
-            // 调试：强制状态期间改写所有状态帧（否则真实状态会把它覆盖掉）
-            if (FORCED_STATE !== null && (frame.type === 'state' || frame.type === 'snapshot')) {
-              frame.state = FORCED_STATE
-            }
-            // 这一句必须**无条件**执行 —— 它是桌宠活着的前提
-            send(win, 'pet:frame', frame)
-          } catch (error) {
-            log('frame parse failed:', error.message)
-          }
-        }
+  sseLink?.close()
+  sseLink = createSseLink({
+    url,
+    log,
+    onLink: (link) => pushLink(win, link),
+    onFrame: (frame) => {
+      if (frame.type === 'snapshot') lastSnapshot = frame
+      // ⚠️ 副作用**单独 try**：它出错绝不能把下面那句 send 带走。
+      //    踩过：处理函数作用域不对 → ReferenceError → 外层 catch 吞掉整块
+      //    → 每一条帧都被丢弃，桌宠整个冻住（状态/通知/审批全都没了）。
+      try {
+        frameEffects?.(frame)
+      } catch (error) {
+        log('frame effect failed:', error?.message ?? error)
       }
-    })
-    res.on('end', () => {
-      sseConnected = false
-      pushLink(win, { connected: false })
-      scheduleRetry(win)
-    })
+      // 调试：强制状态期间改写所有状态帧（否则真实状态会把它覆盖掉）
+      if (FORCED_STATE !== null && (frame.type === 'state' || frame.type === 'snapshot')) {
+        frame.state = FORCED_STATE
+      }
+      // 这一句必须**无条件**执行 —— 它是桌宠活着的前提
+      send(win, 'pet:frame', frame)
+    },
   })
-  sseRequest.on('error', (error) => {
-    sseConnected = false
-    log(`SSE 连接失败：${error.message}`)
-    pushLink(win, { connected: false, error: error.message })
-    scheduleRetry(win)
-  })
-}
-
-function scheduleRetry(win) {
-  clearTimeout(retryTimer)
-  const delay = sseRetryMs
-  sseRetryMs = Math.min(sseRetryMs * 2, 10_000)
-  retryTimer = setTimeout(() => {
-    if (!win.isDestroyed()) startSse(win)
-  }, delay)
-  retryTimer.unref?.()
 }
 
 /** 启动自检：直接问插件的 /health，一眼看出插件到底装没装 */
@@ -1249,7 +1214,7 @@ app.whenReady().then(async () => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
-  sseRequest?.destroy()
+  sseLink?.close()
 })
 
 app.on('window-all-closed', () => app.quit())
