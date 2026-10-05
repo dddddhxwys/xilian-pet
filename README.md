@@ -8,8 +8,8 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 2306 行 / 外壳 18 文件 4176 行 / 工具 14 文件 3462 行，97 个提交 |
-| 自测 | `& $NODE tools\check-plugin.mjs` → **105 项全绿** |
+| 规模 | 插件 5 文件 2306 行 / 外壳 18 文件 4231 行 / 工具 14 文件 3495 行，98 个提交 |
+| 自测 | `& $NODE tools\check-plugin.mjs` → **107 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
 > 含架构决策、验证状态、踩坑清单、调试开关。本文偏"环境事实与边界"。
@@ -251,7 +251,7 @@ Electron 44.5.1
 | 状态 | 动作 | 表情 | 备注 |
 |---|---|---|---|
 | `idle` | Scene[3] 荡秋千 | reset | 180s 长循环 |
-| `running` | Scene[0] 比嘘 | reset | **一直循环**〔用户 2026-10-05 明确确认：就是要一直循环，不要改成"演一次回荡秋千"〕+ `Param9 思考` |
+| `running` | Scene[3] 荡秋千 | reset | + `Param9 思考`（忙碌感 = 特效 + 光球颜色）。**刻意不用 Scene[0]**：它内含"右手比嘘"且会**循环** → 干活时右手一遍遍比嘘（用户实测："很聒噪"）。用户 2026-10-05 明确要求："running 时没有比嘘"。自测有一条专门锁这个 |
 | `approval` | Scene[1] **只播一次** | surprise | `keepEffect: true`（特效留着，表达"还在等你"） |
 | `question` | Scene[2] | question | 循环，要一直等回答 |
 | `done` | Scene[1] **只播一次** | happy | 演完**特效也撤** |
@@ -897,7 +897,7 @@ docs/
   Live2D约稿单.md                    委托说明（已暂缓，将来换自研形象可启用）
   screenshots/                      实机自检截图（含第三方角色，默认 gitignore）
 tools/
-  check-plugin.mjs                  自测（103 项断言，含外壳命中测试，不需要 DSH）
+  check-plugin.mjs                  自测（107 项断言，含外壳命中测试，不需要 DSH）
   tap-events.mjs                    SSE 探针：不开窗口也能看插件输出
   install-plugin.mjs                插件挂载助手（检测现状 / 打印方式 / --write 追加）
   fetch-electron.mjs                Electron 二进制下载器（镜像探测 + 8 路并行 + 纯 JS 解压）

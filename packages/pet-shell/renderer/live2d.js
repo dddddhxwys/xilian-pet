@@ -50,34 +50,15 @@
  *   Scene[3] 180s → Param13/14 秋千1/2 + Param31 秋千特殊 + Param32 秋千开关
  *                    画面：秋千明显倾斜摆动、腿鞋摇晃满量程（±30°）
  */
-// 动作播完后的决策（纯函数，便于自测脱离 Electron 盯住"待机动作停住"那个 bug）
-import { decideOnMotionFinish } from './motion-policy.js'
-
-const STATE_MAP = {
-  // 待机：默认就荡秋千。180 秒长循环，最像"自己待着"
-  idle: { motion: 3, expression: 'reset' },
-  // 工作中：**一只手放在下巴处握拳**（"我在忙"）+ 打开「思考」特效。
-  // ⚠️ 这个动作**刻意一直循环**（用户确认：running 时就要一直循环它，不要改成"演一次回荡秋千"）。
-  //    所以干活时看不到秋千是**预期行为** —— 秋千属于 idle/done。
-  // ⚠️ 描述订正：这里原来注释写成"俏皮小动作/比嘘（手指举到唇边）"，
-  //    用户对着画面指出是"一只手放在下巴处握拳"。写错的注释会误导排查，已按实际描述改。
-  running: { motion: 0, expression: 'reset', params: { Param9: 1 } },
-  // 待确认：闭眼笑 + 星光 + 惊喜特效（最能抓住注意力）。**只播一次**再回待机，
-  // 否则"等你确认"会一直闪星星，反而变成噪音。
-  // 特效刻意**留着**（keepEffect）：它表达的正是"还在等你"。
-  approval: { motion: 1, durationMs: 4000, once: true, expression: 'surprise', keepEffect: true },
-  // 提问：招牌姿势 + 张嘴 + 问号。**保持循环** —— 要一直等用户回答。
-  question: { motion: 2, expression: 'question' },
-  // 完成：闭眼笑 + 星光 + 开心。**只播一次**，然后回去荡秋千；
-  // 注意桌宠状态仍是 done（未读背板继续显示），只是动作不再重复。
-  // 特效**演完就撤**（不设 keepEffect）—— 用户实测后明确要求：
-  //   "从叉腰切换成待机后笑眼不再留存"。
-  // （早先做过"再保持 2~4 秒"（lingerMs），已按此要求撤掉；机制保留在 scheduleLinger。）
-  done: { motion: 1, durationMs: 4000, once: true, expression: 'happy' },
-  // ⚠️ 出错：模型**没有**"困扰/失败"这类参数，只能靠眉毛+眼睛手工凑（见 ERROR_FACE），
-  //    动作沿用最平静的荡秋千，避免"出错还蹦得欢"的违和感
-  error: { motion: 3, expression: 'reset' },
-}
+// 状态→动作映射、动作播完后的决策、参数切换计划 —— 全在纯模块里，
+// 好让自测脱离 Electron 也能直接断言（本文件依赖 PIXI 全局，Node 里 import 不了）。
+import {
+  BASE_MOTION,
+  INTRO_MOTION,
+  STATE_MAP,
+  decideOnMotionFinish,
+  planParamTransition,
+} from './motion-policy.js'
 
 /**
  * ⚠️ 这个模型同一时刻**只能有一个表情生效** ——
@@ -86,16 +67,10 @@ const STATE_MAP = {
  * 需要多个效果同时开时，得用 `params` 直接驱动参数（如 running 的 Param9）。
  */
 
-/** 一次性动作播完之后回到哪个动作（荡秋千） */
-const BASE_MOTION = 3
+/** 上一次由 `params` 直接写入的参数 —— 切状态时要把不在新状态里的清零（见 planParamTransition） */
+let appliedParams = {}
 
-/**
- * 启动时先演一次的动作：**Scene[0]**（一只手放在下巴处握拳，用户对画面的描述）。
- * 演完自动落到待机（荡秋千）。
- * 注意 Scene[0] 同时也是 `running` 的动作（且 running 是**一直循环**它），
- * 所以循环开关必须能双向设置（见 setMotionLoop 的注释）。
- */
-const INTRO_MOTION = 0
+
 /**
  * 开场手势的播放速度。用户反馈"比嘘的手放得太快"——
  * 原速 3 秒里手势只维持约 1.5 秒、放下只用 0.85 秒，太赶。
@@ -915,6 +890,15 @@ function applyStateMotion(next, animate) {
   clearTimeout(oneShotTimer)
   clearTimeout(lingerTimer) // 切状态时取消上一条待撤的特效
 
+  // idle 与 running 现在**共用荡秋千**（同一动作）：来回切状态时不要重开，
+  // 否则每次状态抖动秋千都会从头开始，看起来就是"画面一顿"。
+  // （万一它其实已经停了，巡检 3 秒内会重开，见 motionWatchdog。）
+  if (!mapped.once && mapped.motion === currentMotion) {
+    state.log(`状态 ${next} 与当前动作相同（Scene[${mapped.motion}]）→ 不重开，继续播`)
+    oneShotUntil = 0
+    return
+  }
+
   if (!animate) {
     state.log(`启动时状态已是 ${next}：不重放一次性入场动画，停在基础动作`)
     startMotion(BASE_MOTION, true)
@@ -954,7 +938,14 @@ export function setState(next) {
 
   playStateMotion(next, animate)
   setExpression(effect)
-  if (mapped.params && Object.keys(mapped.params).length) setParams(mapped.params)
+  // ⚠️ 切状态时要把"上次设过、这次不再设"的参数**清零**：
+  //    `setParams` 只写指定参数、不会重置其它的，不这么做的话
+  //    running 的 `Param9`「思考」会在离开 running 之后一直挂着
+  //    （干完活还一脸"思考"）。见 planParamTransition。
+  const plan = planParamTransition(appliedParams, mapped)
+  for (const id of plan.clear) setParams({ [id]: 0 })
+  if (Object.keys(plan.set).length > 0) setParams(plan.set)
+  appliedParams = plan.set
 }
 
 /** 导出给 pet.js 用的接口 */

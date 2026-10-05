@@ -17,7 +17,13 @@ import { readFileSync } from 'node:fs'
 
 import { apply, inject as pluginInject } from '../packages/pet-plugin/index.js'
 import { contentBand, hitTest, insideAnyRect } from '../packages/pet-shell/hit-test.js'
-import { decideOnMotionFinish } from '../packages/pet-shell/renderer/motion-policy.js'
+import {
+  BASE_MOTION,
+  INTRO_MOTION,
+  STATE_MAP,
+  decideOnMotionFinish,
+  planParamTransition,
+} from '../packages/pet-shell/renderer/motion-policy.js'
 import {
   activityLabel,
   aggregate,
@@ -1815,6 +1821,33 @@ check('动作播完的决策：done 状态下待机动作播完必须重开 【�
 
   // ⑤ 反向盯着最原始的那个坑：状态是 done 且 currentMotion 已是待机时，**绝不能**判成"什么都不做"
   assert.notEqual(a.action, 'none')
+})
+
+check('running 不许用含「比嘘」的动作 【用户 2026-10-05 明确要求】', () => {
+  // 用户原话："running 时没有比嘘"。
+  // 背景：Scene[0] 这个动作内部含"右手比嘘"，而 running 是**循环**播放的 ——
+  //      于是干活时右手一遍又一遍比嘘，非常聒噪（用户实测反馈）。
+  // 它同时还是**开场手势**（INTRO_MOTION）：开场演一次是用户要的，running 用它不行。
+  assert.equal(STATE_MAP.running.motion, BASE_MOTION, 'running 必须用荡秋千（基础动作）')
+  assert.notEqual(STATE_MAP.running.motion, INTRO_MOTION, 'running 不得用开场那个动作（含比嘘）')
+  // 忙碌感靠「思考」特效 + 光球颜色表达，不能连特效也一起丢了
+  assert.equal(STATE_MAP.running.params?.Param9, 1, 'running 仍要保留 Param9「思考」特效')
+  // 开场手势本身保留（用户确认）
+  assert.equal(INTRO_MOTION, 0)
+})
+
+check('切状态时 Param9「思考」必须被撤掉 【否则干完活还一脸思考】', () => {
+  // setParams 只写指定参数、不会重置其它的 → 离开 running 时必须自己清零
+  const leaving = planParamTransition({ Param9: 1 }, STATE_MAP.idle)
+  assert.deepEqual(leaving.clear, ['Param9'], '离开 running 要清 Param9')
+  assert.deepEqual(leaving.set, {}, 'idle 不带参数')
+
+  const entering = planParamTransition({}, STATE_MAP.running)
+  assert.deepEqual(entering.clear, [], '进入 running 没有要清的')
+  assert.equal(entering.set.Param9, 1, '进入 running 要开 Param9')
+
+  // 一直待在 running → 不清
+  assert.deepEqual(planParamTransition({ Param9: 1 }, STATE_MAP.running).clear, [])
 })
 
 // ─────────────────────────────────────────────────────────────
