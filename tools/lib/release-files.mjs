@@ -1,6 +1,11 @@
 /**
  * 发行包**收哪些文件** —— 纯逻辑，单独放是为了能自测。
  *
+ * ⚠️ 两个层次都要管，缺一个就会静默出错（实测踩过）：
+ *    · `shouldInclude(路径)`  —— 单个**文件**收不收
+ *    · `shouldDescend(目录)`  —— 遍历时**进不进**这个目录
+ *   只测前者不够：`node_modules` 整个被剪掉时，`--with-electron` 会静默失效。
+ *
  * 设计原则：
  *   1. 默认收"整个源码树"，只排除**体积大 / 机器相关 / 第三方素材 / 开发产物**四类；
  *   2. 三个 gitignore 掉但**发行必需**的东西要显式加回来：
@@ -9,6 +14,8 @@
  *        · `assets/live2d/Cyrene/`               —— 模型（1.4 MB），用 --with-model 控制。
  *        · `node_modules/electron/dist/`         —— Electron 二进制（367 MB），用 --with-electron 控制。
  */
+import { readdirSync } from 'node:fs'
+import { join } from 'node:path'
 
 /** 路径里出现任一段就整块排除 */
 export const EXCLUDED_SEGMENTS = new Set([
@@ -91,5 +98,62 @@ export function requiredInRelease(options = {}) {
     'tools/fetch-electron.mjs',
     ...VENDOR_FILES,
     ...(options.withModel ? ['assets/live2d/Cyrene/Cyrene.model3.json', 'assets/live2d/Cyrene/Cyrene.moc3'] : []),
+    ...(options.withElectron ? ['node_modules/electron/dist/electron.exe'] : []),
   ]
+}
+
+/**
+ * 遍历时**要不要进入这个目录**。
+ *
+ * ⚠️ 必须和 `shouldInclude` 分开，不能拿 `shouldInclude(dir + '/__dir__')` 代替 ——
+ *    `node_modules` 本身在排除名单里，但它下面有**要显式加回**的 `electron`；
+ *    用合成子路径判断会把整棵树剪掉，`--with-electron` 就静默失效了
+ *    （实测踩过：完整版打出来和精简版一样大，88 文件 / 1.71 MB）。
+ *
+ * @param {string} rel 相对仓库根的目录路径（用 / 分隔）
+ * @param {{withModel?:boolean, withElectron?:boolean}} [options]
+ */
+export function shouldDescend(rel, options = {}) {
+  const normalized = rel.replace(/\\/g, '/')
+  if (options.withElectron && (normalized === 'node_modules' || normalized.startsWith('node_modules/electron'))) {
+    return true
+  }
+  if (options.withModel && (normalized === 'assets' || normalized.startsWith('assets/live2d'))) {
+    return true
+  }
+  if (normalized === 'packages/pet-shell/renderer/vendor' || normalized.startsWith('packages/pet-shell/renderer/vendor/')) {
+    return true
+  }
+  return !normalized.split('/').some((s) => EXCLUDED_SEGMENTS.has(s))
+}
+
+/**
+ * 采集发行包的全部文件（相对路径，用 / 分隔）。
+ * 抽到 lib 里是为了能在自测里**对真实仓库跑一遍** ——
+ * 只测 `shouldInclude` 是不够的（上面那个 `--with-electron` 失效就是遍历层漏掉的）。
+ *
+ * @param {string} root 仓库根
+ * @param {{withModel?:boolean, withElectron?:boolean, readdir?:Function}} [options]
+ */
+export function collectReleaseFiles(root, options = {}) {
+  const readdir = options.readdir ?? readdirSync
+  const out = []
+  const walkDir = (dir, prefix) => {
+    let entries
+    try {
+      entries = readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (entry.isDirectory()) {
+        if (shouldDescend(rel, options)) walkDir(join(root, ...rel.split('/')), rel)
+      } else if (shouldInclude(rel, options)) {
+        out.push(rel)
+      }
+    }
+  }
+  walkDir(root, '')
+  return out
 }

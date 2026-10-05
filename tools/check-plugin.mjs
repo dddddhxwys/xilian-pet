@@ -30,7 +30,7 @@ import {
 } from '../packages/pet-shell/hit-test.js'
 import { createSseLink } from '../packages/pet-shell/sse-link.js'
 import { addPluginRow, looksLikeProfilePatch, pluginRowSnippet } from './lib/patch-edit.mjs'
-import { requiredInRelease, shouldInclude } from './lib/release-files.mjs'
+import { requiredInRelease, collectReleaseFiles, shouldDescend, shouldInclude } from './lib/release-files.mjs'
 import {
   BASE_MOTION,
   FLICK_PRESETS,
@@ -2801,6 +2801,53 @@ check('发行包必需清单：列出的文件**真的都在仓库里**', () => 
   for (const rel of requiredInRelease({ withModel: true })) {
     assert.ok(existsSync(new URL(`../${rel}`, import.meta.url)), `发行包必需文件缺失：${rel}`)
   }
+})
+
+check('发行包遍历：`--with-electron` 必须真的**进得去** node_modules', () => {
+  // ⚠️ 这条正是补上一个真 bug 的：只测 shouldInclude 是**不够的** ——
+  //    遍历时用「合成子路径」判断要不要进目录，`node_modules` 会在那一层被剪掉，
+  //    于是 --with-electron 静默失效（完整版打出来和精简版一样大：88 文件 / 1.71 MB）。
+  assert.equal(shouldDescend('node_modules', { withElectron: true }), true, '开了 --with-electron 就必须进 node_modules')
+  assert.equal(shouldDescend('node_modules', {}), false, '没开就别进（那里有 40 万个文件）')
+  assert.equal(shouldDescend('node_modules/electron', { withElectron: true }), true)
+  assert.equal(shouldDescend('node_modules/pixi.js', { withElectron: true }), false, '只放 electron，别把整个 node_modules 装进去')
+  assert.equal(shouldDescend('node_modules/electron/dist', { withElectron: true }), true)
+  // 模型同理：目录层也要放行
+  assert.equal(shouldDescend('assets/live2d', { withModel: true }), true)
+  assert.equal(shouldDescend('assets/live2d', {}), false, '没开 --with-model 就别进（第三方素材）')
+  // vendor 永远要进
+  assert.equal(shouldDescend('packages/pet-shell/renderer/vendor', {}), true)
+  // 常规排除仍然生效
+  for (const dir of ['.git', '.audit', '.cache', '.state', 'dist', 'chajian', 'docs/screenshots']) {
+    assert.equal(shouldDescend(dir, { withModel: true, withElectron: true }), false, `${dir} 不该进`)
+  }
+})
+
+check('发行包遍历：对**真实仓库**跑一遍，开关行为要符合预期', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const slim = collectReleaseFiles(root, {})
+  const withModel = collectReleaseFiles(root, { withModel: true })
+  const withElectron = collectReleaseFiles(root, { withElectron: true })
+
+  // 基线：必需文件在
+  for (const rel of requiredInRelease({})) {
+    assert.ok(slim.includes(rel), `精简版少了 ${rel}`)
+  }
+  // 开关确实改变内容
+  assert.ok(!slim.some((r) => r.startsWith('assets/live2d/')), '精简版不该含模型')
+  assert.ok(withModel.some((r) => r.startsWith('assets/live2d/')), '--with-model 应含模型')
+  assert.ok(
+    withElectron.includes('node_modules/electron/dist/electron.exe') ||
+      withElectron.some((r) => r.startsWith('node_modules/electron/')),
+    '--with-electron 必须真的收进 Electron（这条会抓住"遍历层剪枝"那个 bug）',
+  )
+  // 而且不能顺手把整个 node_modules 装进去
+  assert.ok(
+    !withElectron.some((r) => r.startsWith('node_modules/') && !r.startsWith('node_modules/electron/')),
+    '--with-electron 不该收 node_modules 下 electron 以外的东西',
+  )
+  // 精简版绝不含任何 node_modules
+  assert.ok(!slim.some((r) => r.startsWith('node_modules/')), '精简版不该含 node_modules')
 })
 
 console.log(`\n${'─'.repeat(56)}`)

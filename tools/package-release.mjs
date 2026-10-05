@@ -14,11 +14,11 @@
  * 压缩用 PowerShell 的 Compress-Archive（系统自带，不引依赖）。
  */
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
-import { dirname, join, relative } from 'node:path'
+import { cpSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { requiredInRelease, shouldInclude } from './lib/release-files.mjs'
+import { requiredInRelease, collectReleaseFiles } from './lib/release-files.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(here, '..')
@@ -34,20 +34,7 @@ const PKG_NAME = 'xilian-pet'
 const STAGE_DIR = join(STAGE_ROOT, PKG_NAME)
 const zipPath = outArg ?? join(ROOT, 'dist-release', `${PKG_NAME}${withElectron ? '-full' : ''}.zip`)
 
-/** 递归遍历，返回相对路径（用 /） */
-function walk(dir, base = dir, out = []) {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name)
-    const rel = relative(base, full).replace(/\\/g, '/')
-    if (entry.isDirectory()) {
-      // 目录本身先按规则判一次，省掉整棵子树的遍历（node_modules 有 40 万文件）
-      if (shouldInclude(`${rel}/__dir__`, { withModel, withElectron })) walk(full, base, out)
-    } else {
-      out.push(rel)
-    }
-  }
-  return out
-}
+/** 递归遍历在 tools/lib/release-files.mjs 里（那边才测得到，见那个文件的注释） */
 
 console.log('昔涟桌宠 · 打发行包')
 console.log('─'.repeat(56))
@@ -57,8 +44,8 @@ console.log(`  输出     : ${zipPath}`)
 console.log(`  模式     : ${dryRun ? '只列清单（--dry-run）' : '实际打包'}`)
 console.log('')
 
-const all = walk(ROOT)
-const included = all.filter((rel) => shouldInclude(rel, { withModel, withElectron }))
+const all = collectReleaseFiles(ROOT, { withModel, withElectron })
+const included = all
 let bytes = 0
 for (const rel of included) {
   try {
@@ -68,7 +55,7 @@ for (const rel of included) {
   }
 }
 console.log(`  收录 ${included.length} 个文件，共 ${(bytes / 1024 / 1024).toFixed(2)} MB（未压缩）`)
-console.log(`  （遍历到 ${all.length} 个文件并逐个判定；node_modules/.cache/.audit/dist 等整目录已提前跳过）`)
+console.log(`  （整目录级的排除在遍历时就跳过了；这里的数字是**逐个判定过**的文件）`)
 console.log('')
 
 // ── 自检：必需文件都在吗 ──────────────────────────────────────────
