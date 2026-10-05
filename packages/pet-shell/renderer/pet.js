@@ -573,7 +573,9 @@ async function startLive2D() {
         api.log(`[分区调试] 中心点命中自检：${probes.join('　')}`)
 
         // 分区图：每 8px 一格打印成文本 —— 一眼看出各区的**实际范围**
-        // （用户反馈"点翅膀弹一下的范围变小了"，靠这张图判断是"判定准了"还是"翅膀没被覆盖全"）
+        // ⚠️ 这里的字符必须来自 `hitPart`（**真实判定**，含两侧兜底），
+        //    不能用 `debugFrontPartName` —— 那个只反映显式映射，
+        //    会把兜底生效的区域画成"无分区"，图就成了骗人的 ✗（实测踩到）
         const step = 8
         const KEY = { face: 'F', head: 'H', swing: 'S' }
         const hist = new Map()
@@ -585,8 +587,8 @@ async function startLive2D() {
             const py = y + step / 2
             const raw = live2d?.debugFrontPartName?.(px, py, contentBox())
             if (raw) hist.set(raw.partName, (hist.get(raw.partName) ?? 0) + 1)
-            const zone = raw?.zone ?? (overOpaquePixel(px, py) ? null : undefined)
-            row += raw ? (KEY[raw.zone] ?? '·') : overOpaquePixel(px, py) ? '·' : ' '
+            const effective = raw ? live2d?.hitPart?.(px, py, contentBox()) : null
+            row += effective ? (KEY[effective.zone] ?? '?') : raw ? '·' : ' '
           }
           rows.push(row)
         }
