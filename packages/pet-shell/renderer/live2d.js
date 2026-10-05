@@ -1000,8 +1000,16 @@ function playStateMotion(next, animate = true) {
  * 每帧公式都是 `lerp(动作刚写下的值, 目标, 进度)` —— 在 `beforeModelUpdate` 里执行，
  * 动作/表情/物理都已跑完，所以读到的是动作本帧的值、写下去也能压住它。
  */
-const HAND_MIX_OUT_MS = 160
-const HAND_MIX_IN_MS = 220
+/**
+ * 第一段（"把手卸掉"）的时长。
+ *
+ * ⚠️ 刻意**很短**：手是互斥资源，不能同时出现两只（否则三只手），所以必须先卸掉再上新；
+ *    但"卸掉"这一段太长就会被看成"手先放下、再抬起来"两个动作
+ *    （用户原话："我能看到昔涟的手会快速放下然后放到正确的位置"）✗
+ *    压到 70ms 后它只是一次几乎察觉不到的松开，紧接着第二段把新手抬到位 ✓
+ */
+const HAND_MIX_OUT_MS = 70
+const HAND_MIX_IN_MS = 240
 /** "手部姿势全关"的中性值（第一段目标） */
 const NEUTRAL_HANDS = {
   Param9: 0,
