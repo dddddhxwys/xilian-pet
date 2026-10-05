@@ -208,22 +208,23 @@ export const FLICK_PRESETS = {
     durationMs: 600,
     freqHz: 3.3,
     decayMs: 170,
-    move: { px: 7, up: 3, rot: 0.018 },
-    amp: { ParamAngleZ: 5, ParamBodyAngleZ: 3, ParamBodyAngleX: 2, Param23: 6, Param24: 6, Param19: 4, Param20: 4 },
+    // 幅度演进：px 7→12、up 3→6、rot 0.018→0.03（用户："幅度再大一点"）
+    move: { px: 12, up: 6, rot: 0.03 },
+    amp: { ParamAngleZ: 8, ParamBodyAngleZ: 5, ParamBodyAngleX: 3, Param23: 10, Param24: 10, Param19: 7, Param20: 7 },
   },
   medium: {
     durationMs: 1000,
     freqHz: 3.0,
     decayMs: 280,
-    move: { px: 14, up: 7, rot: 0.04 },
-    amp: { ParamAngleZ: 10, ParamBodyAngleZ: 6, ParamBodyAngleX: 4, Param23: 12, Param24: 12, Param19: 7, Param20: 7 },
+    move: { px: 20, up: 10, rot: 0.05 },
+    amp: { ParamAngleZ: 12, ParamBodyAngleZ: 7, ParamBodyAngleX: 5, Param23: 14, Param24: 14, Param19: 9, Param20: 9 },
   },
   strong: {
     durationMs: 1500,
     freqHz: 2.8,
     decayMs: 420,
-    move: { px: 24, up: 12, rot: 0.07 },
-    amp: { ParamAngleZ: 16, ParamBodyAngleZ: 10, ParamBodyAngleX: 7, Param23: 18, Param24: 18, Param19: 11, Param20: 11 },
+    move: { px: 34, up: 17, rot: 0.09 },
+    amp: { ParamAngleZ: 18, ParamBodyAngleZ: 11, ParamBodyAngleX: 8, Param23: 20, Param24: 20, Param19: 13, Param20: 13 },
   },
 }
 
