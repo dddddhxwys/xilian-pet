@@ -24,6 +24,7 @@ import {
   decideOnMotionFinish,
   fadeProps,
   planParamTransition,
+  propFadePhases,
   propTargetsFor,
 } from '../packages/pet-shell/renderer/motion-policy.js'
 import {
@@ -1886,6 +1887,23 @@ check('道具渐变：切到 running 时不能瞬间清零 【用户："荡秋�
   const atNeg = fadeProps(from, to, -1)
   assert.equal(atNeg.Param16, 1, '负进度夹到起点')
   assert.equal(atNeg.Param9, 0, '负进度夹到起点')
+})
+
+check('道具过渡必须"两段式"，绝不能交叉淡入淡出 【"又有三只手了"的根因】', () => {
+  // 用户实测："修出问题了，现在又有三只手了" ——
+  // 交叉淡入淡出时，旧的"手"还没淡完、新的"手"已经开始淡入 → **两只手同时可见** ✗
+  // 所以必须：第一段把**所有**道具（含本状态自己的）熄到 0，第二段才点起本状态要的。
+  const ids = ['Param9', 'Param12', 'Param16', 'Param32']
+  const [allOff, targets] = propFadePhases(STATE_MAP.running, ids)
+
+  // 第一段：全 0，**包括 running 自己要用的 Param9** —— 这是"不重叠"的关键
+  for (const id of ids) {
+    assert.equal(allOff[id], 0, `第一段 ${id} 必须是 0（否则新手会与旧手同时出现）`)
+  }
+  // 第二段：才是本状态的目标
+  assert.deepEqual(targets, { Param9: 1, Param12: 0, Param16: 0, Param32: 0 })
+  // 两段之间至少有一个键是不同的值，否则"两段式"没意义
+  assert.notDeepEqual(allOff, targets)
 })
 
 // ─────────────────────────────────────────────────────────────

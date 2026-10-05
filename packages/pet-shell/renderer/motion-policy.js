@@ -116,6 +116,24 @@ export function propTargetsFor(mapped, propIds) {
 }
 
 /**
+ * 切换状态时的**两段式**道具渐变计划 —— 纯函数，便于自测。
+ *
+ * ⚠️ 为什么不能"交叉淡入淡出"：道具里包含**互斥的手/姿势**（`Param9` 思考的手、
+ *    `Param12` 手指、`Param17/18` 叉腰…）。同时淡出旧手 + 淡入新手 → **两只手同时可见**
+ *    → 又变"三只手"（用户实测："修出问题了，现在又有三只手了"）。
+ *    所以必须先**全部熄掉**，**再**点起本状态要的 —— 两段错开，绝不重叠。
+ *
+ * @param {{params?: Record<string, number>}|undefined} mapped 状态映射
+ * @param {string[]} propIds 道具参数 id
+ * @returns {[Record<string, number>, Record<string, number>]} [第一段：全熄, 第二段：本状态目标]
+ */
+export function propFadePhases(mapped, propIds) {
+  const allOff = {}
+  for (const id of propIds) allOff[id] = 0
+  return [allOff, propTargetsFor(mapped, propIds)]
+}
+
+/**
  * @param {object} p
  * @param {number|null} p.currentMotion 目前记录的动作下标（startMotion 时写入）
  * @param {string} p.currentState       桌宠状态名

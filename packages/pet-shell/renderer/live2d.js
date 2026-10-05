@@ -59,7 +59,7 @@ import {
   decideOnMotionFinish,
   fadeProps,
   planParamTransition,
-  propTargetsFor,
+  propFadePhases,
 } from './motion-policy.js'
 
 /**
@@ -717,17 +717,23 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cache
 const PROP_PARAM_IDS = Object.keys(WATCH_PARAMS).filter((id) => /^Param\d*$/.test(id))
 
 /**
- * 道具渐变（约 300ms）。
+ * 道具渐变（两段式，共约 340ms）。
  *
- * ⚠️ 为什么不是瞬间清零：切到 running（不播动作）时若一帧内把道具全清零，
- *    秋千道具会**瞬间消失**、思考姿势**瞬间出现** —— 用户原话"荡秋千到思考中间没有衔接"。
- *    用缓出渐变后两个方向都有过渡。
+ * ⚠️ 为什么是**两段**而不是交叉淡入淡出：道具里有**互斥的手/姿势**，
+ *    同时淡出旧手 + 淡入新手会让**两只手同时可见** → 用户实测报"又有三只手了"。
+ *    所以：先全部熄掉（`PROP_FADE_OUT_MS`），**再**点起本状态要的（`PROP_FADE_IN_MS`）。
  */
-const PROP_FADE_MS = 300
+const PROP_FADE_OUT_MS = 140
+const PROP_FADE_IN_MS = 200
 let propFade = null
 
-/** 用**当前实际值**作为起点，开始一段道具渐变 */
-function startPropFade(targets, durationMs = PROP_FADE_MS) {
+/**
+ * 用**当前实际值**作为起点，开始一段道具渐变。
+ * @param {Record<string, number>} targets
+ * @param {number} durationMs
+ * @param {(() => void)|null} then 本段结束后接着做的事（用于串第二段）
+ */
+function startPropFade(targets, durationMs, then = null) {
   const core = state.model?.internalModel?.coreModel
   const from = {}
   for (const id of Object.keys(targets)) {
@@ -739,7 +745,7 @@ function startPropFade(targets, durationMs = PROP_FADE_MS) {
     }
     from[id] = value
   }
-  propFade = { from, to: { ...targets }, t0: performance.now(), durationMs }
+  propFade = { from, to: { ...targets }, t0: performance.now(), durationMs, then }
   return propFade
 }
 
@@ -748,8 +754,18 @@ function stepPropFade(now) {
   if (propFade === null) return false
   const progress = propFade.durationMs <= 0 ? 1 : (now - propFade.t0) / propFade.durationMs
   setParams(fadeProps(propFade.from, propFade.to, progress))
-  if (progress >= 1) propFade = null
+  if (progress >= 1) {
+    const next = propFade.then
+    propFade = null
+    if (typeof next === 'function') next()
+  }
   return true
+}
+
+/** 开始"两段式"道具过渡：先全熄，再点起本状态要的 */
+function startPropTransition(mapped) {
+  const [allOff, targets] = propFadePhases(mapped, PROP_PARAM_IDS)
+  startPropFade(allOff, PROP_FADE_OUT_MS, () => startPropFade(targets, PROP_FADE_IN_MS))
 }
 
 /** 直接结束渐变（切到有动作的状态时用：接下来交给动作驱动） */
@@ -962,10 +978,13 @@ function applyStateMotion(next, animate) {
   //    用荡秋千又与 Param9 的手叠加成**三只手**（用户实测）。
   if (mapped.motion === null) {
     stopAllMotions()
-    // ⚠️ 用**渐变**熄掉所有道具、同时点起本状态自己的（如 Param9）——
-    //    瞬间清零就是"荡秋千到思考中间没有衔接"（用户实测）。
-    startPropFade(propTargetsFor(mapped, PROP_PARAM_IDS))
-    state.log(`状态 ${next}：不播动作（道具 ${PROP_FADE_MS}ms 渐变过渡，只保留 Param9「思考」）`)
+    // ⚠️ **两段式**过渡：先把所有道具熄掉，**再**点起本状态自己的（如 Param9）。
+    //    交叉淡入淡出会让"旧手 + 新手"同时可见 → 三只手（用户实测）。
+    //    也不能瞬间清零（那样就是硬切，"荡秋千到思考中间没有衔接"）。
+    startPropTransition(mapped)
+    state.log(
+      `状态 ${next}：不播动作（道具两段过渡 ${PROP_FADE_OUT_MS}+${PROP_FADE_IN_MS}ms，只保留 Param9「思考」）`,
+    )
     oneShotUntil = 0
     return
   }
