@@ -642,6 +642,9 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cache
       if (Date.now() < oneShotUntil) return // 一次性动作的预计时长内不插手
       if (!finished) return // 有动作在播，正常
       const mapped = STATE_MAP[state.currentState] ?? STATE_MAP.idle
+      // `motion === null` = 这个状态**本来就不播动作**（running）→ 巡检不许插手，
+      // 否则会把秋千又开起来，跟 Param9 的手叠成三只手。
+      if (mapped.motion === null) return
       // 一次性状态的动作已经演完（oneShotUntil 已过）→ 回基础动作；
       // 其余状态 → 重开它自己的动作。绝不让"空转"停留超过一个巡检周期。
       const index = mapped.once ? BASE_MOTION : (mapped.motion ?? BASE_MOTION)
@@ -701,6 +704,22 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cache
 
   state.ready = true
   return model
+}
+
+/**
+ * 停掉所有动作 —— 用于"这个状态不播动作"（`motion === null`，目前是 running）。
+ *
+ * ⚠️ 同时把 `currentMotion` 清空：它表示"当前记录的动作"，
+ *    不清的话 `motionFinish` 的决策会把刚停下的待机动作又重开一遍，
+ *    而 running 恰恰是**不该播动作**的状态。
+ */
+function stopAllMotions() {
+  try {
+    state.model?.internalModel?.motionManager?.stopAllMotions?.()
+  } catch (error) {
+    state.log(`停动作失败：${error?.message ?? error}`)
+  }
+  currentMotion = null
 }
 
 /**
@@ -890,8 +909,18 @@ function applyStateMotion(next, animate) {
   clearTimeout(oneShotTimer)
   clearTimeout(lingerTimer) // 切状态时取消上一条待撤的特效
 
-  // idle 与 running 现在**共用荡秋千**（同一动作）：来回切状态时不要重开，
-  // 否则每次状态抖动秋千都会从头开始，看起来就是"画面一顿"。
+  // ⚠️ `motion === null` = **这个状态不播任何动作**（目前只有 running）。
+  //    停掉当前动作，只留 `Param9`「思考」这类参数效果 —— 她保持"手放下巴"的姿势。
+  //    为什么不能播动作：用 Scene[0]（内含右手比嘘）会一遍遍比嘘；
+  //    用荡秋千又与 Param9 的手叠加成**三只手**（用户实测）。
+  if (mapped.motion === null) {
+    stopAllMotions()
+    state.log(`状态 ${next}：不播动作（只保留参数效果，如 Param9「思考」）`)
+    oneShotUntil = 0
+    return
+  }
+
+  // idle 与 running 之外的状态若共用同一动作：来回切时不要重开，避免"画面一顿"。
   // （万一它其实已经停了，巡检 3 秒内会重开，见 motionWatchdog。）
   if (!mapped.once && mapped.motion === currentMotion) {
     state.log(`状态 ${next} 与当前动作相同（Scene[${mapped.motion}]）→ 不重开，继续播`)

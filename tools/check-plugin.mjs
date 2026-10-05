@@ -1823,16 +1823,23 @@ check('动作播完的决策：done 状态下待机动作播完必须重开 【�
   assert.notEqual(a.action, 'none')
 })
 
-check('running 不许用含「比嘘」的动作 【用户 2026-10-05 明确要求】', () => {
-  // 用户原话："running 时没有比嘘"。
-  // 背景：Scene[0] 这个动作内部含"右手比嘘"，而 running 是**循环**播放的 ——
-  //      于是干活时右手一遍又一遍比嘘，非常聒噪（用户实测反馈）。
-  // 它同时还是**开场手势**（INTRO_MOTION）：开场演一次是用户要的，running 用它不行。
-  assert.equal(STATE_MAP.running.motion, BASE_MOTION, 'running 必须用荡秋千（基础动作）')
-  assert.notEqual(STATE_MAP.running.motion, INTRO_MOTION, 'running 不得用开场那个动作（含比嘘）')
-  // 忙碌感靠「思考」特效 + 光球颜色表达，不能连特效也一起丢了
-  assert.equal(STATE_MAP.running.params?.Param9, 1, 'running 仍要保留 Param9「思考」特效')
-  // 开场手势本身保留（用户确认）
+check('running 完全不播动作（只留 Param9「思考」）【用户 2026-10-05 最终要求】', () => {
+  // 用户原话："就用 param9，不用荡秋千" —— running 时**不播任何动作**，只开 Param9。
+  // 这是三次实测教训的结论：
+  //   ① `Scene[0]`（原方案）内含"右手比嘘"，而 running 是循环播放的 → 干活时一遍遍比嘘（"很聒噪"）
+  //   ② 荡秋千 + Param9 → 秋千占了两只手、Param9 又加一只手 = **三只手**（用户截图）
+  //   ③ 所以 motion 必须是 null：停掉动作，只保留 Param9 的姿势 ✓
+  assert.equal(STATE_MAP.running.motion, null, 'running 必须不播动作（motion: null）')
+  assert.equal(STATE_MAP.running.params?.Param9, 1, 'running 仍要保留 Param9「思考」')
+  // 不播动作的状态收到 motionFinish 时必须什么都不做 —— 否则会把秋千又开起来 → 三只手
+  const d = decideOnMotionFinish({
+    currentMotion: null,
+    currentState: 'running',
+    stateMap: STATE_MAP,
+    baseMotion: BASE_MOTION,
+  })
+  assert.equal(d.action, 'none', 'running 收到 motionFinish 不该重开任何动作')
+  // 开场手势保留（用户确认）
   assert.equal(INTRO_MOTION, 0)
 })
 

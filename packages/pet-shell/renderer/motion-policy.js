@@ -28,18 +28,18 @@ export const STATE_MAP = {
   // 待机：默认就荡秋千。180 秒长循环，最像"自己待着"
   idle: { motion: BASE_MOTION, expression: 'reset' },
   /**
-   * 工作中：**荡秋千 + `Param9`「思考」特效**，忙碌感靠特效 + 光球颜色表达。
+   * 工作中：**不播任何动作**，只开 `Param9`「思考」—— 她保持"一只手放下巴"的思考姿势。
    *
-   * ⚠️ 这里**刻意不用 `Scene[0]`**（用户 2026-10-05 明确要求："running 时没有比嘘"）：
-   *    `Scene[0]` 内部就含"右手比嘘"，而它是**循环**播放的 ——
-   *    于是干活时右手会一遍又一遍地比嘘，非常聒噪 ✗
-   *    改成荡秋千后：她几乎总在荡秋千，干活时多一个思考特效 + 光球变色 ✓
+   * 为什么是"不播动作"（用户 2026-10-05 最终确认："就用 param9，不用荡秋千"）：
+   *  - 用 `Scene[0]`（原方案）：它**内含"右手比嘘"**，而 running 是循环播放的 →
+   *    干活时右手一遍又一遍比嘘（用户实测："很聒噪"）
+   *  - 用荡秋千 + `Param9`：秋千占了两只手，`Param9` 又加一只手 → **三只手**（用户实测截图）
+   *  - 所以：**停掉动作**，只留 `Param9` 的效果 —— 既不会比嘘，也不会叠加肢体 ✓
    *
-   * ⚠️ 曾有一版注释写成"一直循环 Scene[0]（用户确认）" —— 那是我**误解了
-   *    "比嘘是独立动作"**造成的（以为 running 播的是"手放下巴"那个姿势），已作废。
-   *    自测里有一条专门盯着"running 不得用 INTRO_MOTION"。
+   * `motion: null` 是"这个状态不播动作"的显式标记，由 live2d.js 的 applyStateMotion 处理
+   * （会 stopAllMotions 并清空 currentMotion），巡检也会跳过它。
    */
-  running: { motion: BASE_MOTION, expression: 'reset', params: { Param9: 1 } },
+  running: { motion: null, expression: 'reset', params: { Param9: 1 } },
   // 待确认：闭眼笑 + 星光 + 惊喜特效（最能抓住注意力）。**只播一次**再回待机，
   // 否则"等你确认"会一直闪星星，反而变成噪音。
   // 特效刻意**留着**（keepEffect）：它表达的正是"还在等你"。
@@ -97,7 +97,12 @@ export function decideOnMotionFinish({ currentMotion, currentState, stateMap, ba
     return { action: 'base', index: baseMotion, why: '一次性动作演完' }
   }
 
-  // ③ 其余非一次性状态：重开它自己的动作，别一律回待机
+  // ③ `motion === null` = 这个状态本来就不播动作（running）→ 什么都不做
+  if (mapped?.motion === null) {
+    return { action: 'none', index: null, why: '该状态不播动作' }
+  }
+
+  // ④ 其余非一次性状态：重开它自己的动作，别一律回待机
   if (typeof mapped?.motion === 'number') {
     return { action: 'restart', index: mapped.motion, why: '非一次性动作播完' }
   }
