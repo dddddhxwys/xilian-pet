@@ -71,8 +71,7 @@ body {
 
 /* UI 控件必须在模型之上 */
 #bubble,
-#notice,
-#status {
+#notice {
   z-index: 2;
 }
 
@@ -197,24 +196,8 @@ body.has-notice #bubble {
   top: calc(var(--notice-h, 56px) + 10px);
 }
 
-/* 连接状态小点 */
-#status {
-  position: absolute;
-  bottom: 6px;
-  right: 8px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #bbb;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7);
-}
-
-#status[data-link="up"] {
-  background: #37c46a;
-}
-#status[data-link="down"] {
-  background: #e2686a;
-}
+/* 连接状态小点已**挪进操作面板**（用户 2026-10-05：
+   "把那个表示插件在线的小绿点整合到菜单里面去"）→ 见 menu.css 的 #linkState */
 
 /* 审批卡的样式已移到 approval.css（独立小窗）—— 画在本窗口必然遮住她。 */
 

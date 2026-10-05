@@ -247,3 +247,27 @@ body {
 .hint[data-kind="error"] {
   color: #ffb3b3;
 }
+
+/*
+  插件（SSE）在线小点 —— 从桌宠身上挪过来的
+  （用户 2026-10-05："把那个表示插件在线的小绿点整合到菜单里面去"）。
+  仍用 `data-link="up|down"` 表达状态，语义和原来桌宠上那个点保持一致 ✓
+*/
+#linkState {
+  font-weight: 600;
+  color: #ff9a9a;
+}
+#linkState[data-link="up"] {
+  color: #7ee0a0;
+}
+#linkState::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: middle;
+  box-shadow: 0 0 6px currentColor;
+}

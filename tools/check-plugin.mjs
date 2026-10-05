@@ -2030,6 +2030,37 @@ check('每一档的启动文案都能安全生成 【settle 的 move 是 null，
 // ─────────────────────────────────────────────────────────────
 console.log('\n[5] 命中测试（外壳纯函数，不需要 Electron）')
 
+check('插件在线小点已从桌宠挪进操作面板 【用户："整合到菜单里面去"】', () => {
+  // 用户 2026-10-05："把那个表示插件在线的小绿点整合到菜单里面去"。
+  // 桌宠窗口只有 260×300、她本体占满，那个点只能压在她身上 ✗ → 挪到面板 ✓
+  const read = (rel) => readFileSync(new URL(`../packages/pet-shell/${rel}`, import.meta.url), 'utf8')
+  const petJs = read('renderer/pet.js')
+  const petHtml = read('renderer/index.html')
+  const petCss = read('renderer/pet.css')
+  const menuHtml = read('renderer/menu.html')
+  const menuJs = read('renderer/menu.js')
+  const menuCss = read('renderer/menu.css')
+  const preload = read('menu-preload.cjs')
+
+  // ① 桌宠窗口里必须真的没了（元素 / 引用 / 样式三处都要干净 ——
+  //    少改一处就会出现"元素没了但 JS 还在 dataset 上写"这类静默错误）
+  assert.equal(/id="status"/.test(petHtml), false, 'index.html 不该再有 #status 元素')
+  assert.equal(/getElementById\('status'\)/.test(petJs), false, 'pet.js 不该再引用 #status')
+  assert.equal(/#status\s*\{/.test(petCss), false, 'pet.css 不该再有 #status 规则')
+
+  // ② 面板里必须真的有了（HTML + CSS + JS + preload 四层齐）
+  assert.ok(/id="linkState"/.test(menuHtml), 'menu.html 要有 #linkState')
+  assert.ok(/#linkState/.test(menuCss), 'menu.css 要给它样式')
+  assert.ok(/data-link="up"/.test(menuCss), '仍然用 data-link 表达在线（语义和原来一致）')
+  assert.ok(/function renderLink/.test(menuJs), 'menu.js 要有 renderLink')
+  assert.ok(/onLink/.test(preload), 'preload 要暴露 onLink')
+
+  // ③ 首次打开就要显示正确状态，不能等下一次连接变化
+  const mainJs = read('main.js')
+  assert.ok(/link: lastLink,/.test(mainJs), 'menu:data 里要带 link（否则首开永远显示"未连接"）')
+  assert.ok(/function pushMenuLink/.test(mainJs), '连接状态变化时要推给面板')
+})
+
 check('外壳：帧转发不能被副作用吞掉 【实机 bug 回归】', () => {
   // 真机症状：审批小窗死活不弹；一查时间线：用户等了 68 秒（> 60s 超时）才在 GUI 放行。
   // 根因：startSse 是**模块级**函数，我却在里面直接调了定义在 createWindow 内部的

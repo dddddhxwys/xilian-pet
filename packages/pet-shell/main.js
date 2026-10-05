@@ -378,6 +378,16 @@ function send(win, channel, payload) {
 function pushLink(win, link) {
   lastLink = link
   send(win, 'pet:link', link)
+  // 插件在线的小点现在显示在**操作面板**里（用户 2026-10-05 要求），同步推给它。
+  // 面板没开 / 还没加载完就跳过 —— 首次打开时会由 `menu:data.link` 带上最新值 ✓
+  pushMenuLink(link)
+}
+
+/** 把 SSE 连接状态推给菜单小窗（它自己管显示，主进程只负责转发） */
+function pushMenuLink(link) {
+  if (menuWin === null || menuWin.isDestroyed()) return
+  if (menuWin.webContents.isLoading()) return
+  menuWin.webContents.send('menu:link', link)
 }
 
 /**
@@ -991,6 +1001,9 @@ app.whenReady().then(async () => {
       selectedSessionId,
       tokens: body?.tokens ?? payload?.tokens ?? null,
       focusInput: payload?.focusInput === true,
+      // 插件在线小点要在**首次打开**时就显示正确状态，不能等下一次连接变化
+      // （那时候可能早就连上了，`pushMenuLink` 不会再推）
+      link: lastLink,
     }
     w.webContents.send('menu:data', lastMenuData)
     w.show()

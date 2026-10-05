@@ -24,7 +24,8 @@ const bubbleText = document.getElementById('bubbleText')
 // 派活/打断现在都在独立操作面板里（见 main.js 的 openMenuWindow）。
 const notice = document.getElementById('notice')
 const noticeText = document.getElementById('noticeText')
-const status = document.getElementById('status')
+// ⚠️ 曾经的 `#status`（右下角 SSE 连接小绿点）已按用户要求**挪进操作面板**
+//（2026-10-05："把那个表示插件在线的小绿点整合到菜单里面去"）→ 见 menu.html 的「插件」一行
 // 审批不在本窗口里画 —— 她头顶只有 ~87px 留白，放不下审批卡（必然遮住她）。
 // 审批走**专用小窗**（main.js 的 openApprovalWindow），见 approval.js。
 
@@ -376,11 +377,11 @@ notice.addEventListener('click', async () => {
 })
 
 // ── 与主进程的帧通道 ────────────────────────────────────────────────
+// ⚠️ 插件（SSE）连接状态的小绿点**已从本窗口移除**（用户 2026-10-05：
+//    "把那个表示插件在线的小绿点整合到菜单里面去"）→ 现在显示在操作面板里。
+// 这里只把状态记进日志（排查"面板显示未连接"时，宠物这边的日志能对上时间）。
 api.onLink((link) => {
-  status.dataset.link = link.connected ? 'up' : 'down'
-  status.title = link.connected ? `已连接 ${link.url ?? ''}` : `未连接${link.error ? `：${link.error}` : ''}`
-  // 刻意不把断连映射成 'error' 状态：那是 agent 出错的意思。
-  // 连接状态由右下角状态点表达，宠物状态只反映与会话有关的事实。
+  api.log(`插件连接：${link.connected ? '已连接' : '未连接'}${link.error ? `（${link.error}）` : ''}`)
 })
 
 api.onFrame((frame) => {
@@ -555,10 +556,8 @@ async function startLive2D() {
   }
 
   updateCursor(false)
-  status.dataset.link = 'down'
   api.log(`渲染端已加载（live2d=${live2dActive}）`)
   // 握手：handler 都注册好了，请主进程补发最近的连接状态与快照。
-  // 不做这一步，主进程在页面加载完成前发出的 'pet:link' 会被直接丢掉，
-  // 表现就是"日志说 SSE 已连接，状态点却是红的"（实测踩过）。
+  // 不做这一步，主进程在页面加载完成前发出的 'pet:link' 会被直接丢掉（实测踩过）。
   api.ready()
 })()

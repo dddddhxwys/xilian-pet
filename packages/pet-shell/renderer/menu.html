@@ -44,6 +44,14 @@
       <div class="stat"><span>本次会话</span><b id="tokens">—</b></div>
       <div class="stat"><span>缓存命中</span><b id="cache">—</b></div>
 
+      <!--
+        插件（SSE）连接状态 —— 从桌宠身上**挪过来的**
+        （用户 2026-10-05："把那个表示插件在线的小绿点整合到菜单里面去"）。
+        为什么该放这里：桌宠窗口 260×300 全被她占着，那个点只能压在她身上；
+        面板本来就是"看状态、下命令"的地方，放这儿更合理，也不挡她 ✓
+      -->
+      <div class="stat"><span>插件</span><b id="linkState" data-link="down">未连接</b></div>
+
       <div id="hint" class="hint" hidden></div>
     </div>
     <script src="menu.js"></script>

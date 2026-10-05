@@ -10,6 +10,7 @@ const inputEl = document.getElementById('input')
 const hintEl = document.getElementById('hint')
 const tokensEl = document.getElementById('tokens')
 const cacheEl = document.getElementById('cache')
+const linkStateEl = document.getElementById('linkState')
 
 let selectedSessionId = null
 let sessionRows = []
@@ -23,8 +24,21 @@ function formatTokens(n) {
   return String(Math.round(n))
 }
 
-function showHint(text, kind = 'ok') {
-  hintEl.textContent = text
+/**
+ * 插件（SSE）连接状态 —— 从桌宠身上挪到面板里的小绿点。
+ *
+ * 用户 2026-10-05："把那个表示插件在线的小绿点整合到菜单里面去"。
+ * 状态语义沿用桌宠上那个点：`link.connected` = 插件在线 ✓
+ * 文案不用"在线/离线"而用"已连接/未连接"，和原来那个点的 tooltip 保持一致。
+ */
+function renderLink(link) {
+  const up = link?.connected === true
+  linkStateEl.dataset.link = up ? 'up' : 'down'
+  linkStateEl.textContent = up ? '已连接' : '未连接'
+  linkStateEl.title = up ? `已连接 ${link?.url ?? ''}` : `未连接${link?.error ? `：${link.error}` : ''}`
+}
+
+function showHint(text, kind = 'ok') {  hintEl.textContent = text
   hintEl.dataset.kind = kind
   hintEl.hidden = false
   clearTimeout(hintTimer)
@@ -95,6 +109,8 @@ if (api === undefined) {
 } else {
   api.onData((data) => {
     renderSessions(data)
+    // 首次打开时 link 随数据一起来（主进程补发），之后靠 onLink 增量更新
+    renderLink(data?.link)
 
     const t = data?.tokens
     tokensEl.textContent = formatTokens(t?.spendTokens)
@@ -108,6 +124,9 @@ if (api === undefined) {
 
   // 监听已注册 → 让主进程补发数据（loadFile 是异步的，它先前发的那次会丢）
   api.ready()
+
+  // 插件连接状态变化（主进程推）—— 面板开着时能实时变绿/变红
+  api.onLink((link) => renderLink(link))
 
   // 点折叠态那一行 = 展开 / 收起列表
   targetEl.addEventListener('click', () => setExpanded(sessionsEl.hidden))

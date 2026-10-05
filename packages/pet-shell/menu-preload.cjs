@@ -13,6 +13,12 @@ contextBridge.exposeInMainWorld('xilianMenu', {
    */
   ready: () => ipcRenderer.send('menu:ready'),
 
+  /**
+   * 插件（SSE）连接状态 —— 从桌宠身上挪到面板里显示的小绿点。
+   * 主进程在连接状态变化时推；首次打开时也会随 `menu:data.link` 一起给（见 onData）。
+   */
+  onLink: (callback) => ipcRenderer.on('menu:link', (_event, link) => callback(link)),
+
   /** 切换派活目标（只影响桌宠把活派给谁，不动 DSH 界面） */
   selectSession: (sessionId) => ipcRenderer.send('menu:select-session', String(sessionId)),
   /**
