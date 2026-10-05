@@ -8,7 +8,7 @@
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
 | 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
-| 规模 | 插件 5 文件 2306 行 / 外壳 18 文件 4176 行 / 工具 14 文件 3462 行，95 个提交 |
+| 规模 | 插件 5 文件 2306 行 / 外壳 18 文件 4176 行 / 工具 14 文件 3462 行，96 个提交 |
 | 自测 | `& $NODE tools\check-plugin.mjs` → **105 项全绿** |
 
 > 📌 **接手/继续开发请先读 [`docs/交接说明.md`](docs/交接说明.md)** —— 那份是给下一个对话窗口的，
@@ -796,6 +796,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **`.sessions[hidden]` 必须显式写** | 折叠"没生效"：`hidden=true` 但列表照样显示（抓图才发现） | UA 的 `[hidden]{display:none}` 被自己写的 `.sessions{display:flex}` **覆盖**了 —— 本仓库为这个坑栽过两次（上一次是 `#composer` 默认显示出来） |
 | **以为 `setIsLoop(true)` 就能让动作循环** | 用户报："昔涟在长时间待机之后会退出待机动作" | 循环标志**设成功了**（日志可见 `Scene[3] 循环=true`），但库照样在 180 秒后派发 `motionFinish` 结束动作。而 `motionFinish` 处理器对**非一次性状态什么都不做** → 她停在最后一帧。正解：非一次性状态收到 `motionFinish` 就**重开该状态自己的动作**。待机动作 `Scene[3]` 时长 180 秒，所以症状是"待机几分钟后不动"而不是"一看就坏" |
 | **修 bug 时只看 `state.currentState`，没看"实际在播哪个动作"** | 第一版修复后用户回"**还是会停**" | agent 干完活后 `currentState` 是 `done`（一次性状态**刻意保留**，未读背板要一直显示），但实际在播的已是待机动作。于是走进"一次性动作演完 → `returnToBaseMotion()`"，而它开头 `if (currentMotion === BASE_MOTION) return` **直接返回、没人重开**。**状态与动作是两件事**：判断必须用 `currentMotion`。修法是把决策抽成纯函数 `motion-policy.js`，自测秒级盯住（不必跑 180 秒） |
+| **"等某个事件再补救"，但那个事件根本不派发** | 第二版修复后用户回"**还是没有秋千**" | 改成"等 `motionFinish` 再重开"后实机仍然失效 —— 库在某条路径上停掉动作**却不派发该事件**。**改用主动巡检**（每 3 秒问库"现在有动作在播吗"，看 `motionManager.isFinished()`）。实机 43.8 分钟里 `motionFinish` 路径重开过一次、动作却没真的播起来，正是巡检兜底救回的 |
 | **审批卡画在桌宠窗口里** | 用户实测："审批弹窗遮到角色了" | 她头顶只有 ~87px 留白，审批卡（工具名+命令+按钮）≥100px → 必然遮住她。改成**第三个窗口**（`showInactive()` 不抢焦点）。中途还想塞进操作面板，被用户否掉："还要打开菜单才能审批，与初衷违背" |
 | **错误被 catch 吞掉 + 关键语句在同一个 try 里** | 用户实测："桌宠上没有弹请求框"；时间线却是 68 秒才放行（> 60s 超时）→ 是 GUI 处理的 | `startSse` 是模块级函数，却直接调了定义在 `createWindow` 里的 `handleApprovalFrame` → `ReferenceError` → 被外层 catch 吞掉，**连同一 try 里的 `send(win,'pet:frame')` 都没执行** → 桌宠收不到任何帧（整个冻住），表象却只是"审批框没弹"。**副作用必须单独 try，关键语句必须无条件执行** |
 | **以为会话标题在 `sessionController.list()` 里** | 面板显示成 `session-5f19636e-…`（用户两次反馈"标题有问题"） | 实测 `list()` 的 item keys 是 `["sessionId","updatedAt","agentAvailable","running","blank","cwd","projections"]`，**没有 title/displayTitle**。标题其实是 **key 为 `title` 的 session projection**（`apply: session/title → event.data.title`，状态就是字符串）→ 用 `sessionProjections.stateOf(session,'title')` |
