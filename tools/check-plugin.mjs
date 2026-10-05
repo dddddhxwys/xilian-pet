@@ -3022,6 +3022,26 @@ check('启动器不能默认加 `--disable-gpu`（会把掩码回读压到软件
   assert.ok(guard > 0 && push > guard, '--disable-gpu 只允许在 PET_DISABLE_GPU 显式开启时才加')
 })
 
+check('渲染端不能对 resize 无脑重排（分数 DPI 下会变成抖动循环）', () => {
+  // ⚠️ 用户实机报"只有一部分可以拖动，多次拖动之后完全不能拖动"，
+  //    而本机正常。对照两份 pet.log 找到差异：
+  //      本机  DPR 2.0（窗口 260×300 → canvas 520×600，整数换算）→ 构图日志 2 行
+  //      朋友  DPR 1.5（窗口 261×301 → canvas 390×450，261×1.5=391.5 取整）→ 66 秒刷了 2000+ 行
+  //    分数 DPI 下 canvas↔CSS 往返有损，resize 反复送来"尺寸没实质变化"的通知，
+  //    每次重排又打一行日志（一行 = 一次 IPC + 一次写盘）→ 渲染端被占满
+  //    → 掩码回读和鼠标处理被饿死 → "只有一部分能拖、最后完全拖不动"。
+  const src = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
+
+  const block = src.match(/window\.addEventListener\('resize'[\s\S]*?\n {4}\}\)/)
+  assert.ok(block, '应能定位 resize 处理器')
+  // ⚠️ 必须断言**守卫语句本身**，不能只断言变量名存在 ——
+  //    只删掉 `return` 而保留赋值时，弱断言照样通过（第一次写这条测试就漏了，变异测试抓出来的）。
+  assert.match(block[0], /if\s*\(size === lastResize\)\s*return/, 'resize 必须先判断尺寸是否实质变化再动手')
+  assert.match(block[0], /if\s*\(now - lastLayoutAt < \d+\)\s*return/, 'resize 必须限流，不能每帧重排')
+  assert.match(src, /layoutStamp === lastLayoutStamp/, '构图日志必须按参数指纹去重')
+  assert.match(src, /suppressedLayouts/, '必须统计并汇报被静音掉的重复次数')
+})
+
 console.log(`\n${'─'.repeat(56)}`)
 console.log(`通过 ${passed} 项，失败 ${failed} 项`)
 if (warnings.length > 0) console.log(`插件告警 ${warnings.length} 条：\n  ${warnings.slice(0, 5).join('\n  ')}`)

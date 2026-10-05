@@ -322,6 +322,20 @@ function applyContentFit(shots) {
 }
 
 /** 用缓存的包围盒重新排布（窗口尺寸变化时也走这里） */
+/**
+ * 上一次重排的参数指纹 + 被静音掉的重复次数。
+ *
+ * ⚠️ 为什么要去重：分数 DPI（125%/150%）下，canvas 的**设备像素尺寸**和窗口的
+ *    CSS 尺寸换算是有损的（261 CSS × 1.5 = 391.5 → 取整成 390），于是 resize
+ *    会反复送来"其实尺寸没实质变化"的通知；而每次重排都会**打一行日志**
+ *    （一行 = 一次 IPC + 一次写盘）。
+ *    实测一台 1.5x 的机器：**66 秒里刷了 2000+ 行**，渲染端被重排和日志占满，
+ *    掩码回读与鼠标处理被饿死 → 表现为"只有一部分能拖、最后完全拖不动"。
+ *    而在 2.0x 的机器上换算是整数、量出来是稳定的，所以完全没这个症状。
+ */
+let lastLayoutStamp = ''
+let suppressedLayouts = 0
+
 function layoutFromContent() {
   const { model, canvas } = state
   if (!model || !contentLocal) return
@@ -342,16 +356,38 @@ function layoutFromContent() {
   //    → 弹完还原到错位置 → 越来越偏、最后跑出窗口（用户实测："显示不完全"）✗
   fitBase = { x: model.position.x, y: model.position.y, rotation: model.rotation }
 
-  state.log(
-    `构图：内容 ${(contentLocal.w * s2).toFixed(0)}×${(contentLocal.h * s2).toFixed(0)} CSS px / ` +
-      `舞台 ${cssW}×${cssH}，scale=${s2.toFixed(4)}，上方留白 ${dY.toFixed(0)}px`,
-  )
+  // 参数指纹：内容尺寸 / 舞台 / 缩放。只有它变了才值得记一行
+  const layoutStamp = `${(contentLocal.w * s2).toFixed(0)}×${(contentLocal.h * s2).toFixed(0)}@${cssW}×${cssH}/${s2.toFixed(4)}`
+  if (layoutStamp === lastLayoutStamp) {
+    suppressedLayouts++
+  } else {
+    // 先把"上一次被静音了多少次"吐出来 —— 这本身就是一台机器有没有抖动循环的判据
+    if (suppressedLayouts > 0) {
+      state.log(`构图：上一条相同参数被重复触发 ${suppressedLayouts} 次（已静音，正常应为个位数）`)
+      suppressedLayouts = 0
+    }
+    lastLayoutStamp = layoutStamp
+    state.log(
+      `构图：内容 ${(contentLocal.w * s2).toFixed(0)}×${(contentLocal.h * s2).toFixed(0)} CSS px / ` +
+        `舞台 ${cssW}×${cssH}，scale=${s2.toFixed(4)}，上方留白 ${dY.toFixed(0)}px`,
+    )
+  }
 
   // 下次内容尺寸变化时（窗口/DPR 变了）自动重排，不用重新测量
   if (!state.resizeHooked) {
     state.resizeHooked = true
     let pending = false
+    let lastResize = ''
+    let lastLayoutAt = 0
     window.addEventListener('resize', () => {
+      // ① 尺寸实质没变就完全不做（分数 DPI 下这种通知会反复来）
+      const size = `${window.innerWidth}×${window.innerHeight}`
+      if (size === lastResize) return
+      lastResize = size
+      // ② 就算真的变了也要限流：重排一次做完就够，没必要每帧一次
+      const now = performance.now()
+      if (now - lastLayoutAt < 200) return
+      lastLayoutAt = now
       if (pending) return
       pending = true
       requestAnimationFrame(() => {
