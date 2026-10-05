@@ -24,7 +24,11 @@
       <!-- Live2D 渲染面。模型加载失败时保持隐藏，改用下面的占位图（验收项 A10 降级） -->
       <canvas id="live2dCanvas"></canvas>
       <img id="petSprite" src="assets/placeholder.png" alt="昔涟" draggable="false" />
-      <div id="halo" data-state="idle"></div>
+      <!--
+        曾经这里有个 #halo：她背后那团随状态变色的光晕（running 时绿色、还会呼吸）。
+        按用户要求**已去掉**（2026-10-05："把那个光球特效去掉"）。
+        未读仍由 #badge 的 +N 背板表达；状态靠动作/表情表达。
+      -->
       <div id="badge" hidden></div>
 
       <div id="bubble" hidden>

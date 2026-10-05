@@ -18,7 +18,6 @@ const api = window.xilianPet
 const stage = document.getElementById('stage')
 const canvas = document.getElementById('live2dCanvas')
 const img = document.getElementById('petSprite')
-const halo = document.getElementById('halo')
 const badge = document.getElementById('badge')
 const bubble = document.getElementById('bubble')
 const bubbleText = document.getElementById('bubbleText')
@@ -282,7 +281,7 @@ function openPanel() {
 
 // ── UI 状态 ─────────────────────────────────────────────────────────
 function setState(state) {
-  halo.dataset.state = state
+  // （原来这里会把状态写到 #halo 上做光晕配色；光晕已按用户要求去掉。）
   // 转发给 Live2D。内部做了去重，同一状态重复推送不会重复触发。
   // 注意 live2d 可能还是 null（模块加载中或加载失败），所以用可选链。
   try {

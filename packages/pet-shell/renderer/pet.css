@@ -66,20 +66,8 @@ body {
   transform: scale(0.94, 0.9);
 }
 
-/* 状态光环：放在**模型背后**（z-index 0），只做氛围光晕。
-   注意别再让它盖住模型 —— 那会让整个角色染上状态色（实测）。 */
-#halo {
-  position: absolute;
-  bottom: 22px;
-  width: 176px;
-  height: 176px;
-  border-radius: 50%;
-  opacity: 0.5;
-  filter: blur(10px);
-  transition: background 200ms ease-out, opacity 200ms ease-out;
-  pointer-events: none;
-  z-index: 0;
-}
+/* 曾经这里有 #halo（她背后的状态光晕）：按用户要求于 2026-10-05 去掉，
+   连同 done/error 的虚线圈未读标记 —— 未读仍由 #badge 的 +N 背板表达。 */
 
 /* UI 控件必须在模型之上 */
 #badge,
@@ -87,45 +75,6 @@ body {
 #notice,
 #status {
   z-index: 2;
-}
-
-#halo[data-state="idle"] {
-  background: radial-gradient(circle, rgba(140, 200, 255, 0.55), transparent 68%);
-  opacity: 0.4;
-}
-#halo[data-state="running"] {
-  background: radial-gradient(circle, rgba(120, 230, 190, 0.75), transparent 68%);
-  opacity: 0.75;
-  animation: breathe 1.6s ease-in-out infinite;
-}
-#halo[data-state="approval"] {
-  background: radial-gradient(circle, rgba(255, 190, 90, 0.85), transparent 68%);
-  opacity: 0.9;
-  animation: pulse 900ms ease-in-out infinite;
-}
-#halo[data-state="question"] {
-  background: radial-gradient(circle, rgba(190, 150, 255, 0.85), transparent 68%);
-  opacity: 0.85;
-  animation: pulse 1.1s ease-in-out infinite;
-}
-#halo[data-state="done"] {
-  background: radial-gradient(circle, rgba(130, 235, 130, 0.7), transparent 68%);
-  opacity: 0.7;
-}
-#halo[data-state="error"] {
-  background: radial-gradient(circle, rgba(255, 120, 120, 0.8), transparent 68%);
-  opacity: 0.8;
-  animation: shake 1.4s ease-in-out infinite;
-}
-
-#halo[data-state="done"]::after,
-#halo[data-state="error"]::after {
-  /* 未读标记 */
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  border: 2px dashed rgba(255, 255, 255, 0.8);
 }
 
 @keyframes breathe {
