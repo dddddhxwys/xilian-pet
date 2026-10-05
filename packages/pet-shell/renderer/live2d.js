@@ -707,17 +707,34 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, cache
 }
 
 /**
- * 停掉所有动作 —— 用于"这个状态不播动作"（`motion === null`，目前是 running）。
+ * 把所有"道具开关"参数归零。
  *
- * ⚠️ 同时把 `currentMotion` 清空：它表示"当前记录的动作"，
- *    不清的话 `motionFinish` 的决策会把刚停下的待机动作又重开一遍，
- *    而 running 恰恰是**不该播动作**的状态。
+ * ⚠️ 这是"三只手"的真因：模型的手/道具是**开关参数**画上去的
+ *    （`Param9` 思考的手、`Param12` 手指、`Param16` 绳子、`Param17/18` 叉腰…），
+ *    而 `stopAllMotions()` **不会**把它们关掉 —— 上个动作留下的道具会挂着，
+ *    与本状态该有的道具叠在一起 → **多出一只手**（用户报的"变成三只手了"）。
+ *
+ * 归零后由 `applyState` 每帧重新施加本状态真正要的参数（如 running 的 `Param9`）。
+ * 只动 `Param`/`Param2..Param32` 这些编号开关，不碰眼/嘴/角度/呼吸（那些由眨眼逻辑负责）。
+ */
+function clearPropParams() {
+  const ids = Object.keys(WATCH_PARAMS).filter((id) => /^Param\d*$/.test(id))
+  const zero = {}
+  for (const id of ids) zero[id] = 0
+  setParams(zero)
+  return ids.length
+}
+
+/**
+ * 停掉所有动作 + **关掉所有道具开关** —— 用于"这个状态不播动作"（`motion === null`，目前是 running）。
  */
 function stopAllMotions() {
   try {
     state.model?.internalModel?.motionManager?.stopAllMotions?.()
+    const n = clearPropParams()
+    state.log(`已停掉动作，并把 ${n} 个道具开关归零（避免残姿/残道具叠成多手多脚）`)
   } catch (error) {
-    state.log(`停动作失败：${error?.message ?? error}`)
+    state.log(`停动作/清道具失败：${error?.message ?? error}`)
   }
   currentMotion = null
 }
