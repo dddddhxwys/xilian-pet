@@ -1809,6 +1809,36 @@ await checkAsync('回归：循环引用载荷的预览仍可读（不会变成 <
   assert.match(sample.preview, /\[circular\]/, '循环处应被标记而不是抛错')
 })
 
+await checkAsync('回归：载荷里是**会抛错的 Cordis 代理**时，agent/status 预览仍可读 【真机 20/20 全丢】', async () => {
+  // ⚠️ 上面那条用的是"普通对象 + 循环引用"，那是**比真实宿主宽松**的造法 ——
+  //    真机里 `agent` 是 Cordis context 代理：读**任何**未在 inject 声明的属性都会抛
+  //    （含 `JSON.stringify` 一定会读的 `toJSON`）→ 整条预览退化成 `<unserializable>`。
+  //    实机实测 `/debug/shapes` 的 agent/status 通道 **20/20 条**全丢，而这是状态机最关键的输入。
+  //    这里把 mock 收紧成"会抛的代理"，才测得出真问题（历史教训：mock 比真实宿主宽松 → 假绿）。
+  const target = { session: { id: 's1' }, ctx: { whatever: 1 } }
+  const agentProxy = new Proxy(target, {
+    get(t, prop) {
+      if (prop === 'session') return t.session
+      throw new Error(`cannot get property "${String(prop)}" without inject`)
+    },
+    has: () => true,
+    getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }),
+  })
+  for (const fn of listeners.get('agent/status')) fn({ agent: agentProxy, status: 'running' })
+
+  const body = await (await fetch(`${base}/xilian-pet/debug/shapes`)).json()
+  const sample = body.shapes.filter((s) => s.channel === 'agent/status').at(-1)
+  assert.ok(sample, '应记录到 agent/status 样本')
+  assert.ok(
+    !sample.preview.startsWith('<unserializable'),
+    `预览被代理的异常毁掉了（就是真机那个 bug）：${sample.preview}`,
+  )
+  assert.match(sample.preview, /"status":"running"/, '关键字段 status 必须能看见')
+  assert.match(sample.preview, /"session"/, '读得到的属性要保留')
+  assert.match(sample.preview, /读取失败/, '读不到的属性要就地标注，而不是拖垮整条预览')
+  assert.ok(!/\[object Object\]/.test(sample.preview), '不该退化成无信息量的 [object Object]')
+})
+
 await checkAsync('无法识别的载荷不会导致崩溃', async () => {
   for (const fn of listeners.get('session/event')) {
     fn(null, null)

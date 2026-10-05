@@ -86,7 +86,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 24
+const CODE_REVISION = 25
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -124,24 +124,93 @@ function makeUserMessage(input) {
 }
 
 /**
- * 安全预览：载荷里常有循环引用（例如 agent.ctx）。
- * 直接 JSON.stringify 会抛，预览就变成 `<unserializable>` —— 而那恰恰是
- * 诊断时最需要的一条信息（实测：agent/status 的样本预览就是这么丢的）。
+ * 把任意值转成**可以安全 JSON.stringify 的普通结构**。
+ *
+ * ⚠️ 为什么不能直接把宿主给的东西丢给 `JSON.stringify`：
+ *    载荷里的 `agent` 是 **Cordis 的 context 代理** —— 读它任何"没在 `inject` 里声明"的属性
+ *    （包括 `JSON.stringify` **一定会读**的 `toJSON`）都会抛
+ *    `cannot get property "…" without inject`。
+ *    一抛，`JSON.stringify` 就整个失败，预览退化成一句错误信息 ✗
+ *    （真机实测：`agent/status` 通道的预览 **20/20 条**全是 `<unserializable>` ——
+ *      而这恰恰是状态机最权威的输入、最该看得见的那个通道。）
+ *
+ * ⚠️ **根因不是"循环引用"**（早前这里和 README 都写错了）：
+ *    循环引用靠下面的 `seen` 标记成 `[circular]` 就能解决；
+ *    真正的杀手是**代理的属性读取守卫**。两者都要防，但不是同一回事。
+ *
+ * 做法：不走 `JSON.stringify` 的隐式取值，而是**自己逐属性枚举 + 逐个 try/catch**，
+ * 读不到的属性就地标出来 —— 绝不让一个坏属性毁掉整条预览。
+ */
+function sanitizeForPreview(value, depth = 0, seen = new WeakSet()) {
+  try {
+    const type = typeof value
+    if (value === null) return null
+    if (type === 'function') return `[fn ${value.name || 'anonymous'}]`
+    if (type === 'bigint') return `${value}n`
+    if (type !== 'object') return value // string / number / boolean / undefined
+
+    if (seen.has(value)) return '[circular]'
+
+    let isArray = false
+    try {
+      isArray = Array.isArray(value)
+    } catch (error) {
+      return `<无法判断类型: ${error?.message ?? error}>`
+    }
+    if (depth >= 4) return isArray ? '[…]' : '{…}'
+    seen.add(value)
+
+    if (isArray) {
+      let len = 0
+      try {
+        len = value.length
+      } catch (error) {
+        return `<数组长度读不到: ${error?.message ?? error}>`
+      }
+      const out = []
+      for (let i = 0; i < Math.min(len, 8); i++) {
+        try {
+          out.push(sanitizeForPreview(value[i], depth + 1, seen))
+        } catch (error) {
+          out.push(`<读取失败: ${error?.message ?? error}>`)
+        }
+      }
+      if (len > 8) out.push(`…共 ${len} 项`)
+      return out
+    }
+
+    // 普通对象 / 代理：**枚举本身也可能抛**（代理可以拒绝 ownKeys），所以也要兜
+    let keys
+    try {
+      keys = Object.keys(value)
+    } catch (error) {
+      return `<无法枚举: ${error?.message ?? error}>`
+    }
+    const out = {}
+    for (const key of keys.slice(0, 14)) {
+      try {
+        out[key] = sanitizeForPreview(value[key], depth + 1, seen)
+      } catch (error) {
+        out[key] = `<读取失败: ${error?.message ?? error}>`
+      }
+    }
+    if (keys.length > 14) out['…'] = `共 ${keys.length} 个键`
+    return out
+  } catch (error) {
+    return `<不可安全展开: ${error?.message ?? error}>`
+  }
+}
+
+/**
+ * 安全预览：把载荷渲染成一行可读文本（`/debug/shapes` 用）。
+ * 先 `sanitizeForPreview()` 转成普通结构再 stringify，保留 JSON 形态便于肉眼比对。
  */
 function safePreview(value, limit = 400) {
-  const seen = new WeakSet()
   try {
-    const text = JSON.stringify(value, (_key, val) => {
-      if (typeof val === 'function') return `[fn ${val.name || 'anonymous'}]`
-      if (typeof val === 'bigint') return `${val}n`
-      if (val !== null && typeof val === 'object') {
-        if (seen.has(val)) return '[circular]'
-        seen.add(val)
-      }
-      return val
-    })
+    const text = JSON.stringify(sanitizeForPreview(value))
     return text === undefined ? '<undefined>' : text.slice(0, limit)
   } catch (error) {
+    // 兜底：连清洗后的普通结构都 stringify 不了（理论上到不了这里）
     return `<unserializable: ${error?.message ?? error}>`
   }
 }

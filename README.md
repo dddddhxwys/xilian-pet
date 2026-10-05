@@ -583,7 +583,7 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
 | 反向操控拿不到 agent 时返回 **503** 而不是假装成功 | 能区分"插件在但 API 不对"和"插件根本没装" |
 | 会话聚焦返回 **501** | Phase 0 未实现，不做假成功 |
 | 每个 channel 分别限量样本 | 全局环形缓冲会被高频流式帧刷爆，低频通道（`agent/status`）样本全丢 |
-| 载荷预览做安全序列化 | `agent/status` 有循环引用，直接 JSON.stringify 会得到 `<unserializable>` |
+| 载荷预览做安全序列化 | ⚠️ **根因不是"循环引用"**（早前这里写错了）：载荷里的 `agent` 是 **Cordis context 代理**，读任何未在 `inject` 声明的属性（含 `JSON.stringify` 必读的 `toJSON`）都会抛 `cannot get property "…" without inject` → 整条预览退化成 `<unserializable>`。做法是先**逐属性 try/catch** 清洗成普通结构再 stringify |
 
 ### A7 主动提醒（插件侧已完成）
 
@@ -834,7 +834,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 | **"我知道的会话"只来自自己观测的事件** | 派活 503 `no-session-known`：DSH 刚重启，插件一个会话都没观测到，空窗期里候选为空 | 观测事件 ≠ 世界全貌。宿主本来就有 `ctx.sessions.list()`（"All live sessions"）与 `ctx.agents.list()`，**别自己攒状态去猜** —— 能问就问 |
 | **命中测试只看 alpha 掩码** | 输入条右侧的「打断」点不到（穿透），而压在角色上的「派活」能点 | 掩码里只有 Live2D 像素，**HTML 控件不在其中** → 控件矩形要跟掩码一起送给主进程；判定逻辑抽成 `hit-test.js` 纯函数才测得到 |
 | **全局环形缓冲被高频通道刷爆** | `/debug/shapes` 80 条样本全是流式帧 | 按 channel 分别限量 |
-| **循环引用载荷预览不可读** | `agent/status` 样本 `<unserializable>` | 安全序列化（循环处标 `[circular]`） |
+| **`agent/status` 样本预览全丢（20/20）** | 该通道样本 `<unserializable>`，而这恰是状态机最权威的输入 | ⚠️ **两个错**：① 根因判断错（写成"循环引用"，实际是**代理属性守卫**：`agent` 是 Cordis context 代理，读 `toJSON` 就抛 `cannot get property "…" without inject`）；② **测试造法比真实宿主宽松**（用普通对象造循环，而真机是"读属性就抛"的代理）→ 测试一直绿。修法：`sanitizeForPreview()` 逐属性 try/catch 清洗 + 回归测试改用**会抛的 Proxy** |
 | **绝不能用 pwsh 改含中文的源码** | 注释变乱码、吞换行 | 一律用 edit/write 工具 |
 | **`Invoke-RestMethod -Body <字符串>` 发中文变 `?????`** | 通知 / 派活里的中文到了宿主就是问号 | PowerShell 5.1 对字符串 body 默认按 ASCII 编码 → 传**字节**：`-Body ([Text.Encoding]::UTF8.GetBytes($json))` + `charset=utf-8` |
 | **绝对定位 + flex 会把中文挤成一列** | 通知条变成"一个字一行"的高柱，几乎占满整个窗口（实测截图） | 绝对定位元素宽度是"收缩适应"，flex 文本项会被压到近 0 宽 → 改**固定宽度 + 块级布局** |
