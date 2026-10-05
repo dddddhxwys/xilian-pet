@@ -513,13 +513,14 @@ async function startLive2D() {
       api.snapshotNow()
     }, info.snapshotAtMs)
   }
-  // 调试用：启动后自动弹她一下（PET_FORCE_FLICK=1）——
-  // 核对"被弹"的振荡是否生效，不必真的用鼠标去点秋千。
+  // 调试用：反复弹她（PET_FORCE_FLICK=1）——
+  // 核对"被弹"的效果，不必真的用鼠标去点秋千。
+  // ⚠️ 刻意**反复弹**（600ms 一次、每 700ms 一发）：裁剪时机很难对准，
+  //    连发才能保证随便抓一帧都能落在振荡里（踩过：抓帧总在弹完之后）。
   if (info.forceFlick) {
-    setTimeout(() => {
-      api.log('调试模式：自动弹一下')
+    setInterval(() => {
       live2d?.flick('light')
-    }, 3000)
+    }, 700)
   }
   // 调试用：启动后自动弹出操作面板（PET_FORCE_MENU=1），配合 PET_SNAPSHOT_MENU 拍面板。
   // 刻意等到 2.5s：要等 SSE 连上并收到带 tokens 的状态帧，拍出来才有真实数字。

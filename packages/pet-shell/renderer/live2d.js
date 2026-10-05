@@ -1124,36 +1124,60 @@ function stepHandPoseMix(now) {
 let flickState = null
 
 /**
- * 弹她一下 —— 身体/头部/秋千一起做阻尼振荡（头发会跟物理甩）。
+ * 弹她一下 —— **整个模型**被弹（用户原话："我希望整个模型被弹一下"）。
  *
- * 用户要求：单击秋千 → "整个模型弹一下，就像被人用手指弹了似的"，
- * 选的是"角色本体会颤"（窗口不动）+ "轻"。
+ * 三层一起动，才像"被手指弹了一下"：
+ *  1. **模型容器整体**位移/旋转（`model.position` / `model.rotation`）← 这是"整个模型"
+ *  2. 身体/头部角度参数（内部跟着颤）
+ *  3. 秋千与腿脚摇晃参数（挂着的部件跟着荡）
+ *
+ * ⚠️ 第 1 层必须**记录基准并在结束时还原**：
+ *    构图（fit）会重设 `model.position/scale`，弹完不还原她就会停在偏移位置上 ✗
  *
  * @param {'light'|'medium'|'strong'} level
  */
 export function flick(level = 'light') {
-  flickState = { t0: performance.now(), preset: FLICK_PRESETS[level] ?? FLICK_PRESETS.light }
-  state.log(`被弹了一下（${level}，${flickState.preset.durationMs}ms）`)
+  const model = state.model
+  if (!model) return
+  const preset = FLICK_PRESETS[level] ?? FLICK_PRESETS.light
+  flickState = {
+    t0: performance.now(),
+    preset,
+    base: { x: model.position.x, y: model.position.y, rotation: model.rotation },
+  }
+  state.log(`被弹了一下（${level}，${preset.durationMs}ms；整体位移 ±${preset.move.px}px / 旋转 ±${preset.move.rot}rad）`)
 }
 
 /**
- * 每帧叠加振荡位移。
+ * 每帧推进"被弹"的振荡。
  *
- * ⚠️ 用 "读当前值 + 加位移" 而不是直接覆盖：
+ * ⚠️ 内部参数用 "读当前值 + 位移" 而不是覆盖：
  *    这些参数（身体角度、秋千摇晃）本来就是**动作在驱动**的，
  *    覆盖掉就等于把动作停了 ✗ 叠加才是"在正常动作之上被弹了一下" ✓
  *
- * @returns {Record<string, number>|null} 本帧要写的参数
+ * @returns {Record<string, number>|null} 本帧要写的**参数**（整体变换直接写 model，不走这里）
  */
 function stepFlick(now) {
   if (flickState === null) return null
+  const model = state.model
   const elapsed = now - flickState.t0
-  const { preset } = flickState
+  const { preset, base } = flickState
   if (elapsed > preset.durationMs) {
+    if (model) {
+      // 还原整体变换 —— 不还原她会停在偏移位置（构图下次也不一定跑）
+      model.position.set(base.x, base.y)
+      model.rotation = base.rotation
+    }
     flickState = null
     return null
   }
   const offset = flickOffset(elapsed, preset)
+  if (model) {
+    // ① 整个模型：横向来回 + 向上跳（用 |offset| 保证两次都是"弹起来"）+ 轻微倾斜
+    model.position.set(base.x + offset * preset.move.px, base.y - Math.abs(offset) * preset.move.up)
+    model.rotation = base.rotation + offset * preset.move.rot
+  }
+  // ② 内部参数：身体/头/秋千跟着颤
   const out = {}
   for (const [id, amp] of Object.entries(preset.amp)) {
     out[id] = readParamValue(id) + offset * amp

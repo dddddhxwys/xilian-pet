@@ -194,28 +194,36 @@ export function flickOffset(elapsedMs, preset) {
 }
 
 /**
- * 三档力度。**每个参数单独给幅度**（模型角度参数的单位是度，正常范围 ±30）。
+ * 三档力度。
  *
- * 分两处加：身体/头部（整体颤）+ 秋千与腿脚摇晃（秋千跟着弹）。
+ * 分三层叠加，从外到内都动起来才像"整个模型被弹了一下"：
+ *  1. `move` —— **模型容器整体**的位移/旋转（"整个模型"被弹，最外层）
+ *  2. `amp`  —— 身体/头部角度参数（内部跟着颤）
+ *  3. 秋千与腿脚摇晃参数（挂着的部件跟着荡）
+ *
+ * 单位：`px` 是舞台 CSS 像素；`rot` 是弧度；`amp` 里模型角度参数的单位是度（正常范围 ±30）。
  */
 export const FLICK_PRESETS = {
   light: {
     durationMs: 600,
     freqHz: 3.3,
     decayMs: 170,
-    amp: { ParamAngleZ: 7, ParamBodyAngleZ: 4, ParamBodyAngleX: 3, Param23: 7, Param24: 7, Param19: 5, Param20: 5 },
+    move: { px: 7, up: 3, rot: 0.018 },
+    amp: { ParamAngleZ: 5, ParamBodyAngleZ: 3, ParamBodyAngleX: 2, Param23: 6, Param24: 6, Param19: 4, Param20: 4 },
   },
   medium: {
     durationMs: 1000,
     freqHz: 3.0,
     decayMs: 280,
-    amp: { ParamAngleZ: 12, ParamBodyAngleZ: 7, ParamBodyAngleX: 5, Param23: 12, Param24: 12, Param19: 8, Param20: 8 },
+    move: { px: 14, up: 7, rot: 0.04 },
+    amp: { ParamAngleZ: 10, ParamBodyAngleZ: 6, ParamBodyAngleX: 4, Param23: 12, Param24: 12, Param19: 7, Param20: 7 },
   },
   strong: {
     durationMs: 1500,
     freqHz: 2.8,
     decayMs: 420,
-    amp: { ParamAngleZ: 18, ParamBodyAngleZ: 11, ParamBodyAngleX: 8, Param23: 18, Param24: 18, Param19: 12, Param20: 12 },
+    move: { px: 24, up: 12, rot: 0.07 },
+    amp: { ParamAngleZ: 16, ParamBodyAngleZ: 10, ParamBodyAngleX: 7, Param23: 18, Param24: 18, Param19: 11, Param20: 11 },
   },
 }
 
