@@ -900,7 +900,27 @@ app.whenReady().then(async () => {
       const coverage = opaque / mask.data.length
       if (maskCoverage < 0 || Math.abs(coverage - maskCoverage) > 0.05) {
         maskCoverage = coverage
-        log(`掩码覆盖率 ${(coverage * 100).toFixed(1)}%（${mask.width}×${mask.height}，alpha 阈值 ${HIT_ALPHA_THRESHOLD}）`)
+        // 顺带算出不透明格的**包围盒**：它必须落在"她身体应该在的位置"。
+        // 只看覆盖率是不够的 —— 软件渲染（gpu_compositing=disabled_software）下
+        // 画布回读可能整幅偏移或翻转，覆盖率照样健康（32.6%），但包围盒会立刻暴露。
+        let minU = -1
+        let minV = -1
+        let maxU = -1
+        let maxV = -1
+        for (let y = 0; y < mask.height; y++) {
+          for (let x = 0; x < mask.width; x++) {
+            if (mask.data[y * mask.width + x] >= HIT_ALPHA_THRESHOLD) {
+              if (minU < 0 || x < minU) minU = x
+              if (maxU < 0 || x > maxU) maxU = x
+              if (minV < 0 || y < minV) minV = y
+              if (maxV < 0 || y > maxV) maxV = y
+            }
+          }
+        }
+        log(
+          `掩码覆盖率 ${(coverage * 100).toFixed(1)}%（${mask.width}×${mask.height}，alpha 阈值 ${HIT_ALPHA_THRESHOLD}）` +
+            `  不透明范围 u[${minU}..${maxU}] v[${minV}..${maxV}]`,
+        )
       }
       // 兜底：几乎全透明比"边缘点不到"糟糕得多（**整只都拖不动**）
       // → 退化为整窗可交互。代价是她会挡住 260×300 范围内的桌面点击，
