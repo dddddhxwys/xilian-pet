@@ -863,6 +863,34 @@ app.whenReady().then(async () => {
   } catch (error) {
     log(`GPU 状态读取失败：${error.message}`)
   }
+  try {
+    // ⚠️ 只记"软件渲染"是不够的 —— 那只是个现象，原因有五六种，
+    //    而且**全都不需要"机器上没有显卡驱动"**：驱动被 Chromium 拉黑（旧驱动很常见）、
+    //    GPU 进程反复崩溃、远程桌面会话、虚拟机、策略禁用 ✗。
+    //    这里把**实际枚举到的适配器**和 Chromium 给出的原因一起记下来，
+    //    免得双方对着一个现象各自推断。
+    const info = await app.getGPUInfo('complete')
+    const devices = Array.isArray(info?.gpuDevice) ? info.gpuDevice : []
+    if (devices.length === 0) {
+      log('GPU 适配器：Chromium 一个都没枚举到 → GPU 进程很可能没起来（崩溃 / 被禁用）')
+    } else {
+      for (const d of devices) {
+        log(
+          `GPU 适配器：${d.deviceString || d.vendorName || '(无名)'} ` +
+            `vendorId=0x${Number(d.vendorId ?? 0).toString(16)} deviceId=0x${Number(d.deviceId ?? 0).toString(16)} ` +
+            `驱动=${d.driverVendor ?? '?'} ${d.driverVersion ?? '?'} 活动中=${d.active ?? '?'}`,
+        )
+      }
+    }
+    const aux = info?.auxAttributes
+    if (aux && typeof aux === 'object') {
+      const keys = ['softwareRendering', 'glRenderer', 'glVendor', 'glVersion', 'glResetStatus', 'isSoftwareRendering']
+      const picked = keys.filter((k) => aux[k] !== undefined).map((k) => `${k}=${aux[k]}`)
+      if (picked.length > 0) log(`GPU 详情：${picked.join(' ')}`)
+    }
+  } catch (error) {
+    log(`GPU 详情读取失败：${error.message}`)
+  }
 
   registerModelProtocol()
   const settings = findModelSettings()
