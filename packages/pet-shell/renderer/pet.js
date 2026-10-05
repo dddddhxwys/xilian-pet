@@ -227,6 +227,9 @@ window.addEventListener('mousedown', (event) => {
   dragY = event.screenY
   pressX = event.screenX
   pressY = event.screenY
+  // 诊断：拖拽链路很短但容易在某一步静默断掉（实测"松手无动作"就是这样），
+  // 所以三个关键点各记一行 —— 一次交互 3 行，代价很小、排查价值很高。
+  api.log(`[拖动] 按下 screen=(${event.screenX},${event.screenY})`)
   if (!live2dActive) img.classList.add('squish')
   document.body.style.cursor = 'grabbing'
 })
@@ -248,11 +251,15 @@ function isSwingZone(clientX) {
 }
 
 window.addEventListener('mouseup', (event) => {
-  if (!dragging) return
+  if (!dragging) {
+    api.log('[拖动] 松手时并不在拖拽态（mousedown 没接上？）')
+    return
+  }
   dragging = false
   api.setDragging(false)
   if (!live2dActive) img.classList.remove('squish')
   document.body.style.cursor = 'grab'
+  api.log(`[拖动] 松手 movedFar=${movedFar}`)
   if (movedFar) {
     // 拖完松手 → **秋千余摆 + 眨一下眼**（用户选了"秋千余摆 + 看你一眼"的组合）。
     // ⚠️ 刻意不是"整体弹一下"：那是"被戳"的反应，搬动之后的自然反应是**余摆**——
