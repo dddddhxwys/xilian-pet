@@ -1158,7 +1158,20 @@ export function flick(level = 'light') {
 }
 
 /**
- * 每帧推进"被弹"的振荡。
+ * 强制眨一下眼 —— 拖动松手"看你一眼"用。
+ *
+ * 直接把自动眨眼的计时起点拨到现在（`applyBlink` 下一帧就会开始闭-睁），
+ * 并把下一次自动眨眼推后，免得紧接着又眨一次（看起来像抽了一下）。
+ * ⚠️ 动作自己在演眼睛时（非 `EYE_IDLE_MOTIONS`）本来就不接管，那种情况下这眼神不出现 —— 可接受。
+ */
+export function blink() {
+  blinkStartAt = performance.now()
+  nextBlinkAt = blinkStartAt + BLINK_GAP_MIN_MS + Math.random() * (BLINK_GAP_MAX_MS - BLINK_GAP_MIN_MS)
+  state.log('眨一下眼')
+}
+
+/**
+ * 每帧推进"被弹/余摆"的振荡。
  *
  * ⚠️ 内部参数用 "读当前值 + 位移" 而不是覆盖：
  *    这些参数（身体角度、秋千摇晃）本来就是**动作在驱动**的，
@@ -1175,14 +1188,22 @@ function stepFlick(now) {
   if (elapsed > preset.durationMs) flickState = null
 
   if (model) {
-    // ① 整个模型：横向来回 + 向上跳（用 |offset| 保证两次都是"弹起来"）+ 轻微倾斜。
-    //    基准永远取 `fitBase`（构图给的），所以偏移不会累积。
-    model.position.set(fitBase.x + offset * preset.move.px, fitBase.y - Math.abs(offset) * preset.move.up)
-    model.rotation = fitBase.rotation + offset * preset.move.rot
+    const move = preset.move
+    if (move) {
+      // ① 档位带整体位移（"被弹"）：横向来回 + 向上跳（用 |offset| 保证两次都是弹起来）+ 轻微倾斜。
+      //    基准永远取 `fitBase`（构图给的），所以偏移不会累积。
+      model.position.set(fitBase.x + offset * move.px, fitBase.y - Math.abs(offset) * move.up)
+      model.rotation = fitBase.rotation + offset * move.rot
+    } else {
+      // ② 不带整体位移的档（"余摆"）：把模型放回构图基准，
+      //    免得留着上一次"被弹"的偏移（基准永远只有一个来源 = 构图）
+      model.position.set(fitBase.x, fitBase.y)
+      model.rotation = fitBase.rotation
+    }
   }
   if (elapsed > preset.durationMs) return null // 已复位，内部参数不用再写
 
-  // ② 内部参数：身体/头/秋千跟着颤
+  // 内部参数：身体/头/秋千跟着振荡
   const out = {}
   for (const [id, amp] of Object.entries(preset.amp)) {
     out[id] = readParamValue(id) + offset * amp
@@ -1291,8 +1312,10 @@ window.xilianLive2D = {
   init,
   setState,
   fit,
-  /** 被弹一下（点秋千触发）；level = 'light' | 'medium' | 'strong' */
+  /** 被弹一下（点秋千触发）；level = 'light' | 'medium' | 'strong' | 'settle' */
   flick,
+  /** 强制眨一下眼（拖动松手"看你一眼"用） */
+  blink,
   /** 读回渲染画布的 alpha 通道，供命中测试使用（{ alpha, width, height }） */
   readAlpha,
   /** 供 alpha 掩码取样用的渲染画布（空白表示不可交互） */

@@ -1994,17 +1994,23 @@ check('"被弹"的位移必须相对构图基准 【否则累积漂移、跑出�
   assert.equal(fitAssignments, 3, `fitBase 只应由声明 + 两处构图更新（实际 ${fitAssignments} 处）`)
 })
 
-check('拖动结束后也要弹一下 【用户要求】', () => {
-  // 用户："现在让拖动结束后也有这个被弹一下的效果"
-  // 拖动移动的是**窗口**，弹的是**模型相对窗口**的位移 —— 两者互不干扰。
+check('拖动松手给"秋千余摆 + 眨一下眼" 【用户："弹一下并不适合移动后"】', () => {
+  // 用户判断：整体刚性跳一下是"被戳"的反应 ✗ 搬动之后自然的是**余摆** ✓
+  // 最终选了 D：秋千余摆（A）+ 看你一眼（C）。
   const src = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
   const upStart = src.indexOf("window.addEventListener('mouseup'")
   assert.ok(upStart > 0, '找不到 mouseup 处理器')
   const body = src.slice(upStart, src.indexOf('// 点右下角的未读徽标', upStart))
-  assert.ok(body.includes('if (movedFar) {'), '拖动结束那条分支不能只是 return，要弹一下')
-  assert.ok(body.includes('live2d?.flick('), '拖动结束要调用 flick')
-  // 拖得越远弹得越重（别拖一屏只颤一下）
-  assert.ok(src.includes('DRAG_FLICK_FAR_PX'), '要有"拖远了用更重的档"的阈值')
+  assert.ok(body.includes('if (movedFar) {'), '拖动结束那条分支不能只是 return')
+  assert.ok(body.includes("live2d?.flick('settle')"), '拖动结束要用 settle（余摆）档，不是整体弹')
+  assert.ok(body.includes('live2d?.blink()'), '拖动结束还要眨一下眼')
+  assert.ok(!body.includes("flick('medium')"), '不该再用"拖得远弹得重"那套')
+
+  // 余摆档必须是"整体不动"：`move: null`（刚性位移 = "被弹"，不是"余摆"）
+  assert.equal(FLICK_PRESETS.settle.move, null, 'settle 档不能有整体位移')
+  assert.ok(FLICK_PRESETS.settle.durationMs > FLICK_PRESETS.light.durationMs, '余摆要比弹更悠长')
+  assert.ok(FLICK_PRESETS.settle.freqHz < FLICK_PRESETS.light.freqHz, '余摆频率要更低（钟摆感）')
+  assert.ok(FLICK_PRESETS.settle.amp.Param23 > 0, '要有秋千摇晃（她是坐在秋千上的）')
 })
 
 // ─────────────────────────────────────────────────────────────

@@ -226,6 +226,22 @@ export const FLICK_PRESETS = {
     move: { px: 34, up: 17, rot: 0.09 },
     amp: { ParamAngleZ: 18, ParamBodyAngleZ: 11, ParamBodyAngleX: 8, Param23: 20, Param24: 20, Param19: 13, Param20: 13 },
   },
+  /**
+   * 松手后的"余摆" —— 拖动结束用（用户："弹一下并不适合移动后"，选了"秋千余摆"）。
+   *
+   * 和上面三档的本质区别：**整体不动**（`move: null`），只让**秋千/腿脚自己晃**。
+   * 她是坐在秋千上的 —— 被挪了个位置之后，秋千轻轻左右晃几下再停，这才是"余韵"；
+   * 整体刚性跳一下是"被戳了"的反应 ✗
+   *
+   * 频率更低（1.5Hz）、衰减更长（620ms）、总时长更长（1.6s）→ 像钟摆慢慢停 ✓
+   */
+  settle: {
+    durationMs: 1600,
+    freqHz: 1.5,
+    decayMs: 620,
+    move: null,
+    amp: { Param23: 9, Param24: 9, Param19: 5, Param20: 5, ParamBodyAngleZ: 2 },
+  },
 }
 
 /**
