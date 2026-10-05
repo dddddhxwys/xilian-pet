@@ -2975,6 +2975,33 @@ check('`.cmd` 的注释里不能出现 `>`（cmd 会先做重定向，凭空造�
   }
 })
 
+check('拖拽链路：移动要续期 + 复位要通知渲染端 + 失焦复位必须有条件', () => {
+  // ⚠️ 这三条都是用户实机报出来的（"一开始能拖，后面突然拖不动了"）。
+  //    链条：失焦或定时器断档 → 看门狗复位 draggingNow → 主进程恢复"按掩码判穿透"
+  //    → 窗口不再收鼠标事件 → 拖拽**静默死掉**；而渲染端还停在 dragging=true。
+  //    只测 `draggingExpired` 是抓不到这些的（那是纯函数层，bug 在接线层）。
+  const mainSrc = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+  const preSrc = readFileSync(new URL('../packages/pet-shell/preload.cjs', import.meta.url), 'utf8')
+  const petSrc = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+
+  const moveBlock = mainSrc.match(/ipcMain\.on\('pet:move-by'[\s\S]*?\n {2}\}\)/)
+  assert.ok(moveBlock, '应能定位 pet:move-by 处理器')
+  assert.match(moveBlock[0], /renewDrag\(\)/, 'pet:move-by 里必须续期，否则拖拽只能靠 2s 定时器续命')
+
+  const blurBlock = mainSrc.match(/win\.on\('blur'[\s\S]*?\n {2}\}\)/)
+  assert.ok(blurBlock, '应能定位 blur 处理器')
+  assert.match(blurBlock[0], /DRAG_BLUR_GRACE_MS/, '失焦复位必须先确认"确实没人续期"，不能无条件复位')
+
+  assert.ok(mainSrc.includes("send('pet:drag-cancel'"), 'main.js 复位时要发 pet:drag-cancel')
+  // ⚠️ 名字必须完全一致：渲染端调的是 `api.onDragCancel?.(…)`，
+  //    可选链会让"preload 没暴露 / 名字写错"**静默失效** —— 修了等于没修。
+  assert.match(preSrc, /onDragCancel\s*:/, 'preload 必须以 onDragCancel 这个名字暴露（渲染端就是这么调的）')
+  assert.ok(petSrc.includes('onDragCancel'), '渲染端要订阅 onDragCancel 并清零 dragging')
+
+  const stale = Number(mainSrc.match(/const DRAG_STALE_MS = (\d+)/)?.[1])
+  assert.ok(stale >= 12000, `看门狗阈值 ${stale}ms 太小：定时器一被拖慢就会在拖拽进行中误杀`)
+})
+
 console.log(`\n${'─'.repeat(56)}`)
 console.log(`通过 ${passed} 项，失败 ${failed} 项`)
 if (warnings.length > 0) console.log(`插件告警 ${warnings.length} 条：\n  ${warnings.slice(0, 5).join('\n  ')}`)

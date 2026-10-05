@@ -566,12 +566,45 @@ let draggingNow = false
  *    如果松手发生在窗口之外、或渲染端崩了/卡了，`setDragging(false)` 永远不来
  *    → 窗口**永久**停在"一直可交互"，把落在 260×300 里的所有点击都吞掉
  *    （连给桌面其他窗口的点击也一起吃掉）。
- *    渲染端在拖拽期间每 2s 续期一次（pet.js），所以静默超过 6s 就是真的掉了。
+ *
+ * ⚠️ 阈值为什么从 6s 放到 15s：续期原本只靠渲染端的 `setInterval(2s)`，
+ *    6s 只有 3 倍余量；定时器一旦被拖慢（节流/渲染端卡顿/GC 停顿）就会在
+ *    **拖拽进行中**误判成"卡住"并把拖拽掐死 —— 用户报的
+ *    "一开始能拖，后面突然拖不动了"正是这个症状。
+ *    现在多了一条更可靠的续期：拖拽中的每一次 `pet:move-by` 都续期
+ *    （鼠标在动就说明人还在拖，不依赖任何定时器）✓
  */
 let draggingLastAt = 0
-const DRAG_STALE_MS = 6000
+const DRAG_STALE_MS = 15000
+/**
+ * 失焦后多久没续期，才认为拖拽真的结束了。
+ * 比渲染端的续期间隔（2s）略大：**活跃拖拽期间失焦是常事**
+ * （移动窗口、`setIgnoreMouseEvents` 来回切换都可能触发 blur），
+ * 无条件复位会把正在进行的拖拽中途掐死。
+ */
+const DRAG_BLUR_GRACE_MS = 2500
 let lastIgnore = null
 let ignoreLogs = 0
+
+/** 续期：拖拽还在继续（渲染端定时器 / 每一次实际移动都调它） */
+function renewDrag() {
+  draggingLastAt = Date.now()
+}
+
+/**
+ * 结束拖拽态，并**通知渲染端**。
+ * 不通知的后果是两边状态分叉：主进程已复位（窗口恢复穿透判定），
+ * 渲染端还以为在拖 —— 于是她要么在松开鼠标后继续跟着鼠标跑，
+ * 要么反过来怎么拖都不动。实测症状就出在这里。
+ *
+ * @returns {boolean} 是否真的做了复位
+ */
+function cancelDrag(win, reason) {
+  if (!draggingNow) return false
+  draggingNow = false
+  if (win && !win.isDestroyed()) win.webContents.send('pet:drag-cancel', reason)
+  return true
+}
 
 function applyIgnore(win, ignore) {
   if (ignore === lastIgnore) return
@@ -593,7 +626,7 @@ function startHitTestLoop(win) {
     if (draggingExpired({ draggingNow, lastAt: draggingLastAt, now: Date.now(), staleMs: DRAG_STALE_MS })) {
       const silent = Math.round((Date.now() - draggingLastAt) / 1000)
       log(`⚠️ 拖拽态卡住 ${silent}s 没有续期（松手丢了 / 渲染端卡了）→ 强制复位，否则窗口会一直吞掉点击`)
-      draggingNow = false
+      cancelDrag(win, 'stale')
     }
     if (draggingNow) {
       applyIgnore(win, false)
@@ -806,13 +839,14 @@ app.whenReady().then(async () => {
   ipcMain.on('pet:dragging', (_event, value) => {
     draggingNow = Boolean(value)
     // 续期时间戳：看门狗据此判断拖拽态是不是"卡住了"
-    if (draggingNow) draggingLastAt = Date.now()
+    if (draggingNow) renewDrag()
   })
-  // 窗口失焦也复位一次（用户可能 Alt+Tab 走了，mouseup 收不到）
+  // 失焦也可能是"Alt+Tab 走了、mouseup 收不到"，但**只在确实没人续期时**才复位：
+  // 活跃拖拽期间失焦很常见，无条件复位会把正在进行的拖拽中途掐死。
   win.on('blur', () => {
-    if (draggingNow) {
-      draggingNow = false
-      log('窗口失焦 → 复位拖拽态')
+    if (draggingNow && Date.now() - draggingLastAt > DRAG_BLUR_GRACE_MS) {
+      log('窗口失焦且拖拽态已无续期 → 复位拖拽态')
+      cancelDrag(win, 'blur')
     }
   })
   // 构图缓存：省掉每次启动的 3 秒测量，也避免"打开一会突然变大"
@@ -834,6 +868,9 @@ app.whenReady().then(async () => {
   })
   ipcMain.on('pet:move-by', (_event, dx, dy) => {
     if (win.isDestroyed()) return
+    // ⚠️ 鼠标真的在动 —— 这是"人还在拖"最可靠的证据，不依赖任何定时器，必须续期。
+    //    少这一条，拖拽就只能靠渲染端的 2s 定时器续命，定时器一被拖慢就会被看门狗掐死。
+    if (draggingNow) renewDrag()
     closeMenuWindow() // 桌宠一动，菜单就不该留在原地
     const [x, y] = win.getPosition()
     win.setPosition(x + dx, y + dy)

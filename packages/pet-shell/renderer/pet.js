@@ -323,6 +323,24 @@ const ZONE_EFFECTS = {
  */
 let swingComboState = null
 
+/**
+ * 主进程放弃了拖拽态（看门狗判"卡住" / 失焦超时）→ **必须同步清零本地的 dragging**。
+ * 不同步的话两边状态分叉：主进程已恢复"按掩码判穿透"，而这里还以为在拖，
+ * 于是她要么在松开鼠标后继续跟着鼠标跑，要么反过来怎么拖都不动
+ * —— 用户报的"一开始能拖、后面突然拖不动"就出在这条链上。
+ */
+api.onDragCancel?.((reason) => {
+  if (!dragging) return
+  dragging = false
+  movedFar = false
+  if (dragRenewTimer !== null) {
+    clearInterval(dragRenewTimer)
+    dragRenewTimer = null
+  }
+  document.body.style.cursor = 'grab'
+  api.log(`[拖动] 主进程取消了拖拽态（${reason}）→ 本地同步复位`)
+})
+
 window.addEventListener('mouseup', (event) => {
   if (!dragging) {
     api.log('[拖动] 松手时并不在拖拽态（mousedown 没接上？）')

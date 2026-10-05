@@ -21,6 +21,13 @@ contextBridge.exposeInMainWorld('xilianPet', {
     ipcRenderer.send('pet:mask', { width, height, data, uiRects }),
   /** 拖拽中：主进程会一直保持可交互，避免鼠标快速移出角色时把拖拽甩掉 */
   setDragging: (value) => ipcRenderer.send('pet:dragging', Boolean(value)),
+  /**
+   * 主进程**放弃**了拖拽态（看门狗判卡住 / 失焦）。
+   * 渲染端必须同步清零自己的 dragging —— 否则两边状态分叉：
+   * 主进程已恢复穿透判定、渲染端还以为在拖，于是她要么在松开鼠标后继续跟着鼠标跑，
+   * 要么反过来怎么拖都不动。
+   */
+  onDragCancel: (callback) => ipcRenderer.on('pet:drag-cancel', (_event, reason) => callback(String(reason ?? ''))),
   /** 构图缓存读写（按模型 URL 分开存） */
   fitCacheGet: (modelKey) => ipcRenderer.invoke('pet:fit-cache-get', modelKey),
   fitCacheSet: (modelKey, box) => ipcRenderer.invoke('pet:fit-cache-set', modelKey, box),
