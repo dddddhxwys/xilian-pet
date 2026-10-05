@@ -588,6 +588,18 @@ let ignoreLogs = 0
 /** 掩码覆盖率（-1 = 还没收到）；用来判断掩码是不是残缺/空的 */
 let maskCoverage = -1
 /**
+ * 渲染端自己的坐标系尺寸（window.innerWidth/innerHeight），随掩码一起送来。
+ *
+ * ⚠️ 命中判定必须用它，**不能**用 `win.getBounds()` —— 两者是不同坐标系：
+ *    实测某台 150% 缩放的机器上窗口被系统撑到 1077×946 / 1248×1124，
+ *    而渲染端舞台一直是 260×300、掩码 130×150；用 getBounds() 映射
+ *    等于把掩码拉伸铺满整个大窗口 → 用户报的
+ *    "**远离昔涟的位置反而能拖动**、在她身上拖不动"。
+ */
+let maskStage = { w: 0, h: 0 }
+/** 上一次报告"窗口尺寸 ≠ 渲染端舞台"的尺寸，避免刷屏 */
+let lastStageMismatch = ''
+/**
  * 掩码几乎全透明 → **弃用它**，整窗可交互。
  * 为什么需要这条：掩码是"哪里算她的身体"的唯一依据，一旦渲染端读出来的 alpha
  * 和屏幕画面不一致（软件渲染回读残缺 / DPR 变化 / 模型降级成占位图），
@@ -643,6 +655,18 @@ function startHitTestLoop(win) {
     }
     const p = screen.getCursorScreenPoint()
     const b = win.getBounds()
+    // ⚠️ 映射基准是**渲染端的坐标系**（maskStage），不是窗口的（b）。
+    //    两者不一致时以渲染端为准 —— 掩码本来就是照着它的坐标系生成的。
+    const stageW = maskStage.w > 0 ? maskStage.w : b.width
+    const stageH = maskStage.h > 0 ? maskStage.h : b.height
+    // 差得明显就记一行：这本身就是"窗口被系统撑大了"的证据（实测 1248×1124 vs 260×300）
+    if (maskStage.w > 0 && (Math.abs(b.width - stageW) > 2 || Math.abs(b.height - stageH) > 2)) {
+      const stamp = `${b.width}×${b.height}/${stageW}×${stageH}`
+      if (stamp !== lastStageMismatch) {
+        lastStageMismatch = stamp
+        log(`⚠️ 窗口尺寸 ${b.width}×${b.height} ≠ 渲染端舞台 ${stageW}×${stageH} → 命中判定按渲染端舞台算（否则掩码会被拉伸铺满窗口）`)
+      }
+    }
     const x = p.x - b.x
     const y = p.y - b.y
     // 判定统一走 hit-test.js 的纯函数（可自测）：
@@ -651,8 +675,8 @@ function startHitTestLoop(win) {
     const hit = hitTest({
       mask: alphaMask,
       uiRects,
-      winWidth: b.width,
-      winHeight: b.height,
+      winWidth: stageW,
+      winHeight: stageH,
       x,
       y,
       threshold: HIT_ALPHA_THRESHOLD,
@@ -894,6 +918,8 @@ app.whenReady().then(async () => {
       uiRects = (Array.isArray(mask.uiRects) ? mask.uiRects : []).filter(
         (r) => r && [r.x, r.y, r.w, r.h].every((v) => Number.isFinite(v)),
       )
+      // 渲染端坐标系尺寸（命中映射的**权威基准**）
+      if (mask.stage && mask.stage.w > 0 && mask.stage.h > 0) maskStage = mask.stage
     }
   })
   ipcMain.on('pet:dragging', (_event, value) => {

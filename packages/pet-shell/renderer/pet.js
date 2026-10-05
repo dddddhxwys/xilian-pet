@@ -118,7 +118,11 @@ function publishMask() {
       out[y * w + x] = max
     }
   }
-  api.sendMask(w, h, out, visibleUiRects())
+  // ⚠️ 第 5 个参数是**渲染端自己的坐标系尺寸**：主进程必须用它做映射，
+  //    不能用 win.getBounds()（那是窗口坐标系）。实测某台 150% 缩放的机器上
+  //    窗口被系统撑到 1248×1124 而这里舞台仍是 260×300 —— 用 getBounds() 映射
+  //    等于把掩码拉伸铺满整个大窗口 → "远离昔涟反而能拖、在她身上拖不动"。
+  api.sendMask(w, h, out, visibleUiRects(), { w: window.innerWidth, h: window.innerHeight })
 }
 
 async function buildAlphaMap() {

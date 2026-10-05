@@ -16,9 +16,14 @@ contextBridge.exposeInMainWorld('xilianPet', {
    * 掩码请先降采样（主进程按比例取样，不需要全分辨率）。
    * `uiRects` 是 HTML 控件（输入条/气泡）的矩形 —— 它们不在掩码里，
    * 不一起送过去的话，控件上"没有角色像素"的部分会被判成穿透、按钮点不动。
+   * `stage` 是**渲染端自己的坐标系尺寸**（window.innerWidth/innerHeight）。
+   * ⚠️ 必须送：主进程原来拿 `win.getBounds()` 当映射基准，但那是**窗口**的坐标系 ——
+   *    实测某台 150% 缩放的机器上窗口被系统撑到 1248×1124，而渲染端舞台仍是 260×300，
+   *    于是 130×150 的掩码被拉伸铺满整个大窗口
+   *    → "远离昔涟反而能拖、在她身上拖不动"。
    */
-  sendMask: (width, height, data, uiRects) =>
-    ipcRenderer.send('pet:mask', { width, height, data, uiRects }),
+  sendMask: (width, height, data, uiRects, stage) =>
+    ipcRenderer.send('pet:mask', { width, height, data, uiRects, stage }),
   /** 拖拽中：主进程会一直保持可交互，避免鼠标快速移出角色时把拖拽甩掉 */
   setDragging: (value) => ipcRenderer.send('pet:dragging', Boolean(value)),
   /**

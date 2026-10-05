@@ -3042,6 +3042,24 @@ check('渲染端不能对 resize 无脑重排（分数 DPI 下会变成抖动循
   assert.match(src, /suppressedLayouts/, '必须统计并汇报被静音掉的重复次数')
 })
 
+check('命中映射必须用渲染端坐标系（renderer stage），不能用窗口 bounds', () => {
+  // ⚠️ 用户实机（150% 缩放）：窗口被系统撑到 1077×946 / 1248×1124，而渲染端舞台
+  //    一直是 260×300、掩码 130×150。[命中] 日志原文：
+  //      光标(1490,672) 窗口(639,-112 1248×1124) 局部(851,784) 掩码(88,104) alpha=255 → 可交互
+  //    用 win.getBounds() 映射 = 把 130×150 的掩码**拉伸铺满整个大窗口**
+  //    → 用户报的"远离昔涟反而能拖、在她身上拖不动"。
+  const mainSrc = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+  const preSrc = readFileSync(new URL('../packages/pet-shell/preload.cjs', import.meta.url), 'utf8')
+  const petSrc = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+
+  assert.match(preSrc, /sendMask:\s*\([^)]*\bstage\b[^)]*\)/, 'preload 的 sendMask 必须接收 stage 参数')
+  assert.ok(petSrc.includes('window.innerWidth'), '渲染端必须把自己的坐标系尺寸一起送出去')
+  assert.match(mainSrc, /let maskStage = /, '主进程要保存渲染端舞台尺寸')
+  assert.match(mainSrc, /winWidth: stageW/, 'hitTest 必须用渲染端舞台宽，不能用 b.width')
+  assert.match(mainSrc, /winHeight: stageH/, 'hitTest 必须用渲染端舞台高，不能用 b.height')
+  assert.ok(mainSrc.includes('≠ 渲染端舞台'), '两者不一致时要记一行（这就是"窗口被撑大"的证据）')
+})
+
 console.log(`\n${'─'.repeat(56)}`)
 console.log(`通过 ${passed} 项，失败 ${failed} 项`)
 if (warnings.length > 0) console.log(`插件告警 ${warnings.length} 条：\n  ${warnings.slice(0, 5).join('\n  ')}`)
