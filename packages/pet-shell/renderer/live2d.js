@@ -460,23 +460,26 @@ const PART_NAMES = {
  * 头发/头饰/外侧发/后发/头发阴影 全归 `head` —— "头顶"在她身上就是这一片 ✓
  */
 const PART_ZONES = {
-  Part18: 'face', // 脸 → 墨镜
+  Part18: 'face', // 脸 → 墨镜（普查：x108..164 y180..212 z63）
   Part8: 'head', // 头发
-  Part7: 'head', // 头饰
+  Part7: 'head', // 头饰（普查：x76..100 y220..260 —— 她头上左侧那朵）
   Part9: 'head', // 外侧发1
   Part10: 'head', // 外侧发2
-  // ⚠️ `Part30 后发` **刻意不归"头顶"**（用户 2026-10-05："后发不该被算进头顶"）。
-  //    它是垂在身后/两侧的长发 —— 归"头顶"会让"点头顶=惊喜"在她脑后也触发 ✗
-  //    现在它没有显式区，交给下面的**两侧兜底**处理（在离中线够远的地方算秋千）✓
-  Part22: 'head', // 头发阴影
-  Part5: 'swing', // 秋千 → 弹一下
   /**
-   * ⚠️ `背饰` 必须一起归秋千区：
-   *    用户反馈"点两侧翅膀弹一下的范围变小了" —— 分区图（PET_ZONE_DEBUG=1 打的）
-   *    显示视觉上那一对"翅膀"其实由**两个部件**组成：`Part5 秋千`（94 格）
-   *    + `Part31 背饰`（33 格）。少了后者，翅膀靠里的那半边点下去没反应 ✗
+   * ⚠️ `Part30 后发` **刻意不归"头顶"**（用户 2026-10-05："后发不该被算进头顶"）。
+   *    普查证实它是**中间一大片**（149 格，x52..188）：那是她的长发，不是"头顶" ✗
    */
-  Part31: 'swing',
+  Part22: 'head', // 头发阴影
+  /**
+   * 秋千 = 那对**紫色羽毛翅膀**（用户发了图确认）。
+   * 普查：`Part5 秋千` 94 格，x 20..244，z 11..13（**最底层**，所以身体/头发压在上面）。
+   */
+  Part5: 'swing',
+  /**
+   * ⚠️ `Part31 背饰` **撤销归秋千** —— 我上一版弄错了 ✗
+   *    普查显示它在 **x68..180 y196..276**，是**下身中间**那一片（33 格），
+   *    根本不是两侧的翅膀 ✓ 归秋千会让点她肚子/裙摆也弹一下 ✗
+   */
 }
 
 /**
@@ -596,7 +599,7 @@ export function debugFrontPartName(clientX, clientY, contentBox) {
     if (core.getDrawableDynamicFlagIsVisible && !core.getDrawableDynamicFlagIsVisible(i)) continue
     if (!pointInDrawable(core, i, ux, uy)) continue
     const partId = core.getPartId?.(core.getDrawableParentPartIndex?.(i))
-    return { partId, partName: PART_NAMES[partId] ?? partId, zone: PART_ZONES[partId] ?? null }
+    return { partId, partName: PART_NAMES[partId] ?? partId, zone: PART_ZONES[partId] ?? null, drawable: i }
   }
   return null
 }

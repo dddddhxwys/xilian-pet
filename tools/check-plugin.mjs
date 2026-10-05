@@ -2075,15 +2075,18 @@ check('部件级命中测试：三角形判定 + 分区接线 【点脸=墨镜 /
   //    它是垂在身后的长发，归头顶会让"点头顶=惊喜"在她脑后也触发 ✗
   assert.equal(/Part30: 'head'/.test(live2d), false, 'Part30（后发）不能归 head')
   assert.match(live2d, /Part5: 'swing'/, 'Part5（秋千）必须映射到 swing')
-  // ⚠️ 背饰必须**一起**归秋千区：用户反馈"点两侧翅膀弹一下的范围变小了"，
-  //    分区图显示视觉上那一对翅膀由两个部件组成（秋千 94 格 + 背饰 33 格）
-  assert.match(live2d, /Part31: 'swing'/, 'Part31（背饰）也要归 swing —— 否则翅膀靠里的半边点不动')
+  // ⚠️ 反面断言（普查纠正过的错误）：`Part31 背饰` **不能**归秋千。
+  //    我原来按名字以为它是"背后的翅膀"，实测普查显示它在 x68..180 y196..276
+  //    = **下身中间**那一片 ✗ 归秋千会导致点她肚子/裙摆也弹一下。
+  //    ⇒ 教训：判定部件归属必须靠**实测范围**，不能靠名字。
+  assert.equal(/Part31: 'swing'/.test(live2d), false, 'Part31（背饰）在下身，不能归 swing')
   // ⚠️ 两侧兜底：精确判定把两侧的长发/后裙也排除掉了，用户仍觉得"秋千区过小" ✗
   //    → 命中的部件没配区、且离内容中线够远时，算秋千 ✓
   assert.match(live2d, /SIDE_FALLBACK_RATIO = 0\.22/, '要有两侧兜底比例（沿用旧手感值）')
   assert.match(live2d, /frontNoZone/, '要记住最前面那个"没配区"的部件来兜底')
-  // 分区图必须画**真实判定**的结果（用 debugFrontPartName 会把兜底区画成"无分区"，图就骗人了）
-  assert.match(pet, /const effective = raw \? live2d\?\.hitPart\?\./, '分区图要基于 hitPart，不能只看显式映射')
+  // 部件普查要基于 `debugFrontPartName`（**部件**，与有没有配区无关）——
+  // 它回答的是"名字 ↔ 她身上哪一块"，不是"点在哪个区" ✓
+  assert.match(pet, /live2d\?\.debugFrontPartName\?\.\(px, py, contentBox\(\)\)/, '部件普查要用 debugFrontPartName')
 
   // ③ 效果接线
   assert.match(pet, /face: \(\) => live2d\?\.pokeExpression\('sunglasses'/, '点脸 → 墨镜')

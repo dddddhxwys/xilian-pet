@@ -572,34 +572,59 @@ async function startLive2D() {
         })
         api.log(`[分区调试] 中心点命中自检：${probes.join('　')}`)
 
-        // 分区图：每 8px 一格打印成文本 —— 一眼看出各区的**实际范围**
-        // ⚠️ 这里的字符必须来自 `hitPart`（**真实判定**，含两侧兜底），
-        //    不能用 `debugFrontPartName` —— 那个只反映显式映射，
-        //    会把兜底生效的区域画成"无分区"，图就成了骗人的 ✗（实测踩到）
+        // ── 部件普查 ────────────────────────────────────────────
+        // 用户："重新梳理一遍各个部件" —— 之前我一直在**猜**哪个部件是哪块 ✗
+        // 这张普查把每个部件在窗口里的**实际可见范围**测出来：
+        //   占多少格（8px 一格）、包围盒、最前面/最后面的画层 z 序
+        // 再配一张"字母地图"，就能把"名字 ↔ 她身上哪一块"对上 ✓
         const step = 8
-        const KEY = { face: 'F', head: 'H', swing: 'S' }
-        const hist = new Map()
-        const rows = []
+        const parts = new Map()
+        const cellPart = []
         for (let y = 0; y < window.innerHeight; y += step) {
-          let row = ''
+          const row = []
           for (let x = 0; x < window.innerWidth; x += step) {
             const px = x + step / 2
             const py = y + step / 2
             const raw = live2d?.debugFrontPartName?.(px, py, contentBox())
-            if (raw) hist.set(raw.partName, (hist.get(raw.partName) ?? 0) + 1)
-            const effective = raw ? live2d?.hitPart?.(px, py, contentBox()) : null
-            row += effective ? (KEY[effective.zone] ?? '?') : raw ? '·' : ' '
+            row.push(raw ?? null)
+            if (!raw) continue
+            const e = parts.get(raw.partName) ?? {
+              cells: 0,
+              minX: Infinity,
+              minY: Infinity,
+              maxX: -Infinity,
+              maxY: -Infinity,
+              minD: Infinity,
+              maxD: -Infinity,
+              zone: raw.zone,
+            }
+            e.cells++
+            e.minX = Math.min(e.minX, px)
+            e.maxX = Math.max(e.maxX, px)
+            e.minY = Math.min(e.minY, py)
+            e.maxY = Math.max(e.maxY, py)
+            e.minD = Math.min(e.minD, raw.drawable)
+            e.maxD = Math.max(e.maxD, raw.drawable)
+            parts.set(raw.partName, e)
           }
-          rows.push(row)
+          cellPart.push(row)
         }
-        api.log(`[分区图] 每格 ${step}px：F=脸 H=头顶 S=秋千 ·=她的像素但无分区（空白=透明）`)
-        for (const r of rows) api.log(`[分区图] ${r}`)
-        api.log(
-          `[分区图] 命中部件统计：${[...hist.entries()]
-            .sort((a, b) => b[1] - a[1])
-            .map(([k, v]) => `${k}×${v}`)
-            .join('　')}`,
-        )
+        const ranked = [...parts.entries()].sort((a, b) => b[1].cells - a[1].cells)
+        const letterOf = new Map()
+        const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+        ranked.forEach(([name], idx) => letterOf.set(name, ALPHA[idx] ?? '?'))
+        api.log(`[部件普查] 窗口 ${window.innerWidth}×${window.innerHeight}，每格 ${step}px；只统计**看得见的**（最前面那个部件）`)
+        for (const [name, e] of ranked) {
+          api.log(
+            `[部件普查] ${letterOf.get(name)} ${name.padEnd(6)} ${String(e.cells).padStart(3)}格 ` +
+              `x ${Math.round(e.minX)}..${Math.round(e.maxX)} y ${Math.round(e.minY)}..${Math.round(e.maxY)} ` +
+              `z ${e.minD}..${e.maxD}${e.zone ? `  → 区=${e.zone}` : ''}`,
+          )
+        }
+        api.log('[部件普查] 字母地图（= 该格最前面的部件）')
+        for (const row of cellPart) {
+          api.log(`[部件普查] ${row.map((r) => (r ? letterOf.get(r.partName) : ' ')).join('')}`)
+        }
       }
       requestAnimationFrame(paint)
     }
