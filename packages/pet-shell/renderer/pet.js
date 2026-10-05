@@ -34,6 +34,13 @@ const ALPHA_THRESHOLD = 24
 let alphaMap = null
 let mapW = 0
 let mapH = 0
+/**
+ * 掩码坐标系（= **画布的 CSS 尺寸**），给主进程做命中映射用。
+ * ⚠️ 不能换算成窗口尺寸：实测窗口被系统撑到 820×804 时画布仍是 260×300，
+ *    用窗口尺寸映射会把掩码拉伸铺满窗口 → "远离昔涟反而能拖、在她身上拖不动"。
+ */
+let mapCssW = 0
+let mapCssH = 0
 let interactive = null
 let dragging = false
 /** 拖拽期间给主进程续期的定时器（主进程有 6s 看门狗，见 main.js 的 DRAG_STALE_MS） */
@@ -118,11 +125,19 @@ function publishMask() {
       out[y * w + x] = max
     }
   }
-  // ⚠️ 第 5 个参数是**渲染端自己的坐标系尺寸**：主进程必须用它做映射，
-  //    不能用 win.getBounds()（那是窗口坐标系）。实测某台 150% 缩放的机器上
-  //    窗口被系统撑到 1248×1124 而这里舞台仍是 260×300 —— 用 getBounds() 映射
-  //    等于把掩码拉伸铺满整个大窗口 → "远离昔涟反而能拖、在她身上拖不动"。
-  api.sendMask(w, h, out, visibleUiRects(), { w: window.innerWidth, h: window.innerHeight })
+  // ⚠️ 映射基准必须是**画布的 CSS 尺寸**，不是 `window.innerWidth`，更不是窗口 bounds。
+  //    掩码是从画布（`mapW×mapH` = 设备像素，实测 390×450）降采样来的，
+  //    所以它的坐标系就是画布的 CSS 尺寸（390/1.5 = 260×300）。
+  //    实测某台机器上窗口被系统从 261×301 撑到 820×804，**连 innerWidth 都跟着胀**，
+  //    而画布始终是 260×300（构图日志里那个"舞台"没变过）——
+  //    用前两者映射都会错位（一次算出 155÷675×130=29，一次 117÷820×130=18，
+  //    正确答案都是 58），只有用画布尺寸才对，而且画布不随窗口胀大而变 ✓
+  // ⚠️ 映射基准 = **画布的 CSS 尺寸**（mapCssW/mapCssH），不是 window.innerWidth、更不是窗口 bounds。
+  //    掩码是从画布的设备像素降采样来的，坐标系跟着画布走。
+  //    实测某台机器窗口被系统从 261×301 撑到 820×804、连 innerWidth 都跟着胀，
+  //    而画布始终 260×300（构图日志里的"舞台"没变过）——
+  //    用前两者映射都错位（算出来是 29 和 18，正确答案是 58），只有画布尺寸对 ✓
+  api.sendMask(w, h, out, visibleUiRects(), { w: mapCssW || mapW, h: mapCssH || mapH })
 }
 
 async function buildAlphaMap() {
@@ -131,6 +146,9 @@ async function buildAlphaMap() {
     if (!shot) return
     mapW = shot.width
     mapH = shot.height
+    // 画布的 CSS 尺寸（= 掩码坐标系）；readAlpha 一并给出，退化时用设备像素兜底
+    mapCssW = shot.cssWidth || shot.width
+    mapCssH = shot.cssHeight || shot.height
     alphaMap = shot.alpha
     publishMask()
     return

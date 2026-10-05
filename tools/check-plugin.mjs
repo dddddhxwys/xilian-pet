@@ -3053,10 +3053,23 @@ check('命中映射必须用渲染端坐标系（renderer stage），不能用�
   const petSrc = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
 
   assert.match(preSrc, /sendMask:\s*\([^)]*\bstage\b[^)]*\)/, 'preload 的 sendMask 必须接收 stage 参数')
-  assert.ok(petSrc.includes('window.innerWidth'), '渲染端必须把自己的坐标系尺寸一起送出去')
-  assert.match(mainSrc, /let maskStage = /, '主进程要保存渲染端舞台尺寸')
-  assert.match(mainSrc, /winWidth: stageW/, 'hitTest 必须用渲染端舞台宽，不能用 b.width')
-  assert.match(mainSrc, /winHeight: stageH/, 'hitTest 必须用渲染端舞台高，不能用 b.height')
+  // ⚠️ 基准是**画布的 CSS 尺寸**，不是 window.innerWidth：
+  //    实测窗口被系统撑到 820×804 时连 innerWidth 都跟着胀，而画布始终 260×300。
+  //    用 innerWidth 映射算出来 117÷820×130=18，用画布尺寸才是 58（正确答案）。
+  //    （断言用 includes 而非正则：`visibleUiRects()` 里的括号会把 `[^)]*` 截断 ✗）
+  assert.ok(petSrc.includes('w: mapCssW'), '渲染端必须送画布 CSS 尺寸 mapCssW')
+  assert.ok(
+    !/sendMask\([\s\S]{0,120}?window\.innerWidth/.test(petSrc),
+    'sendMask 不能用 window.innerWidth（窗口被撑大时会错位）',
+  )
+  assert.match(
+    readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8'),
+    /cssWidth:\s*c\.clientWidth/,
+    'readAlpha 必须一并返回画布的 CSS 尺寸',
+  )
+  assert.match(mainSrc, /let maskStage = /, '主进程要保存渲染端送来的基准尺寸')
+  assert.match(mainSrc, /winWidth: stageW/, 'hitTest 必须用送来的基准宽，不能用 b.width')
+  assert.match(mainSrc, /winHeight: stageH/, 'hitTest 必须用送来的基准高，不能用 b.height')
   assert.ok(mainSrc.includes('≠ 渲染端舞台'), '两者不一致时要记一行（这就是"窗口被撑大"的证据）')
 })
 

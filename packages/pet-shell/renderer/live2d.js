@@ -224,7 +224,17 @@ export function readAlpha() {
   const { data } = ctx.getImageData(0, 0, c.width, c.height)
   const alpha = new Uint8Array(c.width * c.height)
   for (let i = 0; i < alpha.length; i++) alpha[i] = data[i * 4 + 3]
-  return { alpha, width: c.width, height: c.height }
+  // ⚠️ 一并返回**画布的 CSS 尺寸**：掩码的坐标系就是它（不是窗口、也不是 innerWidth）。
+  //    主进程必须拿它做命中映射 —— 实测某台机器窗口被系统撑到 820×804（连 innerWidth
+  //    都跟着胀），而画布始终 260×300；用窗口尺寸映射会把掩码拉伸铺满窗口，
+  //    表现为"远离昔涟反而能拖、在她身上拖不动"。
+  return {
+    alpha,
+    width: c.width,
+    height: c.height,
+    cssWidth: c.clientWidth || c.width,
+    cssHeight: c.clientHeight || c.height,
+  }
 }
 
 /** 先把模型整块铺进舞台（保底，保证测量期间角色可见） */
