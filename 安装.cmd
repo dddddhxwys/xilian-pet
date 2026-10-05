@@ -97,32 +97,30 @@ if not defined PET_NODE (
 if not defined PET_NODE (
   echo [ERROR] No Node runtime found on this machine.
   echo.
-  if exist "%DSH_HOME_DIR%" (
-    echo   The DSH folder EXISTS: %DSH_HOME_DIR%
-    echo   ...but it has no Node runtime yet.
-    echo.
-    echo   DSH unpacks its runtime on the FIRST LAUNCH. Installing DSH is
-    echo   not enough - it has to actually start once.
-    echo.
-    echo   Do this:
-    echo     1. Start DSH once and let it fully open
-    echo     2. Run this installer again
-  ) else (
-    echo   There is no DSH folder either: %DSH_HOME_DIR%
-    echo.
-    echo   Pick ONE of these:
-    echo     1. Install DSH and start it once   ^(recommended: the pet follows DSH^)
-    echo     2. Install Node.js 20 or newer
-    echo     3. Ask for the "full" package, which ships its own Node
-  )
+  echo   DSH home: %DSH_HOME_DIR%
+  if exist "%DSH_HOME_DIR%" echo     - that folder exists
+  if not exist "%DSH_HOME_DIR%" echo     - that folder does NOT exist
+  if exist "%DSH_HOME_DIR%\dsh-runtimes" echo     - it HAS a dsh-runtimes folder, contents:
+  if exist "%DSH_HOME_DIR%\dsh-runtimes" dir /b "%DSH_HOME_DIR%\dsh-runtimes"
+  if not exist "%DSH_HOME_DIR%\dsh-runtimes" echo     - it has NO dsh-runtimes folder yet
   echo.
-  echo   Nothing was changed on this machine.
+  echo   DSH unpacks its runtime on the FIRST LAUNCH. Installing DSH is
+  echo   not enough - it has to actually start once.
   echo.
-  echo   Locations checked ^(send this list back if your DSH lives elsewhere^):
+  echo   Do this:
+  echo     1. Start DSH once and let it fully open
+  echo     2. Run this installer again
+  echo.
+  echo   If DSH lives somewhere else, or you would rather not use DSH at all,
+  echo   send me this list - there is also a build that ships its own Node.
+  echo.
+  echo   Locations checked:
   echo     %~dp0node\node.exe
   echo     %DSH_HOME_DIR%\dsh-runtimes\*\dependencies\node\bin\node.exe
   echo     %DSH_HOME_DIR%\dsh-runtimes\*\dependencies\node\node.exe
   echo     PATH: node.exe
+  echo.
+  echo   Nothing was changed on this machine.
   echo.
   exit /b 1
 )
