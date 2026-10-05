@@ -467,7 +467,14 @@ const PART_ZONES = {
   Part10: 'head', // 外侧发2
   Part30: 'head', // 后发
   Part22: 'head', // 头发阴影
-  Part5: 'swing', // 秋千 → 弹一下（比原来的"x 偏离中线"准得多）
+  Part5: 'swing', // 秋千 → 弹一下
+  /**
+   * ⚠️ `背饰` 必须一起归到秋千区：
+   *    用户反馈"点两侧翅膀弹一下的范围变小了" —— 分区图（PET_ZONE_DEBUG=1 打的）
+   *    显示视觉上那一对"翅膀"其实由**两个部件**组成：`Part5 秋千`（94 格）
+   *    + `Part31 背饰`（33 格）。少了后者，翅膀靠里的那半边点下去没反应 ✗
+   */
+  Part31: 'swing',
 }
 
 /**
@@ -554,6 +561,29 @@ function pointInDrawable(core, index, ux, uy) {
     maxY = Math.max(maxY, vy(v))
   }
   return x >= minX && x <= maxX && y >= minY && y <= maxY
+}
+
+/**
+ * 调试专用：返回**最前面**那个命中的部件名，**不管它有没有配交互区**。
+ *
+ * 为什么需要：`hitPart()` 会跳过"没配区的部件"继续往后找 ✗
+ * 排查"点了没反应"时必须知道"到底命中了谁" ✓
+ */
+export function debugFrontPartName(clientX, clientY, contentBox) {
+  const model = state.model
+  const core = model?.internalModel?.coreModel
+  if (!model || !core || !state.ready) return null
+  const mapper = unitMapper(contentBox)
+  if (!mapper) return null
+  const { ux, uy } = mapper.toUnit(clientX, clientY)
+  const count = core.getDrawableCount?.() ?? 0
+  for (let i = count - 1; i >= 0; i--) {
+    if (core.getDrawableDynamicFlagIsVisible && !core.getDrawableDynamicFlagIsVisible(i)) continue
+    if (!pointInDrawable(core, i, ux, uy)) continue
+    const partId = core.getPartId?.(core.getDrawableParentPartIndex?.(i))
+    return { partId, partName: PART_NAMES[partId] ?? partId, zone: PART_ZONES[partId] ?? null }
+  }
+  return null
 }
 
 /**
@@ -1539,6 +1569,8 @@ window.xilianLive2D = {
   hitPart,
   /** 调试：列出有交互区的部件的画层包围盒（配合 PET_ZONE_DEBUG=1 和画面核对） */
   debugZoneBoxes,
+  /** 调试：最前面命中的部件名（不管有没有配区），排查"点了没反应"用 */
+  debugFrontPartName,
   /** 读回渲染画布的 alpha 通道，供命中测试使用（{ alpha, width, height }） */
   readAlpha,
   /** 供 alpha 掩码取样用的渲染画布（空白表示不可交互） */

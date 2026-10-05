@@ -2072,6 +2072,9 @@ check('部件级命中测试：三角形判定 + 分区接线 【点脸=墨镜 /
     assert.match(live2d, new RegExp(`${part}: 'head'`), `${part}（头发/头饰/发）必须映射到 head`)
   }
   assert.match(live2d, /Part5: 'swing'/, 'Part5（秋千）必须映射到 swing')
+  // ⚠️ 背饰必须**一起**归秋千区：用户反馈"点两侧翅膀弹一下的范围变小了"，
+  //    分区图显示视觉上那一对翅膀由两个部件组成（秋千 94 格 + 背饰 33 格）
+  assert.match(live2d, /Part31: 'swing'/, 'Part31（背饰）也要归 swing —— 否则翅膀靠里的半边点不动')
 
   // ③ 效果接线
   assert.match(pet, /face: \(\) => live2d\?\.pokeExpression\('sunglasses'/, '点脸 → 墨镜')

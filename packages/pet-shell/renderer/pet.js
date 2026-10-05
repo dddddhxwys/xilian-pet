@@ -571,6 +571,33 @@ async function startLive2D() {
           return `${b.partName}→${hit ? hit.zone : 'miss'}`
         })
         api.log(`[分区调试] 中心点命中自检：${probes.join('　')}`)
+
+        // 分区图：每 8px 一格打印成文本 —— 一眼看出各区的**实际范围**
+        // （用户反馈"点翅膀弹一下的范围变小了"，靠这张图判断是"判定准了"还是"翅膀没被覆盖全"）
+        const step = 8
+        const KEY = { face: 'F', head: 'H', swing: 'S' }
+        const hist = new Map()
+        const rows = []
+        for (let y = 0; y < window.innerHeight; y += step) {
+          let row = ''
+          for (let x = 0; x < window.innerWidth; x += step) {
+            const px = x + step / 2
+            const py = y + step / 2
+            const raw = live2d?.debugFrontPartName?.(px, py, contentBox())
+            if (raw) hist.set(raw.partName, (hist.get(raw.partName) ?? 0) + 1)
+            const zone = raw?.zone ?? (overOpaquePixel(px, py) ? null : undefined)
+            row += raw ? (KEY[raw.zone] ?? '·') : overOpaquePixel(px, py) ? '·' : ' '
+          }
+          rows.push(row)
+        }
+        api.log(`[分区图] 每格 ${step}px：F=脸 H=头顶 S=秋千 ·=她的像素但无分区（空白=透明）`)
+        for (const r of rows) api.log(`[分区图] ${r}`)
+        api.log(
+          `[分区图] 命中部件统计：${[...hist.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .map(([k, v]) => `${k}×${v}`)
+            .join('　')}`,
+        )
       }
       requestAnimationFrame(paint)
     }
