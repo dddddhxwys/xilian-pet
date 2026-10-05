@@ -13,12 +13,12 @@
  *
  * 压缩用 PowerShell 的 Compress-Archive（系统自带，不引依赖）。
  */
-import { spawnSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { requiredInRelease, collectReleaseFiles } from './lib/release-files.mjs'
+import { collectReleaseFiles, requiredInRelease } from './lib/release-files.mjs'
+import { writeZipFile } from './lib/zip-writer.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(here, '..')
@@ -99,21 +99,15 @@ console.log(`  复制了 ${copied} 个文件`)
 
 console.log('\n压缩…')
 mkdirSync(dirname(zipPath), { recursive: true })
-const ps = spawnSync(
-  'powershell',
-  [
-    '-NoProfile',
-    '-Command',
-    `Compress-Archive -Path '${STAGE_DIR}' -DestinationPath '${zipPath}' -Force`,
-  ],
-  { stdio: 'inherit' },
-)
-if (ps.status !== 0 || !existsSync(zipPath)) {
-  console.error(`\n❌ 压缩失败（Compress-Archive 退出码 ${ps.status}）`)
+rmSync(zipPath, { force: true })
+const files = included.map((rel) => ({ name: `${PKG_NAME}/${rel}`, absPath: join(STAGE_DIR, rel) }))
+const zipInfo = writeZipFile(zipPath, files, { log: (m) => console.log(m) })
+if (!existsSync(zipPath)) {
+  console.error('\n❌ 压缩失败：没有生成 zip')
   process.exit(1)
 }
 const zipMb = statSync(zipPath).size / 1024 / 1024
 console.log(`\n✅ 发行包：${zipPath}`)
-console.log(`   文件数 ${included.length}，zip 大小 ${zipMb.toFixed(2)} MB`)
+console.log(`   文件数 ${included.length}（zip 内 ${zipInfo.entries} 个条目），zip 大小 ${zipMb.toFixed(2)} MB`)
 console.log('\n下一步：把 zip 发给朋友 → 让他解压 → 双击「安装.cmd」→ 重启 DSH → 双击 start-pet.cmd')
 console.log('（暂存目录 .release/ 留着便于核对；不用了可以删。）')

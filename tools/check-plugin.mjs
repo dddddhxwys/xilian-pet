@@ -15,6 +15,7 @@ import http from 'node:http'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { inflateRawSync } from 'node:zlib'
 
 import { apply, inject as pluginInject } from '../packages/pet-plugin/index.js'
 import {
@@ -31,6 +32,7 @@ import {
 import { createSseLink } from '../packages/pet-shell/sse-link.js'
 import { addPluginRow, looksLikeProfilePatch, pluginRowSnippet } from './lib/patch-edit.mjs'
 import { requiredInRelease, collectReleaseFiles, shouldDescend, shouldInclude } from './lib/release-files.mjs'
+import { writeZipToBuffer } from './lib/zip-writer.mjs'
 import {
   BASE_MOTION,
   FLICK_PRESETS,
@@ -2692,6 +2694,19 @@ await checkAsync('SSE 连不上时不能谎报"已连接"', async () => {
 // ─────────────────────────────────────────────────────────────
 console.log('\n[7] 一键安装与打包（纯逻辑）')
 
+/**
+ * 自测用的 CRC32 —— **故意不复用被测代码里的实现**，否则等于让代码自己证明自己。
+ * 独立写一遍才能验出"写 zip 时 CRC 填错"这类问题。
+ */
+function zipCrc32(buf) {
+  let c = 0xffffffff
+  for (let i = 0; i < buf.length; i++) {
+    c ^= buf[i]
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+  }
+  return (c ^ 0xffffffff) >>> 0
+}
+
 /** 一份贴近真实的 profile patch 样本（含注释 + 其他插件行） */
 const SAMPLE_PATCH = `# Your patch layer for this dsh profile, applied after every bundle layer:
 - id: ui-chat
@@ -2848,6 +2863,50 @@ check('发行包遍历：对**真实仓库**跑一遍，开关行为要符合预
   )
   // 精简版绝不含任何 node_modules
   assert.ok(!slim.some((r) => r.startsWith('node_modules/')), '精简版不该含 node_modules')
+})
+
+check('zip 写入器：条目名必须是正斜杠 + UTF-8 标志（Windows 那两个 API 会写成反斜杠）', () => {
+  // ⚠️ 这条是踩出来的：`Compress-Archive` 与 `ZipFile.CreateFromDirectory` 在 Windows 上
+  //    把条目名写成 `xilian-pet\安装.cmd`（反斜杠）。ZIP 规范要求 `/`，
+  //    7-Zip / macOS / WSL 可能因此解出一个叫 `xilian-pet\安装.cmd` 的怪文件。
+  const zip = writeZipToBuffer([
+    { name: 'pkg/安装.cmd', data: Buffer.from('@echo off\n', 'utf8') },
+    { name: 'pkg/sub/a.txt', data: Buffer.from('hello', 'utf8') },
+  ])
+  // 按**字节**找：zip 里是二进制，用 toString 解码再 includes 会自己坑自己（踩过）
+  assert.ok(zip.includes(Buffer.from('pkg/安装.cmd', 'utf8')), '中文名条目要按 UTF-8 写进 zip')
+  assert.ok(!zip.includes(Buffer.from('pkg\\安装.cmd', 'utf8')), '绝不能用反斜杠分隔')
+  assert.ok(zip.includes(Buffer.from('pkg/sub/a.txt', 'utf8')), '子目录也要正斜杠')
+  assert.equal(zip.readUInt16LE(6) & 0x0800, 0x0800, '通用标志位要置 UTF-8 位（bit 11）')
+
+  // 用一个**独立写的小解析器**把内容解回来（不假设条目顺序：写入器会先写目录条目）
+  const entries = []
+  let pos = 0
+  while (pos + 30 <= zip.length && zip.readUInt32LE(pos) === 0x04034b50) {
+    const method = zip.readUInt16LE(pos + 8)
+    const crc = zip.readUInt32LE(pos + 14)
+    const compSize = zip.readUInt32LE(pos + 18)
+    const rawSize = zip.readUInt32LE(pos + 22)
+    const nameLen = zip.readUInt16LE(pos + 26)
+    const extraLen = zip.readUInt16LE(pos + 28)
+    const name = zip.toString('utf8', pos + 30, pos + 30 + nameLen)
+    const dataStart = pos + 30 + nameLen + extraLen
+    entries.push({ name, method, crc, rawSize, body: zip.subarray(dataStart, dataStart + compSize) })
+    pos = dataStart + compSize
+  }
+  const target = entries.find((e) => e.name === 'pkg/安装.cmd')
+  assert.ok(target, `应能按名字找到条目；实际有：${entries.map((e) => e.name).join(', ')}`)
+  const raw = target.method === 8 ? inflateRawSync(target.body) : target.body
+  assert.equal(raw.toString('utf8'), '@echo off\n', '内容要能解回来')
+  assert.equal(raw.length, target.rawSize, '未压缩长度要对得上')
+  assert.equal(target.crc, zipCrc32(raw), 'CRC32 要对得上')
+})
+
+check('zip 写入器：目录条目齐全（不依赖解压工具隐式建目录）', () => {
+  const zip = writeZipToBuffer([{ name: 'pkg/a/b/c.txt', data: Buffer.from('x') }])
+  for (const dir of ['pkg/', 'pkg/a/', 'pkg/a/b/']) {
+    assert.ok(zip.includes(Buffer.from(dir, 'utf8')), `缺少目录条目 ${dir}`)
+  }
 })
 
 console.log(`\n${'─'.repeat(56)}`)
