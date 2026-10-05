@@ -58,6 +58,7 @@ import {
   INTRO_MOTION,
   STATE_MAP,
   decideOnMotionFinish,
+  describeFlick,
   fadeProps,
   flickOffset,
   planParamTransition,
@@ -1154,7 +1155,9 @@ export function flick(level = 'light') {
   if (!model) return
   const preset = FLICK_PRESETS[level] ?? FLICK_PRESETS.light
   flickState = { t0: performance.now(), preset }
-  state.log(`被弹了一下（${level}，${preset.durationMs}ms；整体位移 ±${preset.move.px}px / 旋转 ±${preset.move.rot}rad）`)
+  // ⚠️ 文案必须走纯函数：`settle` 档的 `move` 是 null，
+  //    直接拼 `preset.move.px` 会抛 TypeError → 整个 flick 崩掉（踩过）
+  state.log(describeFlick(level, preset))
 }
 
 /**

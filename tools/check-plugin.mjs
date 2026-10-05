@@ -23,6 +23,7 @@ import {
   INTRO_MOTION,
   STATE_MAP,
   decideOnMotionFinish,
+  describeFlick,
   fadeProps,
   flickOffset,
   planParamTransition,
@@ -2011,6 +2012,22 @@ check('拖动松手给"秋千余摆 + 眨一下眼" 【用户："弹一下并不
   assert.ok(FLICK_PRESETS.settle.durationMs > FLICK_PRESETS.light.durationMs, '余摆要比弹更悠长')
   assert.ok(FLICK_PRESETS.settle.freqHz < FLICK_PRESETS.light.freqHz, '余摆频率要更低（钟摆感）')
   assert.ok(FLICK_PRESETS.settle.amp.Param23 > 0, '要有秋千摇晃（她是坐在秋千上的）')
+})
+
+check('每一档的启动文案都能安全生成 【settle 的 move 是 null，拼字符串会崩】', () => {
+  // 真实 bug：`flick()` 里直接拼 `preset.move.px`，而 settle 档 `move: null`
+  // → `null.px` 抛 TypeError → flick 中途崩 → blink 执行不到
+  // → 表现是"拖动松手完全无动作"（用户实测）✗
+  for (const [level, preset] of Object.entries(FLICK_PRESETS)) {
+    let text = null
+    assert.doesNotThrow(() => {
+      text = describeFlick(level, preset)
+    }, `${level} 档的文案生成不能抛异常`)
+    assert.ok(typeof text === 'string' && text.includes(`${preset.durationMs}ms`), `${level} 档文案内容不对：${text}`)
+  }
+  // settle（无整体位移）要明确写出来，别写成一个假的 0px
+  assert.ok(describeFlick('settle', FLICK_PRESETS.settle).includes('整体不动'), 'settle 应说明"整体不动"')
+  assert.ok(describeFlick('light', FLICK_PRESETS.light).includes('整体位移'), 'light 应说明整体位移')
 })
 
 // ─────────────────────────────────────────────────────────────

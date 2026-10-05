@@ -240,8 +240,26 @@ export const FLICK_PRESETS = {
     freqHz: 1.5,
     decayMs: 620,
     move: null,
-    amp: { Param23: 9, Param24: 9, Param19: 5, Param20: 5, ParamBodyAngleZ: 2 },
+    amp: { Param23: 14, Param24: 14, Param19: 8, Param20: 8, ParamBodyAngleZ: 4 },
   },
+}
+
+/**
+ * 「被弹/余摆」的启动日志文案。
+ *
+ * ⚠️ 抽成纯函数是被一个真实 bug 逼的：原来文案直接写在 `flick()` 里，
+ *    写成 `` `…整体位移 ±${preset.move.px}px…` `` —— 而 `settle` 档的 `move` 是 **null** ✗
+ *    → `null.px` 抛 TypeError → `flick()` 中途崩掉 → 后面的 `blink()` 执行不到，
+ *    表现就是"拖动松手完全无动作"（日志里也没有 settle 那行）✓
+ *    抽出来之后自测可以**遍历所有档位**验证"文案一定能生成" ✓
+ *
+ * @param {string} level 档位名
+ * @param {{durationMs:number, move?:{px:number,rot:number}|null}} preset
+ */
+export function describeFlick(level, preset) {
+  const move = preset?.move
+  const shape = move ? `整体位移 ±${move.px}px / 旋转 ±${move.rot}rad` : '整体不动（只有内部余摆）'
+  return `被弹了一下（${level}，${preset?.durationMs}ms；${shape}）`
 }
 
 /**
