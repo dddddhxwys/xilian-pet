@@ -86,7 +86,7 @@ console.log('[launch] ELECTRON_RUN_AS_NODE 已删除 =', !('ELECTRON_RUN_AS_NODE
 // 不加载任何远程内容，renderer 沙箱在这里不是主要防线。你自己终端里跑则会走默认沙箱。
 const relaxFlags = []
 if (process.env.PET_FORCE_NO_SANDBOX === '1') {
-  relaxFlags.push('--no-sandbox', '--disable-gpu')
+  relaxFlags.push('--no-sandbox')
   console.log('[launch] PET_FORCE_NO_SANDBOX=1，直接使用放宽参数')
 } else {
   // stdio: 'ignore' 是刻意的 —— 受限沙箱下管道 stdio 会 EPERM，而我们只需要退出码
@@ -94,10 +94,28 @@ if (process.env.PET_FORCE_NO_SANDBOX === '1') {
   if (probe.status === 0) {
     console.log('[launch] Chromium 沙箱探测通过，使用默认沙箱设置')
   } else {
-    relaxFlags.push('--no-sandbox', '--disable-gpu')
+    relaxFlags.push('--no-sandbox')
     console.log(`[launch] Chromium 沙箱探测失败（exit=${probe.status}）→ 自动追加 ${relaxFlags.join(' ')}`)
     console.log('[launch] 原因：受限令牌下 Chromium 无法初始化自带沙箱；宠物只加载本地文件，风险可控')
   }
+}
+
+/**
+ * ⚠️ 刻意**不再自动加 `--disable-gpu`**。
+ *
+ * 原来是 `['--no-sandbox', '--disable-gpu']` 一起加，但 `--disable-gpu` 会把渲染
+ * 压到软件路径（SwiftShader），而渲染端要靠**回读 WebGL 画布的 alpha** 生成
+ * "哪里算她的身体"的掩码（`live2d.readAlpha` → 250ms 一次）。
+ * 软件路径下这个回读会残缺 → 掩码只覆盖一部分身体
+ * → 症状正是用户实机报的"**只有一部分可以拖动，多次拖动之后完全不能拖动**"。
+ *
+ * 探测通过与否只跟 `--no-sandbox` 有关（上面注释也写了）；
+ * GPU 起不来时 Chromium 自己会优雅退到软件渲染，不需要我们提前把它按死。
+ * 真要复现那条软件路径排障，用 `PET_DISABLE_GPU=1` 显式打开。
+ */
+if (process.env.PET_DISABLE_GPU === '1') {
+  relaxFlags.push('--disable-gpu')
+  console.log('[launch] PET_DISABLE_GPU=1 → 追加 --disable-gpu（仅排障；会让掩码回读不可靠）')
 }
 
 if (checkOnly) {
@@ -113,7 +131,8 @@ const child = spawn(
     ...relaxFlags,
     `--user-data-dir=${userDataDir}`,
     join(packageDir, 'main.js'),
-    ...process.argv.slice(2),
+    // --hit-debug / --check 是我们自己的开关，不能漏给 Electron
+    ...process.argv.slice(2).filter((a) => !['--check', '--hit-debug'].includes(a)),
   ],
   {
     stdio: 'inherit',

@@ -3002,6 +3002,26 @@ check('拖拽链路：移动要续期 + 复位要通知渲染端 + 失焦复位�
   assert.ok(stale >= 12000, `看门狗阈值 ${stale}ms 太小：定时器一被拖慢就会在拖拽进行中误杀`)
 })
 
+check('启动器不能默认加 `--disable-gpu`（会把掩码回读压到软件路径）', () => {
+  // ⚠️ 用户实机报"只有一部分可以拖动，多次拖动之后完全不能拖动"。
+  //    根因链：沙箱探测失败 → 自动追加 `--disable-gpu` → 渲染走 SwiftShader 软件路径
+  //    → 渲染端回读 WebGL 画布 alpha（掩码的唯一来源）残缺 → 只有一部分身体算"命中"。
+  //    探测通过与否只跟 `--no-sandbox` 有关，GPU 起不来 Chromium 自己会优雅退让。
+  const src = readFileSync(new URL('../packages/pet-shell/scripts/launch.mjs', import.meta.url), 'utf8')
+
+  const probeElse = src.match(/\} else \{\s*relaxFlags\.push\(([^)]*)\)/)
+  assert.ok(probeElse, '应能定位"探测失败 → 放宽参数"的分支')
+  assert.ok(!probeElse[1].includes('disable-gpu'), '探测失败的分支里不能加 --disable-gpu')
+
+  const forced = src.match(/PET_FORCE_NO_SANDBOX === '1'[\s\S]{0,120}?relaxFlags\.push\(([^)]*)\)/)
+  assert.ok(forced, '应能定位 PET_FORCE_NO_SANDBOX 分支')
+  assert.ok(!forced[1].includes('disable-gpu'), 'PET_FORCE_NO_SANDBOX 分支里也不能加 --disable-gpu')
+
+  const guard = src.indexOf("PET_DISABLE_GPU === '1'")
+  const push = src.indexOf("push('--disable-gpu')")
+  assert.ok(guard > 0 && push > guard, '--disable-gpu 只允许在 PET_DISABLE_GPU 显式开启时才加')
+})
+
 console.log(`\n${'─'.repeat(56)}`)
 console.log(`通过 ${passed} 项，失败 ${failed} 项`)
 if (warnings.length > 0) console.log(`插件告警 ${warnings.length} 条：\n  ${warnings.slice(0, 5).join('\n  ')}`)

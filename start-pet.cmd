@@ -56,6 +56,15 @@ if not defined PET_NODE (
 echo [start] node: %PET_NODE%
 echo.
 
+rem --hit-debug: log one line per second with cursor / window / mask coordinates and
+rem the sampled alpha. This is how "only part of her can be dragged" gets pinned down
+rem (the line shows exactly which part the hit test considers transparent).
+if "%~1"=="--hit-debug" (
+  set "PET_HIT_DEBUG=1"
+  echo [start] hit-debug ON - details go into packages\pet-shell\.state\pet.log
+  echo.
+)
+
 "%PET_NODE%" "packages\pet-shell\scripts\launch.mjs" %*
 
 set "CODE=%ERRORLEVEL%"

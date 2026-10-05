@@ -585,6 +585,15 @@ const DRAG_STALE_MS = 15000
 const DRAG_BLUR_GRACE_MS = 2500
 let lastIgnore = null
 let ignoreLogs = 0
+/** 掩码覆盖率（-1 = 还没收到）；用来判断掩码是不是残缺/空的 */
+let maskCoverage = -1
+/**
+ * 掩码几乎全透明 → **弃用它**，整窗可交互。
+ * 为什么需要这条：掩码是"哪里算她的身体"的唯一依据，一旦渲染端读出来的 alpha
+ * 和屏幕画面不一致（软件渲染回读残缺 / DPR 变化 / 模型降级成占位图），
+ * 结果就是"只有一部分能拖、最后完全拖不动" —— 比挡住一点桌面严重得多。
+ */
+let maskUnusable = false
 
 /** 续期：拖拽还在继续（渲染端定时器 / 每一次实际移动都调它） */
 function renewDrag() {
@@ -628,7 +637,7 @@ function startHitTestLoop(win) {
       log(`⚠️ 拖拽态卡住 ${silent}s 没有续期（松手丢了 / 渲染端卡了）→ 强制复位，否则窗口会一直吞掉点击`)
       cancelDrag(win, 'stale')
     }
-    if (draggingNow) {
+    if (draggingNow || maskUnusable) {
       applyIgnore(win, false)
       return
     }
@@ -804,6 +813,33 @@ app.whenReady().then(async () => {
   log(`DSH=${DSH_URL} prefix=${ROUTE_PREFIX} state=${statePath}`)
   log(`构建指纹 ${buildStamp()}（用来确认"到底重启到新代码没有"）`)
 
+  // ── 环境指纹 ──────────────────────────────────────────────────────
+  // 为什么必须记：同一份代码"这台机器正常、那台机器只有一部分能拖"，
+  // 差异只可能在**渲染后端 / 显示缩放 / DPR** 上。这几行 + 掩码覆盖率
+  // 合起来，一个 pet.log 就能定位，不用来回问对方"你屏幕缩放多少"。
+  try {
+    const displays = screen.getAllDisplays()
+    log(
+      `显示：${displays.length} 个 · ` +
+        displays
+          .map((d) => `${d.size.width}×${d.size.height}@${d.scaleFactor}x${d.internal ? '(内)' : ''}`)
+          .join(' / '),
+    )
+  } catch (error) {
+    log(`显示信息读取失败：${error.message}`)
+  }
+  log(`Electron ${process.versions.electron} / Chromium ${process.versions.chrome}`)
+  log(`启动参数：${process.argv.slice(1).join(' ') || '(无)'}`)
+  try {
+    // webgl=disabled / software 就说明走了软件渲染 —— 那正好是"回读 alpha 不可靠"的高危场景
+    const gpu = app.getGPUFeatureStatus?.()
+    if (gpu && typeof gpu === 'object') {
+      log(`GPU：${Object.entries(gpu).map(([k, v]) => `${k}=${v}`).join(' ')}`)
+    }
+  } catch (error) {
+    log(`GPU 状态读取失败：${error.message}`)
+  }
+
   registerModelProtocol()
   const settings = findModelSettings()
   if (settings) {
@@ -830,6 +866,30 @@ app.whenReady().then(async () => {
     if (mask && mask.width > 0 && mask.height > 0 && mask.data?.length === mask.width * mask.height) {
       if (!alphaMask) log(`收到 alpha 掩码 ${mask.width}×${mask.height}，命中测试交给主进程轮询光标`)
       alphaMask = mask
+      // ── 掩码覆盖率 ────────────────────────────────────────────────
+      // 这是"只有一部分能拖 / 最后完全拖不动"的**直接判据**：
+      // 覆盖率明显偏低 = 渲染端读出来的 alpha 和屏幕上的画面不一致
+      // （软件渲染下 WebGL 回读残缺、DPR 变化导致映射错位、模型没加载成占位图…）。
+      // 250ms 一次不能刷屏，所以只在变化超过 5 个百分点时打一行。
+      let opaque = 0
+      for (let i = 0; i < mask.data.length; i++) if (mask.data[i] >= HIT_ALPHA_THRESHOLD) opaque++
+      const coverage = opaque / mask.data.length
+      if (maskCoverage < 0 || Math.abs(coverage - maskCoverage) > 0.05) {
+        maskCoverage = coverage
+        log(`掩码覆盖率 ${(coverage * 100).toFixed(1)}%（${mask.width}×${mask.height}，alpha 阈值 ${HIT_ALPHA_THRESHOLD}）`)
+      }
+      // 兜底：几乎全透明比"边缘点不到"糟糕得多（**整只都拖不动**）
+      // → 退化为整窗可交互。代价是她会挡住 260×300 范围内的桌面点击，
+      //   但那比"完全没法交互"好，而且日志会明确记下这次降级。
+      const unusable = coverage < 0.005
+      if (unusable !== maskUnusable) {
+        maskUnusable = unusable
+        log(
+          unusable
+            ? '⚠️ 掩码几乎全透明 → 退化为**整窗可交互**（否则整只都点不到/拖不动）'
+            : '掩码恢复正常 → 恢复按掩码判穿透',
+        )
+      }
       // UI 矩形与掩码同一批送来（渲染端每 250ms 刷一次），一起更新
       uiRects = (Array.isArray(mask.uiRects) ? mask.uiRects : []).filter(
         (r) => r && [r.x, r.y, r.w, r.h].every((v) => Number.isFinite(v)),
