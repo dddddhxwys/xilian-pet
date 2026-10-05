@@ -174,6 +174,52 @@ export function propFadePhases(mapped, propIds) {
 }
 
 /**
+ * 「被手指弹了一下」的阻尼振荡 —— 纯函数，便于自测。
+ *
+ * 用户要求：单击秋千 → **整个模型弹一下**，像被手指弹了似的（选"角色本体会颤"、"轻"）。
+ *
+ * 波形：`e^(-t/decay) · sin(2πft)`，再乘各自的幅度。
+ *  - 起手必须是 0（不能"啪"地跳到位）→ `sin(0)=0` ✓
+ *  - 结尾必须衰减到 ~0（否则松手时会留位移）→ `e^(-∞)=0` ✓
+ *
+ * @param {number} elapsedMs 从被弹开始的毫秒数
+ * @param {{freqHz:number, decayMs:number}} preset
+ * @returns {number} -1..1 的位移倍率（乘幅度后加到参数上）
+ */
+export function flickOffset(elapsedMs, preset) {
+  if (!(elapsedMs >= 0)) return 0
+  const decay = Math.exp(-elapsedMs / preset.decayMs)
+  const wave = Math.sin((2 * Math.PI * preset.freqHz * elapsedMs) / 1000)
+  return decay * wave
+}
+
+/**
+ * 三档力度。**每个参数单独给幅度**（模型角度参数的单位是度，正常范围 ±30）。
+ *
+ * 分两处加：身体/头部（整体颤）+ 秋千与腿脚摇晃（秋千跟着弹）。
+ */
+export const FLICK_PRESETS = {
+  light: {
+    durationMs: 600,
+    freqHz: 3.3,
+    decayMs: 170,
+    amp: { ParamAngleZ: 7, ParamBodyAngleZ: 4, ParamBodyAngleX: 3, Param23: 7, Param24: 7, Param19: 5, Param20: 5 },
+  },
+  medium: {
+    durationMs: 1000,
+    freqHz: 3.0,
+    decayMs: 280,
+    amp: { ParamAngleZ: 12, ParamBodyAngleZ: 7, ParamBodyAngleX: 5, Param23: 12, Param24: 12, Param19: 8, Param20: 8 },
+  },
+  strong: {
+    durationMs: 1500,
+    freqHz: 2.8,
+    decayMs: 420,
+    amp: { ParamAngleZ: 18, ParamBodyAngleZ: 11, ParamBodyAngleX: 8, Param23: 18, Param24: 18, Param19: 12, Param20: 12 },
+  },
+}
+
+/**
  * @param {object} p
  * @param {number|null} p.currentMotion 目前记录的动作下标（startMotion 时写入）
  * @param {string} p.currentState       桌宠状态名

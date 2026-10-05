@@ -19,10 +19,12 @@ import { apply, inject as pluginInject } from '../packages/pet-plugin/index.js'
 import { contentBand, hitTest, insideAnyRect } from '../packages/pet-shell/hit-test.js'
 import {
   BASE_MOTION,
+  FLICK_PRESETS,
   INTRO_MOTION,
   STATE_MAP,
   decideOnMotionFinish,
   fadeProps,
+  flickOffset,
   planParamTransition,
   propFadePhases,
   propTargetsFor,
@@ -1946,6 +1948,30 @@ check('手部过渡必须以"上次写下的值"为起点 【否则两段交界�
     src.includes('if (handMix === null) lastHandValues = { ...(lastForce ?? {}) }'),
     '起过渡时要用上一状态压过的值兜底（启动时可能还没渲染过）',
   )
+})
+
+check('「被弹一下」的阻尼振荡：起手为 0、真会振荡、结尾归零', () => {
+  // 用户要求：点秋千 → "整个模型弹一下，像被手指弹了似的"（选"轻"）
+  const p = FLICK_PRESETS.light
+  // ① 起手必须是 0：不能"啪"地跳到位
+  assert.equal(flickOffset(0, p), 0, '起手必须为 0')
+  // ② 真的来回振荡（正负都有）
+  const samples = []
+  for (let t = 0; t <= p.durationMs; t += 5) samples.push(flickOffset(t, p))
+  const peak = Math.max(...samples.map((v) => Math.abs(v)))
+  assert.ok(peak > 0.5, `峰值要明显（实际 ${peak.toFixed(2)}）`)
+  assert.ok(
+    samples.some((v) => v > 0.1) && samples.some((v) => v < -0.1),
+    '必须正负都有 —— 否则是"推一下"不是"弹一下"',
+  )
+  // ③ 结尾要基本归零（否则松手时留着位移，看起来像卡住）
+  assert.ok(Math.abs(flickOffset(p.durationMs, p)) < 0.15, '结尾应基本归零')
+  // ④ 越界输入不乱动
+  assert.equal(flickOffset(-1, p), 0)
+  assert.equal(flickOffset(NaN, p), 0)
+  // 三档力度必须真的递增（别手滑写反）
+  assert.ok(FLICK_PRESETS.light.durationMs < FLICK_PRESETS.medium.durationMs)
+  assert.ok(FLICK_PRESETS.medium.durationMs < FLICK_PRESETS.strong.durationMs)
 })
 
 // ─────────────────────────────────────────────────────────────

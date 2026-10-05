@@ -231,14 +231,37 @@ window.addEventListener('mousedown', (event) => {
   document.body.style.cursor = 'grabbing'
 })
 
+/**
+ * 秋千区判定 —— 她身体**两侧的翅膀/秋千**。
+ *
+ * 判据：x 偏离画布中线的距离超过 `SWING_ZONE_RATIO × 画布宽`。
+ * ⚠️ 用**比例**而不是固定像素：窗口宽度、构图缓存、DPI 都可能变，比例才稳。
+ * ⚠️ 只在**不透明像素**上才会收到 click（主进程的 alpha 命中测试已经过滤），
+ *    所以这里不用再判 alpha —— 点空白处根本不会进来。
+ */
+const SWING_ZONE_RATIO = 0.22
+
+function isSwingZone(clientX) {
+  const width = document.getElementById('live2dCanvas')?.clientWidth ?? window.innerWidth
+  if (!(width > 0)) return false
+  return Math.abs(clientX - width / 2) > width * SWING_ZONE_RATIO
+}
+
 window.addEventListener('mouseup', (event) => {
   if (!dragging) return
   dragging = false
   api.setDragging(false)
   if (!live2dActive) img.classList.remove('squish')
   document.body.style.cursor = 'grab'
-  // 没怎么移动 → 这一次是「单击」：清未读
-  if (!movedFar) markRead()
+  if (movedFar) return // 拖过了，不算点击
+  // ── 左键分区互动 ───────────────────────────────────────────────
+  // 秋千区（两侧翅膀）→ 弹她一下（用户要求："像被手指弹了似的"）
+  if (isSwingZone(event.clientX)) {
+    live2d?.flick('light')
+    return
+  }
+  // 其它区域暂时仍是"清未读"（用户已决定去掉未读，等分区做完一起改）
+  markRead()
 })
 
 // 点右下角的未读徽标 = 清未读（徽标本身就是"未读"，直接点它最直观）
@@ -489,6 +512,14 @@ async function startLive2D() {
       api.log(`到达动作 ${info.snapshotAtMs}ms，请求截图`)
       api.snapshotNow()
     }, info.snapshotAtMs)
+  }
+  // 调试用：启动后自动弹她一下（PET_FORCE_FLICK=1）——
+  // 核对"被弹"的振荡是否生效，不必真的用鼠标去点秋千。
+  if (info.forceFlick) {
+    setTimeout(() => {
+      api.log('调试模式：自动弹一下')
+      live2d?.flick('light')
+    }, 3000)
   }
   // 调试用：启动后自动弹出操作面板（PET_FORCE_MENU=1），配合 PET_SNAPSHOT_MENU 拍面板。
   // 刻意等到 2.5s：要等 SSE 连上并收到带 tokens 的状态帧，拍出来才有真实数字。

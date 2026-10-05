@@ -54,10 +54,12 @@
 // 好让自测脱离 Electron 也能直接断言（本文件依赖 PIXI 全局，Node 里 import 不了）。
 import {
   BASE_MOTION,
+  FLICK_PRESETS,
   INTRO_MOTION,
   STATE_MAP,
   decideOnMotionFinish,
   fadeProps,
+  flickOffset,
   planParamTransition,
   propFadePhases,
 } from './motion-policy.js'
@@ -524,6 +526,9 @@ function applyState() {
     lastHandValues = { ...mapped.force }
     lastForce = { ...mapped.force }
   }
+  // 被弹的振荡：**最后叠加**（位置在动作/表情/物理之后），所以是在正常动作之上"颤一下" ✓
+  const flicked = stepFlick(performance.now())
+  if (flicked !== null) setParams(flicked)
   // 眨眼也在这里输出 —— 位置在动作之后，才能压过被动作冻结的眼睛参数
   applyBlink(performance.now())
 }
@@ -1112,6 +1117,50 @@ function stepHandPoseMix(now) {
   return out
 }
 
+/**
+ * 「被弹了一下」的当前状态（点秋千触发）。
+ * @type {{t0:number, preset:ReturnType<typeof Object>}|null}
+ */
+let flickState = null
+
+/**
+ * 弹她一下 —— 身体/头部/秋千一起做阻尼振荡（头发会跟物理甩）。
+ *
+ * 用户要求：单击秋千 → "整个模型弹一下，就像被人用手指弹了似的"，
+ * 选的是"角色本体会颤"（窗口不动）+ "轻"。
+ *
+ * @param {'light'|'medium'|'strong'} level
+ */
+export function flick(level = 'light') {
+  flickState = { t0: performance.now(), preset: FLICK_PRESETS[level] ?? FLICK_PRESETS.light }
+  state.log(`被弹了一下（${level}，${flickState.preset.durationMs}ms）`)
+}
+
+/**
+ * 每帧叠加振荡位移。
+ *
+ * ⚠️ 用 "读当前值 + 加位移" 而不是直接覆盖：
+ *    这些参数（身体角度、秋千摇晃）本来就是**动作在驱动**的，
+ *    覆盖掉就等于把动作停了 ✗ 叠加才是"在正常动作之上被弹了一下" ✓
+ *
+ * @returns {Record<string, number>|null} 本帧要写的参数
+ */
+function stepFlick(now) {
+  if (flickState === null) return null
+  const elapsed = now - flickState.t0
+  const { preset } = flickState
+  if (elapsed > preset.durationMs) {
+    flickState = null
+    return null
+  }
+  const offset = flickOffset(elapsed, preset)
+  const out = {}
+  for (const [id, amp] of Object.entries(preset.amp)) {
+    out[id] = readParamValue(id) + offset * amp
+  }
+  return out
+}
+
 /** 真正切动作。animate=false 表示"只是读到了现状"，不播入场动画 */
 function applyStateMotion(next, animate) {
   const mapped = STATE_MAP[next] ?? STATE_MAP.idle
@@ -1213,6 +1262,8 @@ window.xilianLive2D = {
   init,
   setState,
   fit,
+  /** 被弹一下（点秋千触发）；level = 'light' | 'medium' | 'strong' */
+  flick,
   /** 读回渲染画布的 alpha 通道，供命中测试使用（{ alpha, width, height }） */
   readAlpha,
   /** 供 alpha 掩码取样用的渲染画布（空白表示不可交互） */
