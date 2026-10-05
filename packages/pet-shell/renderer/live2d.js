@@ -504,74 +504,41 @@ const PART_ZONES = {
  */
 
 /**
- * 把"单位顶点坐标"折算到**窗口像素** —— 用 **alpha 掩码的内容框**做标定。
+ * 模型局部尺寸（像素）—— 单位顶点 ↔ 局部像素 的换算基准。
  *
- * ⚠️ 为什么不用 `model.toGlobal`：实测过，**对不上**。
- *    诊断数据：`width=291.4 pos=(-19,70) scale=0.0694`，顶点并集是 `(-0.477,-0.429)..(0.496,0.497)`
- *    （以**中心**为原点的归一化坐标），而 `toGlobal` 期望的是**画布像素**空间，
- *    中间还隔着模型容器自己的变换 → 直接换算得到的是退化成一个点的并集 ✗
- *
- * 改用"**内容框 ↔ 内容框**"标定：顶点并集(单位) 对 掩码不透明范围(窗口像素)。
- *    两者都是"她实际画出来的范围"，所以天然对齐 ✓ 完全自校准，
- *    不依赖 PIXI 的坐标系、也不怕以后构图逻辑改动 ✓
- *
- * @param {{left:number, top:number, width:number, height:number}} contentBox 掩码里的不透明范围（窗口 CSS 像素）
+ * ⚠️ 关系来自构图代码本身（`live2d.js` 的 `contentLocal` 计算）：
+ *     `windowX = localPx * scale + model.position.x`
+ *   而画层顶点是**以中心为原点的归一化值**（实测并集 ±0.48）：
+ *     `localPx = (unit + 0.5) * 局部尺寸`
+ *   ⇒ 命中测试要么两边都用局部像素、要么两边都用单位 —— **混用就是对不上** ✗
+ *     （我一开始正是拿"单位顶点"去比"局部像素的点击点"，所以越靠下越偏 ✗）
  */
-function unitMapper(contentBox) {
-  const core = state.model?.internalModel?.coreModel
-  if (!core || !contentBox || !(contentBox.width > 0) || !(contentBox.height > 0)) return null
-  const count = core.getDrawableCount?.() ?? 0
-  let minX = Infinity
-  let maxX = -Infinity
-  let minY = Infinity
-  let maxY = -Infinity
-  for (let d = 0; d < count; d++) {
-    const p = core.getDrawableVertexPositions?.(d)
-    const n = core.getDrawableVertexCount?.(d) ?? 0
-    if (!p || n < 1) continue
-    for (let v = 0; v < n; v++) {
-      const ux = p[v * 2]
-      const uy = p[v * 2 + 1]
-      if (ux < minX) minX = ux
-      if (ux > maxX) maxX = ux
-      if (uy < minY) minY = uy
-      if (uy > maxY) maxY = uy
-    }
-  }
-  if (!(maxX > minX) || !(maxY > minY)) return null
-  const sx = contentBox.width / (maxX - minX)
-  const sy = contentBox.height / (maxY - minY)
-  // ⚠️ 先取成局部变量再给箭头函数用 —— 直接写 `toUnit: (x) => (x - ox) / sx`
-  //    里的 `ox` 是**对象属性**、不在函数作用域里 → `ReferenceError: ox is not defined`（实测踩到）
-  const ox = contentBox.left - minX * sx
-  const oy = contentBox.top - minY * sy
-  return {
-    sx,
-    sy,
-    ox,
-    oy,
-    /** 窗口像素 → 单位顶点坐标 */
-    toUnit: (x, y) => ({ ux: (x - ox) / sx, uy: (y - oy) / sy }),
-    /** 单位顶点坐标 → 窗口像素 */
-    toWindow: (ux, uy) => ({ x: ox + ux * sx, y: oy + uy * sy }),
-  }
+function localPixelSize() {
+  const im = state.model?.internalModel
+  const w = im?.originalWidth ?? 0
+  const h = im?.originalHeight ?? 0
+  if (w > 0 && h > 0) return { w, h }
+  // 兜底：用模型单位尺寸（此时下面的换算退化成"单位 → 单位"，至少不会崩）
+  return { w: state.model?.width || 1, h: state.model?.height || 1 }
 }
 
-/** 点是否落在某个画层的三角形网格里（精确，不是包围盒）—— 全程用**单位顶点坐标**比 */
-function pointInDrawable(core, index, ux, uy) {
+/** 点是否落在某个画层的三角形网格里（精确，不是包围盒）—— 用**模型局部像素**比 */
+function pointInDrawable(core, index, x, y) {
   const positions = core.getDrawableVertexPositions?.(index)
   if (!positions) return false
   const vertexCount = core.getDrawableVertexCount?.(index) ?? 0
   if (vertexCount < 3) return false
   const indices = core.getDrawableVertexIndices?.(index)
-  const vx = (vi) => positions[vi * 2]
-  const vy = (vi) => positions[vi * 2 + 1]
+  const { w: sizeW, h: sizeH } = localPixelSize()
+  // 单位（±0.5，以中心为原点）→ 局部像素（0..尺寸）
+  const vx = (vi) => (positions[vi * 2] + 0.5) * sizeW
+  const vy = (vi) => (positions[vi * 2 + 1] + 0.5) * sizeH
   if (indices && indices.length >= 3) {
     for (let k = 0; k + 2 < indices.length; k += 3) {
       const a = indices[k]
       const b = indices[k + 1]
       const c = indices[k + 2]
-      if (inTriangle(ux, uy, vx(a), vy(a), vx(b), vy(b), vx(c), vy(c))) return true
+      if (inTriangle(x, y, vx(a), vy(a), vx(b), vy(b), vx(c), vy(c))) return true
     }
     return false
   }
@@ -608,22 +575,36 @@ export function debugAllParts() {
 }
 
 /**
+ * 窗口坐标 → **模型局部像素**（与 `pointInDrawable` 里的顶点同一坐标系）。
+ *
+ * ⚠️ 用 `model.toLocal()` —— 它和渲染用的是同一套变换 ✓
+ *    之前踩的坑不是 `toLocal` 本身，而是**把点击点换算到"单位"、却拿"单位顶点"去比** ✗
+ *    （单位顶点是"以中心为原点的归一化值"，得先 `(u+0.5)*局部尺寸` 才是局部像素）
+ */
+function toLocalPixels(clientX, clientY) {
+  try {
+    return state.model?.toLocal({ x: clientX, y: clientY }) ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
  * 调试专用：返回**最前面**那个命中的部件名，**不管它有没有配交互区**。
  *
  * 为什么需要：`hitPart()` 会跳过"没配区的部件"继续往后找 ✗
  * 排查"点了没反应"时必须知道"到底命中了谁" ✓
  */
-export function debugFrontPartName(clientX, clientY, contentBox) {
+export function debugFrontPartName(clientX, clientY) {
   const model = state.model
   const core = model?.internalModel?.coreModel
   if (!model || !core || !state.ready) return null
-  const mapper = unitMapper(contentBox)
-  if (!mapper) return null
-  const { ux, uy } = mapper.toUnit(clientX, clientY)
+  const local = toLocalPixels(clientX, clientY)
+  if (!local) return null
   const count = core.getDrawableCount?.() ?? 0
   for (let i = count - 1; i >= 0; i--) {
     if (core.getDrawableDynamicFlagIsVisible && !core.getDrawableDynamicFlagIsVisible(i)) continue
-    if (!pointInDrawable(core, i, ux, uy)) continue
+    if (!pointInDrawable(core, i, local.x, local.y)) continue
     const partId = core.getPartId?.(core.getDrawableParentPartIndex?.(i))
     return { partId, partName: PART_NAMES[partId] ?? partId, zone: PART_ZONES[partId] ?? null, drawable: i }
   }
@@ -635,17 +616,14 @@ export function debugFrontPartName(clientX, clientY, contentBox) {
  *
  * @param {number} clientX 窗口 CSS 像素
  * @param {number} clientY
- * @param {{left:number, top:number, width:number, height:number}} contentBox
- *        掩码里的不透明范围（窗口 CSS 像素）—— 由 pet.js 的 alpha 掩码算出来，作为标定基准
  * @returns {{zone: string, partId: string, drawable: number, partName: string}|null}
  */
-export function hitPart(clientX, clientY, contentBox) {
+export function hitPart(clientX, clientY) {
   const model = state.model
   const core = model?.internalModel?.coreModel
   if (!model || !core || !state.ready) return null
-  const mapper = unitMapper(contentBox)
-  if (!mapper) return null
-  const { ux, uy } = mapper.toUnit(clientX, clientY)
+  const local = toLocalPixels(clientX, clientY)
+  if (!local) return null
 
   const count = core.getDrawableCount?.() ?? 0
   // **从前往后**（z 序大的后画 = 在上面）→ 先测到谁就是谁。
@@ -654,7 +632,7 @@ export function hitPart(clientX, clientY, contentBox) {
   // 全部找完都没有配区的 → 什么都不发生 ✓（用户定：只有脸/头顶/秋千三个区）
   for (let i = count - 1; i >= 0; i--) {
     if (core.getDrawableDynamicFlagIsVisible && !core.getDrawableDynamicFlagIsVisible(i)) continue
-    if (!pointInDrawable(core, i, ux, uy)) continue
+    if (!pointInDrawable(core, i, local.x, local.y)) continue
     const partId = core.getPartId?.(core.getDrawableParentPartIndex?.(i))
     const zone = PART_ZONES[partId] ?? null
     if (zone === null) continue
@@ -667,12 +645,11 @@ export function hitPart(clientX, clientY, contentBox) {
  * 调试用：把每个"有交互区"的部件的**画层包围盒**换算成窗口像素列出来，方便和画面核对。
  * ⚠️ 只在 `PET_ZONE_DEBUG=1` 时用 —— 命中判定本身走的是三角形，这里只是给人看的。
  */
-export function debugZoneBoxes(contentBox) {
+export function debugZoneBoxes() {
   const model = state.model
   const core = model?.internalModel?.coreModel
   if (!model || !core || !state.ready) return []
-  const mapper = unitMapper(contentBox)
-  if (!mapper) return []
+  const { w: sizeW, h: sizeH } = localPixelSize()
   const count = core.getDrawableCount?.() ?? 0
   const boxes = []
   for (let i = 0; i < count; i++) {
@@ -687,13 +664,16 @@ export function debugZoneBoxes(contentBox) {
     let minY = Infinity
     let maxY = -Infinity
     for (let v = 0; v < vertexCount; v++) {
-      minX = Math.min(minX, positions[v * 2])
-      maxX = Math.max(maxX, positions[v * 2])
-      minY = Math.min(minY, positions[v * 2 + 1])
-      maxY = Math.max(maxY, positions[v * 2 + 1])
+      const px = (positions[v * 2] + 0.5) * sizeW
+      const py = (positions[v * 2 + 1] + 0.5) * sizeH
+      minX = Math.min(minX, px)
+      maxX = Math.max(maxX, px)
+      minY = Math.min(minY, py)
+      maxY = Math.max(maxY, py)
     }
-    const tl = mapper.toWindow(minX, minY)
-    const br = mapper.toWindow(maxX, maxY)
+    // 局部像素 → 窗口（和渲染同一套变换）
+    const tl = model.toGlobal({ x: minX, y: minY })
+    const br = model.toGlobal({ x: maxX, y: maxY })
     boxes.push({ zone, partId, partName: PART_NAMES[partId] ?? partId, x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y })
   }
   return boxes

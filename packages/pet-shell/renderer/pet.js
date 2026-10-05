@@ -164,7 +164,7 @@ function overOpaquePixel(clientX, clientY) {
  * 掩码里的**不透明范围**，换算成窗口 CSS 像素 —— 部件级命中测试的标定基准。
  *
  * 为什么要它：模型的画层顶点是"以中心为原点的归一化坐标"（实测并集 `-0.48..0.50`），
- * 和 PIXI 的坐标系换算**对不上**（详见 live2d.js 里 `unitMapper` 的注释）。
+ * （坐标换算的正确做法见 live2d.js 的 `localPixelSize` / `toLocalPixels` 注释）。
  * 而"她实际画出来的范围"这件事**两边都是同一个东西**：
  * 顶点并集（单位）↔ 掩码不透明范围（像素）→ 用这一个对应关系标定，
  * 天然对齐、完全自校准，也不怕以后构图逻辑改动 ✓
@@ -311,7 +311,7 @@ window.addEventListener('mouseup', (event) => {
   // ── 左键分区互动 ───────────────────────────────────────────────
   // 判定交给部件级命中测试；这一行日志是故意的：排查"点了没反应"时，
   // 看日志就知道是"没命中任何分区"还是"命中了但那个区还没配效果" ✓
-  const hit = live2d?.hitPart?.(event.clientX, event.clientY, contentBox()) ?? null
+  const hit = live2d?.hitPart?.(event.clientX, event.clientY) ?? null
   api.log(
     `[点击] (${Math.round(event.clientX)},${Math.round(event.clientY)}) → ` +
       (hit ? `${hit.partName}（${hit.zone}）` : '无分区'),
@@ -553,7 +553,7 @@ async function startLive2D() {
       ctx.clearRect(0, 0, overlay.width, overlay.height)
       ctx.lineWidth = 2
       ctx.font = 'bold 12px sans-serif'
-      const boxes = live2d?.debugZoneBoxes?.(contentBox()) ?? []
+      const boxes = live2d?.debugZoneBoxes?.() ?? []
       for (const b of boxes) {
         const color = COLORS[b.zone] ?? '#fff'
         ctx.strokeStyle = color
@@ -567,7 +567,7 @@ async function startLive2D() {
         // 端到端自检：取每个部件框的中心点，看**命中测试**实际返回哪个区。
         // 框只是画出来给人看的，真正决定行为的是 hitPart ✓ 这一步把整条链路验掉。
         const probes = boxes.map((b) => {
-          const hit = live2d?.hitPart?.(b.x + b.w / 2, b.y + b.h / 2, contentBox())
+          const hit = live2d?.hitPart?.(b.x + b.w / 2, b.y + b.h / 2)
           return `${b.partName}→${hit ? hit.zone : 'miss'}`
         })
         api.log(`[分区调试] 中心点命中自检：${probes.join('　')}`)
@@ -585,7 +585,7 @@ async function startLive2D() {
           for (let x = 0; x < window.innerWidth; x += step) {
             const px = x + step / 2
             const py = y + step / 2
-            const raw = live2d?.debugFrontPartName?.(px, py, contentBox())
+            const raw = live2d?.debugFrontPartName?.(px, py)
             row.push(raw ?? null)
             if (!raw) continue
             const e = parts.get(raw.partName) ?? {
@@ -626,6 +626,32 @@ async function startLive2D() {
           api.log(`[部件普查] ${row.map((r) => (r ? letterOf.get(r.partName) : ' ')).join('')}`)
         }
 
+        // ── 翅膀剖线 ────────────────────────────────────────────
+        // 用户："秋千的判定还是错的，靠下的部分一直都点不到"
+        // ⇒ 在左右两侧翅膀各取一条**竖线**，从上到下逐点看命中的是哪个部件。
+        //    这样一眼就能看出"翅膀下半部分归谁"，不用再猜 ✓
+        const box = contentBox()
+        if (box) {
+          // 单条剖线会漏（实测 x=46 那条只有上半段命中），所以横向多取几条
+          for (const ratio of [0.08, 0.14, 0.2, 0.26, 0.32, 0.68, 0.74, 0.8, 0.86, 0.92]) {
+            const colX = box.left + box.width * ratio
+            const seq = []
+            for (let y = box.top; y < box.top + box.height; y += 6) {
+              const raw = live2d?.debugFrontPartName?.(colX, y)
+              seq.push(raw ? raw.partName : '·')
+            }
+            const runs = []
+            for (const s of seq) {
+              const last = runs[runs.length - 1]
+              if (last && last.name === s) last.n++
+              else runs.push({ name: s, n: 1 })
+            }
+            api.log(
+              `[翅膀剖线] x=${String(Math.round(colX)).padStart(3)}(${Math.round(ratio * 100)}%) 上→下：` +
+                runs.map((r) => `${r.name}×${r.n}`).join(' → '),
+            )
+          }
+        }
         // ── 对账：模型**全部**部件 vs 我方的名字表 ────────────────
         // 用户质疑"部件名不可信"这个说法（"我认为是你从一开始就理解错了"）——
         // 那就把两边摆出来：模型运行时返回的 id 是什么、我方表里配的名字是什么、

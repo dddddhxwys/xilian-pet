@@ -2100,22 +2100,26 @@ check('部件级命中测试：三角形判定 + 分区接线 【点脸=墨镜 /
   assert.match(live2d, /Part29: 'head'/, '头顶')
   // 部件普查要基于 `debugFrontPartName`（**部件**，与有没有配区无关）——
   // 它回答的是"名字 ↔ 她身上哪一块"，不是"点在哪个区" ✓
-  assert.match(pet, /live2d\?\.debugFrontPartName\?\.\(px, py, contentBox\(\)\)/, '部件普查要用 debugFrontPartName')
+  assert.match(pet, /live2d\?\.debugFrontPartName\?\.\(px, py\)/, '部件普查要用 debugFrontPartName')
+  // ⚠️ **坐标必须两边同一套**（这是"靠下点不到"的真因）：
+  //    点击点用 `model.toLocal()` 换算到**模型局部像素**，
+  //    顶点则要 `(单位 + 0.5) × 局部尺寸` 也换算成局部像素。
+  //    曾经两边混用（单位顶点 vs 局部像素点击点）→ 越靠下偏得越多 ✗
+  assert.match(live2d, /function localPixelSize\(\)/, '要有"单位 → 局部像素"的换算基准')
+  assert.match(live2d, /\(positions\[vi \* 2\] \+ 0\.5\) \* sizeW/, '顶点必须换算成局部像素再比')
+  assert.match(live2d, /function toLocalPixels\(/, '点击点要用 toLocal 换算到局部像素')
+  assert.match(live2d, /\.toLocal\(\{ x: clientX, y: clientY \}\)/, 'toLocal 的参数是点击点')
+  assert.equal(/unitMapper/.test(live2d), false, '旧的"单位标定"必须删干净（就是它导致越靠下越偏）')
 
   // ③ 效果接线
   assert.match(pet, /face: \(\) => live2d\?\.pokeExpression\('sunglasses'/, '点脸 → 墨镜')
   assert.match(pet, /head: \(\) => live2d\?\.pokeExpression\('surprise'/, '点头顶 → 惊喜')
   assert.match(pet, /swing: \(\) => live2d\?\.flick\('light'\)/, '点秋千 → 弹一下')
 
-  // ④ 标定：必须用"掩码内容框"做基准。
-  //    踩过的坑：一开始想用 `model.toGlobal` 换算顶点 —— 实测对不上
-  //    （顶点是**以中心为原点**的归一化坐标，实测并集 `-0.477..0.496`；
-  //     而 toGlobal 期望画布像素空间，中间还隔着容器变换 → 并集退化成一点）
-  //    → 改成"内容框 ↔ 内容框"标定，两边都是"她实际画出来的范围"，天然对齐 ✓
-  assert.match(live2d, /function unitMapper\(contentBox\)/, '要有 unitMapper 且以内容框为基准')
-  assert.match(live2d, /export function hitPart\(clientX, clientY, contentBox\)/, 'hitPart 必须接收内容框')
-  assert.match(pet, /function contentBox\(\)/, 'pet.js 要从掩码算出内容框')
-  assert.match(pet, /live2d\?\.hitPart\?\.\(event\.clientX, event\.clientY, contentBox\(\)\)/, '点击必须把内容框传下去')
+  // ④ 坐标必须**两边同一套**（局部像素）—— 见上面 ③.5 的断言。
+  //    （旧方案"用掩码内容框把单位顶点折算成窗口"已删除：它导致越靠下越偏 ✗）
+  assert.match(pet, /function contentBox\(\)/, 'pet.js 仍需从掩码算内容框（普查/剖线用）')
+  assert.match(pet, /live2d\?\.hitPart\?\.\(event\.clientX, event\.clientY\)/, '点击直接把窗口坐标交给 hitPart')
 
   // ⑤ 旧的"x 偏离中线"估算必须彻底退休（两套判定并存会让行为说不清）
   assert.equal(/SWING_ZONE_RATIO/.test(pet), false, '旧的秋千估算常量必须删掉')
