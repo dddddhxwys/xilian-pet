@@ -26,6 +26,7 @@ import {
   describeFlick,
   fadeProps,
   flickOffset,
+  inTriangle,
   planParamTransition,
   propFadePhases,
   propTargetsFor,
@@ -2050,6 +2051,47 @@ check('每一档的启动文案都能安全生成 【settle 的 move 是 null，
 
 // ─────────────────────────────────────────────────────────────
 console.log('\n[5] 命中测试（外壳纯函数，不需要 Electron）')
+
+check('部件级命中测试：三角形判定 + 分区接线 【点脸=墨镜 / 点头顶=惊喜】', () => {
+  // 用户："点脸：墨镜。点头顶：惊喜"
+  // 判定是**部件级**的：cdi3 的具名部件（Part18 脸 / Part8 头发 / Part5 秋千…）
+  // + 画层三角形，而不是"竖直分段"那种估算 ✓
+
+  // ① 纯几何：点-三角形（命中 / 不命中 / 边界 / 退化）
+  assert.equal(inTriangle(0.25, 0.25, 0, 0, 1, 0, 0, 1), true, '内部应命中')
+  assert.equal(inTriangle(0.9, 0.9, 0, 0, 1, 0, 0, 1), false, '外部不应命中')
+  assert.equal(inTriangle(0.5, 0.5, 0, 0, 1, 0, 0, 1), true, '斜边上算命中（边界归内）')
+  assert.equal(inTriangle(0, 0, 0, 0, 0, 0, 0, 0), false, '退化三角形不能命中')
+
+  const live2d = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
+  const pet = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+
+  // ② 分区映射：脸 / 头发 / 秋千 各自归到正确的区
+  assert.match(live2d, /Part18: 'face'/, 'Part18（脸）必须映射到 face')
+  for (const part of ['Part8', 'Part7', 'Part9', 'Part10', 'Part30', 'Part22']) {
+    assert.match(live2d, new RegExp(`${part}: 'head'`), `${part}（头发/头饰/发）必须映射到 head`)
+  }
+  assert.match(live2d, /Part5: 'swing'/, 'Part5（秋千）必须映射到 swing')
+
+  // ③ 效果接线
+  assert.match(pet, /face: \(\) => live2d\?\.pokeExpression\('sunglasses'/, '点脸 → 墨镜')
+  assert.match(pet, /head: \(\) => live2d\?\.pokeExpression\('surprise'/, '点头顶 → 惊喜')
+  assert.match(pet, /swing: \(\) => live2d\?\.flick\('light'\)/, '点秋千 → 弹一下')
+
+  // ④ 标定：必须用"掩码内容框"做基准。
+  //    踩过的坑：一开始想用 `model.toGlobal` 换算顶点 —— 实测对不上
+  //    （顶点是**以中心为原点**的归一化坐标，实测并集 `-0.477..0.496`；
+  //     而 toGlobal 期望画布像素空间，中间还隔着容器变换 → 并集退化成一点）
+  //    → 改成"内容框 ↔ 内容框"标定，两边都是"她实际画出来的范围"，天然对齐 ✓
+  assert.match(live2d, /function unitMapper\(contentBox\)/, '要有 unitMapper 且以内容框为基准')
+  assert.match(live2d, /export function hitPart\(clientX, clientY, contentBox\)/, 'hitPart 必须接收内容框')
+  assert.match(pet, /function contentBox\(\)/, 'pet.js 要从掩码算出内容框')
+  assert.match(pet, /live2d\?\.hitPart\?\.\(event\.clientX, event\.clientY, contentBox\(\)\)/, '点击必须把内容框传下去')
+
+  // ⑤ 旧的"x 偏离中线"估算必须彻底退休（两套判定并存会让行为说不清）
+  assert.equal(/SWING_ZONE_RATIO/.test(pet), false, '旧的秋千估算常量必须删掉')
+  assert.equal(/isSwingZone/.test(pet), false, '旧的秋千估算函数必须删掉')
+})
 
 check('插件在线小点已从桌宠挪进操作面板 【用户："整合到菜单里面去"】', () => {
   // 用户 2026-10-05："把那个表示插件在线的小绿点整合到菜单里面去"。

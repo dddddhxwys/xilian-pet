@@ -1200,6 +1200,8 @@ app.whenReady().then(async () => {
       handDebug: process.env.PET_HAND_DEBUG === '1',
       // 启动后自动弹她一下（核对"被弹"的振荡，不必真的去点秋千）
       forceFlick: process.env.PET_FORCE_FLICK === '1',
+      // 把左键分区的部件框画出来（核对部件级命中测试的坐标变换 —— 这是它唯一的风险点）
+      zoneDebug: process.env.PET_ZONE_DEBUG === '1',
       // 从动作开始算起的截图时刻（0 = 不用这条路径）
       snapshotAtMs: Number(process.env.PET_SNAPSHOT_AT_MOTION_MS ?? 0),
       // 调试用：启动后自动展开右键菜单（配合 PET_SNAPSHOT 就能拍到菜单长什么样，

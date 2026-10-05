@@ -61,6 +61,7 @@ import {
   describeFlick,
   fadeProps,
   flickOffset,
+  inTriangle,
   planParamTransition,
   propFadePhases,
 } from './motion-policy.js'
@@ -408,6 +409,221 @@ function setExpression(name) {
  * @param {number} ms   停留时长
  * @returns {boolean} 是否真的应用了
  */
+/**
+ * ── 部件级命中测试（左键分区互动的地基）──────────────────────────────
+ *
+ * 用户问："可以区分昔涟头顶跟面部吗？" → **可以，而且能做部件级**。
+ *
+ * 依据（两条都不是猜的）：
+ *  ① `Cyrene.cdi3.json` 里有**具名部件表**：Part18 脸 / Part8 头发 / Part7 头饰 /
+ *     Part9,10 外侧发 / Part30 后发 / Part24 右手动作 / Part25 左手动作 /
+ *     Part27 右腿 / Part28 左腿 / Part5 秋千 …（中文名，直接可用）
+ *  ② vendored `cubism4.min.js` 提供 `getDrawableParentPartIndex(i)`（画层→部件）、
+ *     `getDrawableVertexPositions(i)` / `getDrawableVertexIndices(i)`（画层三角形）、
+ *     `getPartId(i)` —— 逐个在压缩代码里确认过 ✓
+ *
+ * 做法：点击点**逆变换到模型局部坐标**，再按**画层 z 序从前往后**做
+ * **点-三角形**判定（不是包围盒 —— 那样会把头发和脸混在一起）。
+ * 前发盖住额头的地方点下去算"头发"，露出来的才是"脸" ✓ 和她看到的画面一致 ✓
+ */
+const PART_NAMES = {
+  Part18: '脸',
+  Part8: '头发',
+  Part7: '头饰',
+  Part9: '外侧发1',
+  Part10: '外侧发2',
+  Part30: '后发',
+  Part22: '头发阴影',
+  Part24: '右手动作',
+  Part25: '左手动作',
+  Part27: '右腿',
+  Part28: '左腿',
+  Part26: '裙摆',
+  Part29: '后裙',
+  Part5: '秋千',
+  Part11: '眼睛',
+  Part6: '眉毛',
+  Part32: '嘴',
+  Part33: '嘴',
+  Part21: '腮红',
+  Part13: '白眼',
+  Part14: '左眼',
+  Part16: '右眼',
+  Part31: '背饰',
+  Part23: '身体',
+}
+
+/**
+ * 部件 → 交互区。未列出 = 点了没反应（继续往 z 序后面找）。
+ *
+ * 用户 2026-10-05 定的：**点脸 → 墨镜**、**点头顶 → 惊喜**。
+ * 头发/头饰/外侧发/后发/头发阴影 全归 `head` —— "头顶"在她身上就是这一片 ✓
+ */
+const PART_ZONES = {
+  Part18: 'face', // 脸 → 墨镜
+  Part8: 'head', // 头发
+  Part7: 'head', // 头饰
+  Part9: 'head', // 外侧发1
+  Part10: 'head', // 外侧发2
+  Part30: 'head', // 后发
+  Part22: 'head', // 头发阴影
+  Part5: 'swing', // 秋千 → 弹一下（比原来的"x 偏离中线"准得多）
+}
+
+/**
+ * 把"单位顶点坐标"折算到**窗口像素** —— 用 **alpha 掩码的内容框**做标定。
+ *
+ * ⚠️ 为什么不用 `model.toGlobal`：实测过，**对不上**。
+ *    诊断数据：`width=291.4 pos=(-19,70) scale=0.0694`，顶点并集是 `(-0.477,-0.429)..(0.496,0.497)`
+ *    （以**中心**为原点的归一化坐标），而 `toGlobal` 期望的是**画布像素**空间，
+ *    中间还隔着模型容器自己的变换 → 直接换算得到的是退化成一个点的并集 ✗
+ *
+ * 改用"**内容框 ↔ 内容框**"标定：顶点并集(单位) 对 掩码不透明范围(窗口像素)。
+ *    两者都是"她实际画出来的范围"，所以天然对齐 ✓ 完全自校准，
+ *    不依赖 PIXI 的坐标系、也不怕以后构图逻辑改动 ✓
+ *
+ * @param {{left:number, top:number, width:number, height:number}} contentBox 掩码里的不透明范围（窗口 CSS 像素）
+ */
+function unitMapper(contentBox) {
+  const core = state.model?.internalModel?.coreModel
+  if (!core || !contentBox || !(contentBox.width > 0) || !(contentBox.height > 0)) return null
+  const count = core.getDrawableCount?.() ?? 0
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  for (let d = 0; d < count; d++) {
+    const p = core.getDrawableVertexPositions?.(d)
+    const n = core.getDrawableVertexCount?.(d) ?? 0
+    if (!p || n < 1) continue
+    for (let v = 0; v < n; v++) {
+      const ux = p[v * 2]
+      const uy = p[v * 2 + 1]
+      if (ux < minX) minX = ux
+      if (ux > maxX) maxX = ux
+      if (uy < minY) minY = uy
+      if (uy > maxY) maxY = uy
+    }
+  }
+  if (!(maxX > minX) || !(maxY > minY)) return null
+  const sx = contentBox.width / (maxX - minX)
+  const sy = contentBox.height / (maxY - minY)
+  // ⚠️ 先取成局部变量再给箭头函数用 —— 直接写 `toUnit: (x) => (x - ox) / sx`
+  //    里的 `ox` 是**对象属性**、不在函数作用域里 → `ReferenceError: ox is not defined`（实测踩到）
+  const ox = contentBox.left - minX * sx
+  const oy = contentBox.top - minY * sy
+  return {
+    sx,
+    sy,
+    ox,
+    oy,
+    /** 窗口像素 → 单位顶点坐标 */
+    toUnit: (x, y) => ({ ux: (x - ox) / sx, uy: (y - oy) / sy }),
+    /** 单位顶点坐标 → 窗口像素 */
+    toWindow: (ux, uy) => ({ x: ox + ux * sx, y: oy + uy * sy }),
+  }
+}
+
+/** 点是否落在某个画层的三角形网格里（精确，不是包围盒）—— 全程用**单位顶点坐标**比 */
+function pointInDrawable(core, index, ux, uy) {
+  const positions = core.getDrawableVertexPositions?.(index)
+  if (!positions) return false
+  const vertexCount = core.getDrawableVertexCount?.(index) ?? 0
+  if (vertexCount < 3) return false
+  const indices = core.getDrawableVertexIndices?.(index)
+  const vx = (vi) => positions[vi * 2]
+  const vy = (vi) => positions[vi * 2 + 1]
+  if (indices && indices.length >= 3) {
+    for (let k = 0; k + 2 < indices.length; k += 3) {
+      const a = indices[k]
+      const b = indices[k + 1]
+      const c = indices[k + 2]
+      if (inTriangle(ux, uy, vx(a), vy(a), vx(b), vy(b), vx(c), vy(c))) return true
+    }
+    return false
+  }
+  // 没有索引（理论上不会）：退回画层包围盒
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  for (let v = 0; v < vertexCount; v++) {
+    minX = Math.min(minX, vx(v))
+    maxX = Math.max(maxX, vx(v))
+    minY = Math.min(minY, vy(v))
+    maxY = Math.max(maxY, vy(v))
+  }
+  return x >= minX && x <= maxX && y >= minY && y <= maxY
+}
+
+/**
+ * 命中哪个部件。
+ *
+ * @param {number} clientX 窗口 CSS 像素
+ * @param {number} clientY
+ * @param {{left:number, top:number, width:number, height:number}} contentBox
+ *        掩码里的不透明范围（窗口 CSS 像素）—— 由 pet.js 的 alpha 掩码算出来，作为标定基准
+ * @returns {{zone: string, partId: string, drawable: number, partName: string}|null}
+ */
+export function hitPart(clientX, clientY, contentBox) {
+  const model = state.model
+  const core = model?.internalModel?.coreModel
+  if (!model || !core || !state.ready) return null
+  const mapper = unitMapper(contentBox)
+  if (!mapper) return null
+  const { ux, uy } = mapper.toUnit(clientX, clientY)
+
+  const count = core.getDrawableCount?.() ?? 0
+  // **从前往后**（z 序大的后画 = 在上面）→ 先测到谁就是谁
+  for (let i = count - 1; i >= 0; i--) {
+    if (core.getDrawableDynamicFlagIsVisible && !core.getDrawableDynamicFlagIsVisible(i)) continue
+    if (!pointInDrawable(core, i, ux, uy)) continue
+    const partId = core.getPartId?.(core.getDrawableParentPartIndex?.(i))
+    const zone = PART_ZONES[partId] ?? null
+    // 命中"不响应"的部件（眼睛/嘴/裙摆…）→ 继续往后面找：
+    // 它们画在脸/头发上面，但点它们时用户心里点的还是"脸" ✓
+    if (zone === null) continue
+    return { zone, partId, drawable: i, partName: PART_NAMES[partId] ?? partId }
+  }
+  return null
+}
+
+/**
+ * 调试用：把每个"有交互区"的部件的**画层包围盒**换算成窗口像素列出来，方便和画面核对。
+ * ⚠️ 只在 `PET_ZONE_DEBUG=1` 时用 —— 命中判定本身走的是三角形，这里只是给人看的。
+ */
+export function debugZoneBoxes(contentBox) {
+  const model = state.model
+  const core = model?.internalModel?.coreModel
+  if (!model || !core || !state.ready) return []
+  const mapper = unitMapper(contentBox)
+  if (!mapper) return []
+  const count = core.getDrawableCount?.() ?? 0
+  const boxes = []
+  for (let i = 0; i < count; i++) {
+    const partId = core.getPartId?.(core.getDrawableParentPartIndex?.(i))
+    const zone = PART_ZONES[partId]
+    if (!zone) continue
+    const positions = core.getDrawableVertexPositions?.(i)
+    const vertexCount = core.getDrawableVertexCount?.(i) ?? 0
+    if (!positions || vertexCount < 3) continue
+    let minX = Infinity
+    let maxX = -Infinity
+    let minY = Infinity
+    let maxY = -Infinity
+    for (let v = 0; v < vertexCount; v++) {
+      minX = Math.min(minX, positions[v * 2])
+      maxX = Math.max(maxX, positions[v * 2])
+      minY = Math.min(minY, positions[v * 2 + 1])
+      maxY = Math.max(maxY, positions[v * 2 + 1])
+    }
+    const tl = mapper.toWindow(minX, minY)
+    const br = mapper.toWindow(maxX, maxY)
+    boxes.push({ zone, partId, partName: PART_NAMES[partId] ?? partId, x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y })
+  }
+  return boxes
+}
+
 export function pokeExpression(name, ms = 1700) {
   if (!state.model || !state.ready) return false
   setExpression(name)
@@ -1319,6 +1535,10 @@ window.xilianLive2D = {
   flick,
   /** 强制眨一下眼（拖动松手"看你一眼"用） */
   blink,
+  /** 部件级命中测试：返回 { zone, partId, partName, drawable } 或 null（左键分区互动用） */
+  hitPart,
+  /** 调试：列出有交互区的部件的画层包围盒（配合 PET_ZONE_DEBUG=1 和画面核对） */
+  debugZoneBoxes,
   /** 读回渲染画布的 alpha 通道，供命中测试使用（{ alpha, width, height }） */
   readAlpha,
   /** 供 alpha 掩码取样用的渲染画布（空白表示不可交互） */

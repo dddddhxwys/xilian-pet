@@ -18,6 +18,25 @@
  * 目前被测试锁住的设计决定："**running 不许用含「比嘘」的动作**"（见 running 的注释）。
  */
 
+/**
+ * 点是否在三角形内（同向叉积法；退化三角形返回 false）。
+ *
+ * 用途：**部件级命中测试**的最后一环 —— 把点击点和画层的三角形网格比。
+ * 放在这个纯模块里是为了能自测（live2d.js 依赖 PIXI 全局，Node 里跑不起来）✓
+ */
+export function inTriangle(px, py, ax, ay, bx, by, cx, cy) {
+  // ⚠️ 先排退化三角形：零面积时三个叉积全为 0 → 下面的"同向"判定会返回 true
+  //    → 一个退化的画层就能**吞掉点击** ✗（自测抓到的边界）
+  const area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay)
+  if (Math.abs(area) < 1e-12) return false
+  const d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by)
+  const d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy)
+  const d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay)
+  const hasNeg = d1 < 0 || d2 < 0 || d3 < 0
+  const hasPos = d1 > 0 || d2 > 0 || d3 > 0
+  return !(hasNeg && hasPos)
+}
+
 /** 待机/基础动作：荡秋千（180 秒长循环） */
 export const BASE_MOTION = 3
 

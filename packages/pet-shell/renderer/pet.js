@@ -160,6 +160,43 @@ function overOpaquePixel(clientX, clientY) {
   return alphaMap[v * mapW + u] > ALPHA_THRESHOLD
 }
 
+/**
+ * 掩码里的**不透明范围**，换算成窗口 CSS 像素 —— 部件级命中测试的标定基准。
+ *
+ * 为什么要它：模型的画层顶点是"以中心为原点的归一化坐标"（实测并集 `-0.48..0.50`），
+ * 和 PIXI 的坐标系换算**对不上**（详见 live2d.js 里 `unitMapper` 的注释）。
+ * 而"她实际画出来的范围"这件事**两边都是同一个东西**：
+ * 顶点并集（单位）↔ 掩码不透明范围（像素）→ 用这一个对应关系标定，
+ * 天然对齐、完全自校准，也不怕以后构图逻辑改动 ✓
+ */
+function contentBox() {
+  if (alphaMap === null) return null
+  const rect = maskSource().getBoundingClientRect()
+  let minU = Infinity
+  let maxU = -Infinity
+  let minV = Infinity
+  let maxV = -Infinity
+  for (let v = 0; v < mapH; v++) {
+    for (let u = 0; u < mapW; u++) {
+      if (alphaMap[v * mapW + u] <= ALPHA_THRESHOLD) continue
+      if (u < minU) minU = u
+      if (u > maxU) maxU = u
+      if (v < minV) minV = v
+      if (v > maxV) maxV = v
+    }
+  }
+  if (!(maxU >= minU) || !(maxV >= minV)) return null
+  const sx = rect.width / mapW
+  const sy = rect.height / mapH
+  return {
+    left: rect.left + minU * sx,
+    top: rect.top + minV * sy,
+    // +1：把最后一个不透明格子自身的宽度也算进去
+    width: (maxU - minU + 1) * sx,
+    height: (maxV - minV + 1) * sy,
+  }
+}
+
 function insideRect(el, clientX, clientY) {
   if (el.hidden) return false
   const r = el.getBoundingClientRect()
@@ -234,19 +271,22 @@ window.addEventListener('mousedown', (event) => {
 })
 
 /**
- * 秋千区判定 —— 她身体**两侧的翅膀/秋千**。
+ * 左键分区互动 —— 每区配什么效果。
  *
- * 判据：x 偏离画布中线的距离超过 `SWING_ZONE_RATIO × 画布宽`。
- * ⚠️ 用**比例**而不是固定像素：窗口宽度、构图缓存、DPI 都可能变，比例才稳。
- * ⚠️ 只在**不透明像素**上才会收到 click（主进程的 alpha 命中测试已经过滤），
- *    所以这里不用再判 alpha —— 点空白处根本不会进来。
+ * 用户 2026-10-05 定的：**点脸 → 墨镜**、**点头顶 → 惊喜**。
+ * 判定完全交给 `live2d.hitPart()`（部件级：cdi3 的具名部件 + 画层三角形，
+ * 详见 live2d.js 里那段注释）—— 这里只负责"哪个区给什么反应"。
+ *
+ * ⚠️ 为什么不再用"x 偏离中线"判秋千：那是估算 ✗
+ *    模型里 `Part5 秋千` 是**具名部件**，直接用它准得多，也不用维护一个比例常数 ✓
  */
-const SWING_ZONE_RATIO = 0.22
-
-function isSwingZone(clientX) {
-  const width = document.getElementById('live2dCanvas')?.clientWidth ?? window.innerWidth
-  if (!(width > 0)) return false
-  return Math.abs(clientX - width / 2) > width * SWING_ZONE_RATIO
+const ZONE_EFFECTS = {
+  // 脸 → 墨镜。给 2 秒：戴上去要看得清，但也不能一直戴着（那是"状态"不是"反应"）
+  face: () => live2d?.pokeExpression('sunglasses', 2000),
+  // 头顶（头发/头饰/外侧发/后发）→ 惊喜。短一点：惊喜是"一激灵"，拖长了就腻 ✓
+  head: () => live2d?.pokeExpression('surprise', 1200),
+  // 秋千 → 弹一下（用户："像被手指弹了似的"）
+  swing: () => live2d?.flick('light'),
 }
 
 window.addEventListener('mouseup', (event) => {
@@ -269,13 +309,19 @@ window.addEventListener('mouseup', (event) => {
     return
   }
   // ── 左键分区互动 ───────────────────────────────────────────────
-  // 秋千区（两侧翅膀）→ 弹她一下（用户要求："像被手指弹了似的"）
-  if (isSwingZone(event.clientX)) {
-    live2d?.flick('light')
+  // 判定交给部件级命中测试；这一行日志是故意的：排查"点了没反应"时，
+  // 看日志就知道是"没命中任何分区"还是"命中了但那个区还没配效果" ✓
+  const hit = live2d?.hitPart?.(event.clientX, event.clientY, contentBox()) ?? null
+  api.log(
+    `[点击] (${Math.round(event.clientX)},${Math.round(event.clientY)}) → ` +
+      (hit ? `${hit.partName}（${hit.zone}）` : '无分区'),
+  )
+  if (hit && ZONE_EFFECTS[hit.zone]) {
+    ZONE_EFFECTS[hit.zone]()
     return
   }
   // 其它区域：暂时什么都不做。
-  // 剩余分区（头 / 左手 / 右手 / 身体 / 腿）待做；未读移除后这里不再有"清未读"副作用。
+  // 剩余分区（左手 / 右手 / 身体 / 腿）待做；未读移除后这里也没有"清未读"副作用了 ✓
 })
 
 // ── 操作面板（独立小窗）─────────────────────────────────────────────
@@ -490,6 +536,47 @@ async function startLive2D() {
       api.snapshotNow()
     }, info.snapshotAtMs)
   }
+  // 调试用：把"有交互区"的部件框画在窗口上（PET_ZONE_DEBUG=1），和画面核对用。
+  // ⚠️ 命中判定走的是**三角形**，这里画的是包围盒 —— 只是给人看的。
+  //    框要是和她的头发/脸对不上，就说明坐标变换错了（这是这套判定唯一的风险点）。
+  if (info.zoneDebug) {
+    const overlay = document.createElement('canvas')
+    const dpr = 2
+    overlay.width = window.innerWidth * dpr
+    overlay.height = window.innerHeight * dpr
+    overlay.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:9'
+    document.body.append(overlay)
+    const ctx = overlay.getContext('2d')
+    const COLORS = { face: '#ff3b6b', head: '#3b8cff', swing: '#ffd23b' }
+    let logged = false
+    const paint = () => {
+      ctx.clearRect(0, 0, overlay.width, overlay.height)
+      ctx.lineWidth = 2
+      ctx.font = 'bold 12px sans-serif'
+      const boxes = live2d?.debugZoneBoxes?.(contentBox()) ?? []
+      for (const b of boxes) {
+        const color = COLORS[b.zone] ?? '#fff'
+        ctx.strokeStyle = color
+        ctx.fillStyle = color
+        ctx.strokeRect(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr)
+        ctx.fillText(b.partName, b.x * dpr + 3, b.y * dpr + 13)
+      }
+      if (!logged && boxes.length > 0) {
+        logged = true
+        api.log(`[分区调试] ${boxes.map((b) => `${b.partName}(${Math.round(b.x)},${Math.round(b.y)} ${Math.round(b.w)}×${Math.round(b.h)})`).join('　')}`)
+        // 端到端自检：取每个部件框的中心点，看**命中测试**实际返回哪个区。
+        // 框只是画出来给人看的，真正决定行为的是 hitPart ✓ 这一步把整条链路验掉。
+        const probes = boxes.map((b) => {
+          const hit = live2d?.hitPart?.(b.x + b.w / 2, b.y + b.h / 2, contentBox())
+          return `${b.partName}→${hit ? hit.zone : 'miss'}`
+        })
+        api.log(`[分区调试] 中心点命中自检：${probes.join('　')}`)
+      }
+      requestAnimationFrame(paint)
+    }
+    paint()
+  }
+
   // 调试用：反复弹她（PET_FORCE_FLICK=1）——
   // 核对"被弹"的效果，不必真的用鼠标去点秋千。
   // ⚠️ 刻意**反复弹**（600ms 一次、每 700ms 一发）：裁剪时机很难对准，
