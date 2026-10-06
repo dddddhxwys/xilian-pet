@@ -453,10 +453,10 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
   诊断用 `GET /debug/agents` 的 `titles` 字段一眼可见
 - 动作执行后**面板留着**（用户要求），方便连发
 
-### 审批：由桌宠同意（**默认关闭**）
+### 审批：由桌宠同意（**默认开启**，2026-10-06 起）
 
-开启后（`config.approval.viaPet: true`），agent 要执行需要审批的操作时，
-**一个审批小窗自己弹出来**（就在她旁边，第三个窗口）：
+默认就开（`config.approval.viaPet` 不写 = 开；**写 `false` 才是关**）。
+agent 要执行需要审批的操作时，**一个审批小窗自己弹出来**（就在她旁边，第三个窗口）：
 
 ```
 ┌──────────────────────────────────┐
@@ -501,8 +501,20 @@ ctx.sessionProjections.stateOf(session, 'tokenUsage').totals   // ← 就是四�
 **按 `callId` 关联**出 `arguments.command` 再显示。拿不到就明写"（拿不到命令原文，放行前请谨慎）"，
 绝不假装。
 
-**怎么关**：把 profile 配置里的 `approval.viaPet` 改回 `false`（或整段删掉）→ 重启 DSH。
+**怎么关**：在 profile 配置里写 `approval: { viaPet: false }` → 重启 DSH。
 此时插件**连 `ctx.on` 都不调**，审批链路一点不受影响（自测里专门有一条盯着这个）。
+
+**为什么默认改成开（2026-10-06 实机）**：原来是 opt-in（`viaPet === true` 才算开）。
+代价是凡从**手写 patch** 那条路装出来的人 —— 写进 profile 的 config 里根本没有
+`approval` 键 —— 审批**静默走 GUI**，从任何界面都看不出异常（朋友实测报的就是这个）。
+改成 opt-out 是**安全**的，因为桌宠没连上时会**立刻**交棒给 GUI：
+
+```js
+if (!approvalViaPet || connections.size === 0) return next()   // 行为与没开时完全一致
+```
+
+唯一的行为变化发生在**桌宠连着的时候**：请求会先交给桌宠，`timeoutMs`（默认 60 秒）
+内没人点才交棒给 GUI。
 
 ### 三条特殊规则（都是实测踩出来的）
 
@@ -700,7 +712,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 
 ```powershell
 # ① 活体在不在 + 代码修订号（code 变大且 uptimeMs 归零 = 新代码生效）
-#    → {"ok":true,"plugin":"xilian-pet","protocol":1,"code":26,...}
+#    → {"ok":true,"plugin":"xilian-pet","protocol":1,"code":27,...}
 
 # ② 生效的是哪一份 config —— /health 的 config 回声（2026-10-06 新增，正是为这个场景）
 #    → config:{pathPrefix,minHoldMs,captureRawShapes,bubbleMode,approvalViaPet,remindersEnabled}
@@ -810,7 +822,7 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 
 | 项 | 为什么 |
 |---|---|
-| **`code: 26` 在活体生效** | 源码热重载**实测无效**（见 §八）→ 必须**重启 DSH**。重启后 `/health` 应报 `code:26` 且 `uptimeMs` 归零 |
+| **`code: 27` 在活体生效** | 源码热重载**实测无效**（见 §八）→ 必须**重启 DSH**。重启后 `/health` 应报 `code:27` 且 `uptimeMs` 归零 |
 | **插件列表里那张卡片**（标题/描述/图标） | 只能你在 GUI 里肉眼看；元数据本身已由本次新增的 **6 项**自测守着 |
 | **`approval.viaPet: true` 真的还开着** | 已写进 profile 配置覆盖；重启后 `/health.config.approvalViaPet` 应报 `true`。真正"桌宠弹审批小窗"要等下一次审批才能看见 |
 | **确实没有双实例** | inspect 只看到**一条**行、`/health` 只有一个实例；但"开窗后会不会有两套 SSE"仍需看启动日志 |

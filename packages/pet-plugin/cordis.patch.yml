@@ -39,13 +39,18 @@
             probability: 0.35 # 概率门：到点了也只有这个概率真的提醒
           spend:
             everyTokens: 200000 # 每个会话每累计这么多 token 提一次
-        # ── 审批：由桌宠同意（整块可省略；**默认关闭**）────────────────
+        # ── 审批：由桌宠同意（整块可省略；**默认开启**，写 false 才关）────
         #
         # 开启后插件会以 prepend 抢在"转发给 GUI 的桥"前面应答 approval/request：
         #   · 桌宠点「允许」→ 返回 allowed-once；点「拒绝」→ 返回 rejected
-        #   · 桌宠没连上 / 超时 → 交棒给 GUI，由 DSH 界面照常处理
+        #   · **桌宠没连上 → 立刻交棒给 GUI**（行为与没开时完全一致，绝不把审批卡住）
+        #   · 桌宠连着但没人点 → 等 timeoutMs 之后交棒
         # ⚠️ 审批链是**顺序**的：我们持着请求时 GUI 的提示不会弹，
         #    所以要等 timeoutMs（默认 60 秒）才会交棒过去。
+        #
+        # 2026-10-06：默认由**关**改成**开**。原来 opt-in，结果凡是从手写 patch
+        # 那条路装出来的人（config 里没有 approval 键）审批都静默走 GUI —— 朋友实测
+        # 报的就是"审批没走桌宠"。写 false 即可完全关掉。
         approval:
-          viaPet: false # 改 true 才启用
+          viaPet: true # 写 false 可完全关掉
           timeoutMs: 60000 # 超时后交棒给 GUI（5s~300s）

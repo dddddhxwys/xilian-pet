@@ -955,17 +955,31 @@ check('apply 注册了 12 条 exact 路由 【未读移除后由 13 减为 12】
   assert.equal(routes.size, 12, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
 })
 
-check('审批探针默认完全不注册（连 ctx.on 都不调）', () => {
-  // ⚠️ 这是这个实验最重要的安全属性：不打开就一点链路都不碰。
+check('审批探针：不开启就完全不上链路（与"由桌宠同意"那个开关无关）', () => {
+  // ⚠️ 这是这个实验最重要的安全属性：探针不打开就一点链路都不碰。
   // 用**新建的** mock 判定，别用模块级 listeners（那是另一套 harness 的）。
+  // 这里显式 `viaPet: false`：本测试只关心**探针**，别让真审批应答者混进来当噪声
+  // （2026-10-06 语义反转后，不写 viaPet 就默认会挂 1 个真应答者）。
   const m = createMockCtx({ agents: () => undefined })
-  apply(m.ctx, { pathPrefix: '/xilian-pet', minHoldMs: 0, createUserMessage: stubCreateUserMessage })
-  assert.equal(m.listeners.get('approval/request')?.length ?? 0, 0, '默认不该订阅 approval/request')
+  apply(m.ctx, {
+    pathPrefix: '/xilian-pet',
+    minHoldMs: 0,
+    createUserMessage: stubCreateUserMessage,
+    approval: { viaPet: false },
+  })
+  assert.equal(m.listeners.get('approval/request')?.length ?? 0, 0, '探针没开就不该订阅 approval/request')
 })
 
 await checkAsync('审批探针：开启后只观察 + 交棒，从不返回决定', async () => {
   const m = createMockCtx({ agents: () => undefined })
-  const teardown = apply(m.ctx, { pathPrefix: '/xilian-pet', minHoldMs: 0, createUserMessage: stubCreateUserMessage })
+  // 显式关掉"由桌宠同意"：本测试只数**探针**那一个应答者
+  // （不写 viaPet 时它是默认开的，会让应答者变成 2 个）
+  const teardown = apply(m.ctx, {
+    pathPrefix: '/xilian-pet',
+    minHoldMs: 0,
+    createUserMessage: stubCreateUserMessage,
+    approval: { viaPet: false },
+  })
   const srv = http.createServer((req, res) => {
     const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
     if (route === undefined) {
@@ -1081,7 +1095,11 @@ await checkAsync('GET /health 回显**生效后**的配置（改 profile config 
   assert.equal(body.config.minHoldMs, 0, '必须是**生效后**的值（这里传了 0），不是代码默认 500')
   assert.equal(body.config.captureRawShapes, 20, '没传就该落到代码默认 20')
   assert.equal(body.config.bubbleMode, 'activity')
-  assert.equal(body.config.approvalViaPet, false, '默认 false：绝不擅自改变宿主原有的审批行为')
+  assert.equal(
+    body.config.approvalViaPet,
+    true,
+    '不配 approval.viaPet 时是 **true**（2026-10-06 opt-out；原来是 opt-in，害得手写安装的用户审批静默走 GUI）',
+  )
   assert.equal(body.config.remindersEnabled, true)
 })
 
@@ -1690,11 +1708,36 @@ await checkAsync('会话标题：/state 落上宿主 title 投影的值', async 
   }
 })
 
-check('审批：默认关闭 —— 不配 approval.viaPet 就完全不碰审批链路', () => {
+check('审批：默认**交给桌宠** —— 不配 approval.viaPet 也算开（opt-out）', () => {
+  // ⚠️ 2026-10-06 语义反转：原来是 opt-in（`viaPet === true`）。代价是凡从**手写 patch**
+  //    那条路装出来的人 —— 写进 profile 的 config 里根本没有 approval 键 —— 审批静默走
+  //    GUI，而朋友正是这么报的"审批没走桌宠"。现在：不写 = 开，显式 false 才是关。
   const m = createMockCtx({ agents: () => undefined })
   const teardown = apply(m.ctx, { pathPrefix: '/xilian-pet', minHoldMs: 0, createUserMessage: stubCreateUserMessage })
-  assert.equal(m.listeners.get('approval/request')?.length ?? 0, 0, '默认不该注册审批应答者')
-  teardown()
+  try {
+    assert.equal(
+      m.listeners.get('approval/request')?.length ?? 0,
+      1,
+      '不配 approval.viaPet 也该挂上审批应答者（opt-out 的默认）',
+    )
+  } finally {
+    teardown()
+  }
+})
+
+check('审批：显式写 `viaPet: false` 就完全不碰审批链路', () => {
+  const m = createMockCtx({ agents: () => undefined })
+  const teardown = apply(m.ctx, {
+    pathPrefix: '/xilian-pet',
+    minHoldMs: 0,
+    createUserMessage: stubCreateUserMessage,
+    approval: { viaPet: false },
+  })
+  try {
+    assert.equal(m.listeners.get('approval/request')?.length ?? 0, 0, '显式关掉后一个应答者都不许有')
+  } finally {
+    teardown()
+  }
 })
 
 await checkAsync('审批：没连桌宠 → 立刻交棒（行为与启用前一致，绝不卡住审批）', async () => {

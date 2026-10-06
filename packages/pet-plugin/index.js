@@ -86,7 +86,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 26
+const CODE_REVISION = 27
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -420,9 +420,16 @@ export function apply(ctx, config = {}) {
   //    必须 `{ prepend: true }` 抢到最前面（实测 approval/asked 与探针收到只差 1ms）；
   //  · 链路是**顺序**的：我们"持着"请求时 GUI 不会弹提示 → 所以必须能交棒。
   //
-  // ⚠️ 默认**关闭**（`config.approval.viaPet`）：不主动改变 DSH 原本的审批行为。
+  // ⚠️ 默认**开启**（`config.approval.viaPet`）—— 这是 **opt-out**：
+  //    · 不写 / 写 true → 交给桌宠
+  //    · 显式写 false → 完全不碰审批链路（一个应答者都不注册）
+  // 为什么 2026-10-06 从 opt-in 改成 opt-out（实机踩到）：opt-in 时，凡是从
+  // **手写 patch 那条路**装出来的人（写进 profile 的 config 里根本没有 approval 键）
+  // 审批都静默走 GUI —— 朋友测试"审批走桌宠"就是这样失败的，而他那边看不出任何异常。
+  // 改默认值**是安全的**：桌宠没连上时下面的 handler 会 `return next()` 立刻交棒，
+  // 行为与没开时完全一致（自测钉住了这条）。
   const approvalConfig = config.approval ?? {}
-  const approvalViaPet = approvalConfig.viaPet === true
+  const approvalViaPet = approvalConfig.viaPet !== false
   const approvalTimeoutMs = Math.max(
     1_000,
     Math.min(300_000, Number.isFinite(approvalConfig.timeoutMs) ? approvalConfig.timeoutMs : 60_000),
