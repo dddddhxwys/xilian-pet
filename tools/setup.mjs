@@ -20,14 +20,34 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { addPluginRow, hasPluginRow, ROW_ID } from './lib/patch-edit.mjs'
+import { addPluginRow, hasPluginRow, removePluginRow, ROW_ID } from './lib/patch-edit.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(here, '..')
 
 const argv = process.argv.slice(2)
 const DRY_RUN = argv.includes('--dry-run')
+/**
+ * `--official`：把手写 patch 行**删掉**，改走 DSH 官方的 bundle 注册路径。
+ *
+ * 为什么要有这个开关：手写 patch 能一键装（零依赖 ✓），但 DSH 的插件列表是照
+ * `profile/package.json` 的 `dsh.profile.bundles` 渲染的 —— 手写的行不在注册表里，
+ * **列表里看不到它** ✗。走官方安装（在界面里 install_bundle）才会登记进注册表 ✓。
+ *
+ * ⚠️ 两条路**只能走一条**：手写行不删就装官方包 → 插件被加载两次（两个实例、
+ *    两套 SSE、端口打架）✗
+ */
+const OFFICIAL = argv.includes('--official')
 const profileArg = argv.find((a) => a.startsWith('--profile='))?.split('=')[1]
+
+/** 读我们自己包的 name（官方注册表里比对用） */
+function readPackageName() {
+  try {
+    return JSON.parse(readFileSync(join(ROOT, 'packages', 'pet-plugin', 'package.json'), 'utf8')).name
+  } catch {
+    return '@local/xilian-pet-plugin'
+  }
+}
 
 const counts = { ok: 0, warn: 0, fail: 0 }
 /** 没找到 DSH profile（不是致命错误，见步骤①） */
@@ -114,10 +134,55 @@ if (!profileDir) {
 }
 line('')
 
-// ── ② 检查/写入插件行 ───────────────────────────────────────────────
-line('② 挂载 Host 插件')
+// ── ② 挂载 Host 插件 ───────────────────────────────────────────────
+// 两种路径：
+//   · 默认：手写 profile patch（**零依赖**，谁都能一键装；但 DSH 插件列表里看不到它）
+//   · --official：把手写行**删掉**，改走官方 bundle 注册（插件列表里才显示卡片）
+line(OFFICIAL ? '② 切到官方安装路径（bundle 注册）' : '② 挂载 Host 插件')
 if (!profileDir) {
   warn('跳过（上一步没找到 DSH profile）')
+} else if (OFFICIAL) {
+  const patchFile = join(profileDir, 'cordis.patch.yml')
+  const profilePkg = join(profileDir, 'package.json')
+  const pkgName = readPackageName()
+  // ① 先看官方注册表里有没有我们（官方安装会写进 package.json 的 dsh.profile.bundles）
+  let registered = false
+  try {
+    const pkg = JSON.parse(readFileSync(profilePkg, 'utf8'))
+    const bundles = pkg?.dsh?.profile?.bundles
+    registered = Array.isArray(bundles) && bundles.some((b) => b === pkgName)
+  } catch {
+    /* package.json 读不了/没有 → 当作未注册 */
+  }
+  // ② 手写行必须删掉，否则插件会被**加载两次**（两个实例、两套 SSE、端口打架）
+  const current = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : null
+  const removal = current === null ? { changed: false } : removePluginRow(current)
+  if (removal.changed && !DRY_RUN) {
+    const backup = `${patchFile}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`
+    try {
+      copyFileSync(patchFile, backup)
+      writeFileSync(patchFile, removal.text, 'utf8')
+      ok('已移除手写的插件行（并已备份）', `备份：${backup}`)
+    } catch (error) {
+      bad(`移除手写行失败：${error.code ?? ''} ${error.message}`, '  请在**你自己的终端**里重跑：node tools/setup.mjs --official')
+    }
+  } else if (removal.changed) {
+    warn('检测到手写行 —— 实际执行时会移除它（先备份）')
+  } else {
+    ok('没有手写行，无需清理')
+  }
+  // ③ 官方安装必须**在 DSH 界面里点**（我没有 plugin_manager 工具，不能替你写注册表）
+  if (registered) {
+    ok(`官方注册表里已有 ${pkgName}`, '插件列表里应该能看到「昔涟桌宠」')
+  } else {
+    warn(
+      `官方注册表里还没有 ${pkgName} —— 需要在 DSH 界面里装一次`,
+      '  DSH → 插件 / 扩展 → 安装 bundle（选本地目录）→ 选中这个文件夹：\n' +
+        `      ${join(ROOT, 'packages', 'pet-plugin')}\n` +
+        '  装完再重跑一次本命令确认（幂等，不会重复）。\n' +
+        '  ⚠️ 不要手改 profile 的 package.json —— 官方要求由 install_bundle 完成。',
+    )
+  }
 } else {
   const patchFile = join(profileDir, 'cordis.patch.yml')
   const entry = join(ROOT, 'packages', 'pet-plugin', 'index.js')

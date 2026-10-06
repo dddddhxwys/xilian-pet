@@ -30,7 +30,7 @@ import {
   rawToLocal,
 } from '../packages/pet-shell/hit-test.js'
 import { createSseLink } from '../packages/pet-shell/sse-link.js'
-import { addPluginRow, looksLikeProfilePatch, pluginRowSnippet } from './lib/patch-edit.mjs'
+import { addPluginRow, looksLikeProfilePatch, pluginRowSnippet, removePluginRow } from './lib/patch-edit.mjs'
 import { collectReleaseFiles, nodeRuntimeFiles, requiredInRelease, shouldDescend, shouldInclude } from './lib/release-files.mjs'
 import { writeZipToBuffer } from './lib/zip-writer.mjs'
 import {
@@ -3071,6 +3071,35 @@ check('命中映射必须用渲染端坐标系（renderer stage），不能用�
   assert.match(mainSrc, /winWidth: stageW/, 'hitTest 必须用送来的基准宽，不能用 b.width')
   assert.match(mainSrc, /winHeight: stageH/, 'hitTest 必须用送来的基准高，不能用 b.height')
   assert.ok(mainSrc.includes('≠ 渲染端舞台'), '两者不一致时要记一行（这就是"窗口被撑大"的证据）')
+})
+
+check('patch 移除：只删我们那一段，别的插件块一根头发都不能动', () => {
+  // ⚠️ 这是"切到官方安装路径"时的关键操作：手写行不删 → 插件被加载两次
+  //    （两个实例、两套 SSE、端口打架）。删错则会把别人的插件弄没。
+  const src = SAMPLE_PATCH + pluginRowSnippet({ pluginEntry: 'C:/x/packages/pet-plugin/index.js', config: { pathPrefix: '/xilian-pet' } })
+  const res = removePluginRow(src)
+  assert.equal(res.changed, true, '应当移除')
+  assert.equal(res.removed, 1, '只应移除一段')
+  assert.ok(!res.text.includes('xilian-pet'), '我们的行要删干净')
+  assert.ok(res.text.includes('some-other-plugin'), '别人的 - insert 块必须原样保留')
+  assert.ok(res.text.includes('ui-chat'), '普通插件行也要保留')
+  assert.equal(res.text, SAMPLE_PATCH.trimEnd() + '\n', '除我们那段外应逐字节不变')
+})
+
+check('patch 移除：幂等 + 没有我们的行时不动它', () => {
+  const none = removePluginRow(SAMPLE_PATCH)
+  assert.equal(none.changed, false, '没有我们的行就不该改')
+  assert.equal(none.text, SAMPLE_PATCH, '文本必须原样返回')
+  const once = removePluginRow(SAMPLE_PATCH + pluginRowSnippet({ pluginEntry: 'C:/p/index.js' }))
+  const twice = removePluginRow(once.text)
+  assert.equal(twice.changed, false, '第二次不该再有改动')
+  assert.equal(twice.text, once.text)
+})
+
+check('patch 改写 ↔ 移除：往返回到原文（这是"可安全切换"的前提）', () => {
+  const added = addPluginRow(SAMPLE_PATCH, { pluginEntry: 'C:/p/index.js', config: { pathPrefix: '/xilian-pet' } })
+  const back = removePluginRow(added.text)
+  assert.equal(back.text, SAMPLE_PATCH.trimEnd() + '\n', `往返后应回到原文，实际：\n${back.text}`)
 })
 
 console.log(`\n${'─'.repeat(56)}`)
