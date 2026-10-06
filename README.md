@@ -751,9 +751,14 @@ node tools/setup.mjs               # 切回手写行（幂等）
 2. **角色版权**：《崩坏：星穹铁道》昔涟，米哈游。依同人指引 V3.0 三、Q1 A1，
    **非商业个人使用可以制作并发布**，但须：① 同步放法律声明 ② 严格非商业
    ③ 不暗示官方关联 ④ 不用未公开素材 ⑤ 须为二次独创。
+   ⚠️ **例外**：插件图标 `packages/pet-plugin/icon.webp` 是**官方原画素材的直接使用**
+   （**不是**二次独创），已如实声明在 `NOTICE.md` 第三节／第五节；用途仅限插件标识图标，
+   **一旦本项目涉及任何收费/赞助/广告，必须先移除它**。
 3. **不入库**（`.gitignore` 已覆盖）：`assets/live2d/`、`renderer/vendor/`、
    `docs/screenshots/*`（含第三方角色截图，白名单只有占位时代两张）、
    `*.wpk` `*.lpk` `*.moc3` `*.motion3.json` `*.exp3.json` `*.lnk`
+   —— **唯一入库的第三方素材就是插件图标 `icon.webp`**（`git ls-files` 可核，
+   其余图片只有程序化自绘的 `placeholder.png` 与两张占位 `phase0-*.png`）。
 4. **Cubism SDK 许可**：Core 受 Live2D 的 SDK Release License 约束（个人非商用属免费档）。
 
 > 历史说明：早期曾规划过「A 档 Live2D 约稿」并整理过一套 36.2 MB 的 2D 素材导出包
@@ -784,7 +789,7 @@ node tools/setup.mjs               # 切回手写行（幂等）
 | 4 | 「这一行到底是谁提供的」用**官方 inspect** 核对 | `Config.listConfigs {name:'@local/xilian-pet-plugin'}` → **恰好一条** `include:xilian-pet`，`name=@local/xilian-pet-plugin`（清手写行**之前**同名查询返回 **0 条** —— 那时行名是 `file:///…/index.js`） |
 | 5 | config **回声**进了 `/health`（本次新增功能） | `/debug/reminders` 回显的 `quietHours:["22:30","08:00"]` 与 profile 覆盖一致；`/health.config` 新增 `approvalViaPet` 等字段 |
 | 6 | 自测 **155 → 163 项全绿**，且做了**变异测试** | 给 `locale/en.json` 加 BOM → 精确报 `en.json 带 BOM → JSON.parse 会抛`（162 过 / 1 失败）；还原后 SHA256 与变异前一致 |
-| 7 | 插件图标换成作者提供的 `icon.webp`（270×310 / 11.6 KB / RGBA 透明底） | **原样入库**（SHA256 与所给文件一致，未重编码）；自测按**宿主真实校验逐条复刻**（白名单 / 目录内 / 普通文件 / ≤256 KiB / 魔数与扩展名相符）；`list_bundles` 仍报 `installed:true`、**恰好一行**、`overrides:[]` |
+| 7 | 插件图标换成 `icon.webp`（270×310 / 11.6 KB / RGBA 透明底） | **原样入库**（SHA256 与所给文件一致，未重编码）；自测按**宿主真实校验逐条复刻**（白名单 / 目录内 / 普通文件 / ≤256 KiB / 魔数与扩展名相符）；`list_bundles` 仍报 `installed:true`、**恰好一行**、`overrides:[]`。⚠️ 该图经作者确认为**游戏官方原画** → 已按「直接使用官方素材、非二次独创」如实声明在 `NOTICE.md` 第三节／第五节 |
 
 **❌ 本次仍未验证 / 需要你做的**：
 
