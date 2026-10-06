@@ -30,7 +30,7 @@ const WIDTH = Number(process.env.PET_WIDTH ?? 260)
 const HEIGHT = Number(process.env.PET_HEIGHT ?? 300)
 
 // ── Live2D 模型目录 ─────────────────────────────────────────────────
-// 默认在仓库内的 assets/live2d/Cyrene（该目录已 gitignore，模型不入库）。
+// 默认在仓库内的 assets/live2d/Cyrene（2026-10-06 起模型已随仓库入库，经作者授权；见 NOTICE.md 第四节）。
 // 模型是第三方作品（B站 @是依七哒），授权要求"注明用途 + 不得收费"，署名见 NOTICE.md。
 const MODEL_DIR = process.env.PET_MODEL_DIR ?? join(here, '..', '..', 'assets', 'live2d', 'Cyrene')
 const RENDERER_DIR = join(here, 'renderer')

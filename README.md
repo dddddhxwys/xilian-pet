@@ -7,7 +7,7 @@
 |---|---|
 | 当前阶段 | **Phase 0 技术验证原型（spike）** —— 能跑；6 项修复 + A9 已经用户实机确认（2026-10-02） |
 | 架构 | Cordis Host 插件（大脑）+ Electron 透明窗（显示器），中间走 SSE |
-| 模型 | B站 @是依七哒「秋千版」昔涟，**已授权、不入库**，署名见 [`NOTICE.md`](NOTICE.md) |
+| 模型 | B站 @是依七哒「秋千版」昔涟，**已授权**；模型文件 2026-10-06 起**随仓库入库**（`assets/live2d/`，1.38 MB），署名见 [`NOTICE.md`](NOTICE.md) |
 | 规模 | 插件 5 文件 2259 行 / 外壳 18 文件 5316 行 / 工具 14 文件 3799 行，133 个提交 |
 | 自测 | `& $NODE tools\check-plugin.mjs` → **119 项全绿** |
 
@@ -122,10 +122,11 @@ FATAL:mojo\public\cpp\platform\platform_channel.cc:108] Check failed: 拒绝访�
 | DSH 在跑，插件已挂载 | 官方 bundle 安装（见 §八）；`/health` 应返回 `{"ok":true,...}` |
 | Electron 二进制 | `& $NODE tools\fetch-electron.mjs` |
 | 渲染端 vendor（pixi + Cubism Core） | `& $NODE tools\prepare-renderer-vendor.mjs` |
-| Live2D 模型 | 手动放到 `assets\live2d\Cyrene\`（**不入库，clone 后没有**） |
+| Live2D 模型 | **已随仓库入库**（`assets\live2d\Cyrene\`，1.38 MB / 23 个文件）—— clone 即有，**不用手动放** |
 
-> `node_modules/electron/`、`renderer/vendor/`、`assets/live2d/` 都在 `.gitignore` 里。
-> **换机器 clone 后必须补上面后两项**，否则只剩占位形象（会走 A10 降级，不会崩）。
+> `node_modules/electron/` 与 `renderer/vendor/` 仍在 `.gitignore` 里（第三方二进制 / 可重建）。
+> **换机器 clone 后只需补这两项**：`node tools/fetch-electron.mjs` + `node tools/prepare-renderer-vendor.mjs`。
+> Live2D 模型 2026-10-06 起**已入库**，不用再手动放；缺 vendor 会只剩占位形象（走 A10 降级，不会崩）。
 
 ### 跑起来
 
@@ -243,7 +244,7 @@ packages/pet-shell/           ← Electron 透明置顶窗
 | 模型 | `Cyrene`（**Cubism 5.0**，`.moc3` 版本号 5） |
 | 授权 | **注明用途 + 不得收费**（作者要求）；不进 MIT 范围；**入库禁止** |
 | 署名 | 见 [`NOTICE.md`](NOTICE.md) 第四节（**必须保留**） |
-| 位置 | `assets/live2d/Cyrene/`（整个 `assets/live2d/` 已 gitignore） |
+| 位置 | `assets/live2d/Cyrene/`（**已入库**，1.38 MB / 23 个文件；作者授权与署名见 [`NOTICE.md`](NOTICE.md) 第四节） |
 | 体积 | 纹理降采样后 **1.38 MB**（原 8.86 MB） |
 
 ### 技术栈（版本钉死，别随手升）
@@ -748,17 +749,20 @@ node tools/setup.mjs               # 切回手写行（幂等）
 ### 素材与版权约束（**改代码时别删署名**）
 
 1. **模型授权**：B站 @是依七哒，**注明用途 + 不得收费**。署名在 `NOTICE.md` 第四节。
+   **模型文件已入库**（`assets/live2d/Cyrene/`，1.38 MB / 23 个文件，经作者授权，2026-10-06 起）。
 2. **角色版权**：《崩坏：星穹铁道》昔涟，米哈游。依同人指引 V3.0 三、Q1 A1，
    **非商业个人使用可以制作并发布**，但须：① 同步放法律声明 ② 严格非商业
    ③ 不暗示官方关联 ④ 不用未公开素材 ⑤ 须为二次独创。
-   ⚠️ **例外**：插件图标 `packages/pet-plugin/icon.webp` 是**官方原画素材的直接使用**
-   （**不是**二次独创），已如实声明在 `NOTICE.md` 第三节／第五节；用途仅限插件标识图标，
-   **一旦本项目涉及任何收费/赞助/广告，必须先移除它**。
-3. **不入库**（`.gitignore` 已覆盖）：`assets/live2d/`、`renderer/vendor/`、
-   `docs/screenshots/*`（含第三方角色截图，白名单只有占位时代两张）、
-   `*.wpk` `*.lpk` `*.moc3` `*.motion3.json` `*.exp3.json` `*.lnk`
-   —— **唯一入库的第三方素材就是插件图标 `icon.webp`**（`git ls-files` 可核，
-   其余图片只有程序化自绘的 `placeholder.png` 与两张占位 `phase0-*.png`）。
+   ⚠️ **例外**：插件图标 `packages/pet-plugin/icon.webp` 是**社区流传的图片、作者不明**
+   （既非本项目原创，也非官方直接素材），已如实声明在 `NOTICE.md` 第三节／第五节；
+   用途仅限插件标识图标，**一旦本项目涉及任何收费/赞助/广告，必须先移除它**；
+   **原作者主张时立即补署名或移除**。
+3. **入库的第三方素材只有两处**：`assets/live2d/Cyrene/`（模型，**已授权**）与
+   `packages/pet-plugin/icon.webp`（图标，**作者不明**）。
+   **其余一律不入库**：委托素材包（`dist/`）、`*.wpk` `*.lpk` `Cyrene.zip`、
+   含角色的截图（`docs/screenshots/*`，白名单只留两张占位）、`renderer/vendor/`、`*.lnk` 等 —— 见 `.gitignore`。
+   ⚠️ 模型文件的兜底规则（`*.moc3` `*.motion3.json` `*.exp3.json` `*.physics3.json`）**仍然生效**，
+   例外只开给 `assets/live2d/` 一个目录；**改回不入库只需删掉 `.gitignore` 里的 `!/assets/live2d/**`**。
 4. **Cubism SDK 许可**：Core 受 Live2D 的 SDK Release License 约束（个人非商用属免费档）。
 
 > 历史说明：早期曾规划过「A 档 Live2D 约稿」并整理过一套 36.2 MB 的 2D 素材导出包
@@ -789,7 +793,7 @@ node tools/setup.mjs               # 切回手写行（幂等）
 | 4 | 「这一行到底是谁提供的」用**官方 inspect** 核对 | `Config.listConfigs {name:'@local/xilian-pet-plugin'}` → **恰好一条** `include:xilian-pet`，`name=@local/xilian-pet-plugin`（清手写行**之前**同名查询返回 **0 条** —— 那时行名是 `file:///…/index.js`） |
 | 5 | config **回声**进了 `/health`（本次新增功能） | `/debug/reminders` 回显的 `quietHours:["22:30","08:00"]` 与 profile 覆盖一致；`/health.config` 新增 `approvalViaPet` 等字段 |
 | 6 | 自测 **155 → 163 项全绿**，且做了**变异测试** | 给 `locale/en.json` 加 BOM → 精确报 `en.json 带 BOM → JSON.parse 会抛`（162 过 / 1 失败）；还原后 SHA256 与变异前一致 |
-| 7 | 插件图标换成 `icon.webp`（270×310 / 11.6 KB / RGBA 透明底） | **原样入库**（SHA256 与所给文件一致，未重编码）；自测按**宿主真实校验逐条复刻**（白名单 / 目录内 / 普通文件 / ≤256 KiB / 魔数与扩展名相符）；`list_bundles` 仍报 `installed:true`、**恰好一行**、`overrides:[]`。⚠️ 该图经作者确认为**游戏官方原画** → 已按「直接使用官方素材、非二次独创」如实声明在 `NOTICE.md` 第三节／第五节 |
+| 7 | 插件图标换成 `icon.webp`（270×310 / 11.6 KB / RGBA 透明底） | **原样入库**（SHA256 与所给文件一致，未重编码）；自测按**宿主真实校验逐条复刻**（白名单 / 目录内 / 普通文件 / ≤256 KiB / 魔数与扩展名相符）；`list_bundles` 仍报 `installed:true`、**恰好一行**、`overrides:[]`。⚠️ 该图经作者核实为**社区流传的图片、作者不明**（**非**官方直接素材）→ 已按「来源不明、非本项目原创」如实声明在 `NOTICE.md` 第三／五／六节，并写明**原作者主张时补署名或移除** |
 
 **❌ 本次仍未验证 / 需要你做的**：
 

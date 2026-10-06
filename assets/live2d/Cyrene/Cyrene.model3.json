@@ -1,0 +1,98 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "Cyrene.moc3",
+		"Textures": [
+			"Cyrene.2048/texture_00.png"
+		],
+		"Physics": "Cyrene.physics3.json",
+		"DisplayInfo": "Cyrene.cdi3.json",
+		"Motions": {
+			"Scene": [
+				{
+					"File": "Scene/Scene1.motion3.json"
+				},
+				{
+					"File": "Scene/Scene2.motion3.json"
+				},
+				{
+					"File": "Scene/Scene3.motion3.json"
+				},
+				{
+					"File": "Scene/Scene4.motion3.json"
+				}
+			]
+		},
+		"Expressions": [
+			{
+				"Name": "reset",
+				"File": "Expression/expression0.exp3.json"
+			},
+			{
+				"Name": "surprise",
+				"File": "Expression/expression1.exp3.json"
+			},
+			{
+				"Name": "spiral",
+				"File": "Expression/expression2.exp3.json"
+			},
+			{
+				"Name": "happy",
+				"File": "Expression/expression3.exp3.json"
+			},
+			{
+				"Name": "sunglasses",
+				"File": "Expression/expression4.exp3.json"
+			},
+			{
+				"Name": "swingOff",
+				"File": "Expression/expression5.exp3.json"
+			},
+			{
+				"Name": "swingOn",
+				"File": "Expression/expression6.exp3.json"
+			},
+			{
+				"Name": "question",
+				"File": "Expression/expression7.exp3.json"
+			},
+			{
+				"Name": "ropeOn",
+				"File": "Expression/expression8.exp3.json"
+			},
+			{
+				"Name": "ropeOff",
+				"File": "expressions/expression10.exp3.json"
+			},
+			{
+				"Name": "swingMid",
+				"File": "expressions/expression5-6.exp3.json"
+			},
+			{
+				"Name": "swingLeft",
+				"File": "expressions/expression5.exp3.json"
+			},
+			{
+				"Name": "swingRight",
+				"File": "expressions/expression6.exp3.json"
+			}
+		]
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": [
+				"ParamMouthOpenY"
+			]
+		},
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": [
+				"ParamEyeLOpen",
+				"ParamEyeROpen"
+			]
+		}
+	]
+}

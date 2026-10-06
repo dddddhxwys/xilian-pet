@@ -43,17 +43,22 @@ desktop.ini
 # 这类文件是他人作品或加密商业格式，不属于本项目，禁止入库/分发
 *.wpk
 *.lpk
-*.moc3
-*.motion3.json
-*.exp3.json
-*.physics3.json
 /Cyrene.zip
 /Cyrene/
 /3597924035_*.wpk
 
-# Live2D 模型工作目录（第三方模型，作者要求署名+不得收费；文件不入库）
-# 修复逻辑在 tools/fix-live2d-model.mjs，可对任意副本重放
-/assets/live2d/
+# 兜底：出现在任何位置的模型文件默认不入库（防误提交别人的模型）
+*.moc3
+*.motion3.json
+*.exp3.json
+*.physics3.json
+
+# ✅ 例外：本项目正式使用的 Live2D 模型**已入库**（2026-10-06 起；经作者授权，
+#    署名与用途要求见 NOTICE.md 第四节）。下面这行把 assets/live2d/ 从上面
+#    4 条兜底规则里**重新包含**进来。
+#      要改回「不入库」：**删掉下面这一行即可** —— 兜底规则会立刻重新挡住它。
+#    模型修复逻辑在 tools/fix-live2d-model.mjs，可对任意副本重放。
+!/assets/live2d/**
 
 # 渲染端 vendor（第三方第三方库构建 + 官方 Cubism Core，由
 # tools/prepare-renderer-vendor.mjs 生成，不入库）
