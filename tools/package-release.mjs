@@ -28,7 +28,17 @@
  * 而且 gitignore 掉的东西里恰好有**发行必需**的 vendor —— 直接走文件系统更简单可靠。
  */
 import { createHash } from 'node:crypto'
-import { cpSync, createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  cpSync,
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -43,6 +53,8 @@ import {
   releaseVariant,
   releaseZipName,
   requiredInRelease,
+  staleByFlavor,
+  staleReleaseArtifacts,
 } from './lib/release-files.mjs'
 import { MANIFEST_FILE, readManifest, releaseAssetUrl, upsertManifest, writeManifest } from './lib/update-check.mjs'
 import { writeZipFile } from './lib/zip-writer.mjs'
@@ -58,12 +70,46 @@ const dryRun = argv.includes('--dry-run')
 const outArg = argv.find((a) => a.startsWith('--out='))?.split('=')[1]
 /** 这一版的更新说明。不传的话清单里 notes 会留空，并在结尾**大声提醒**（别静默发布空说明） */
 const notesArg = argv.find((a) => a.startsWith('--notes='))?.slice('--notes='.length)
+/** 默认打完包**顺手清掉同形态的旧包**；`--no-prune` 可关掉（比如想留几个历史版本） */
+const noPrune = argv.includes('--no-prune')
+/** 不打包，只收拾 dist-release/：每种形态留最新一份，其余删掉 */
+const pruneOnly = argv.includes('--prune-only')
 
 const options = { withModel, withElectron, withNode }
 const STAGE_ROOT = join(ROOT, '.release')
 const PKG_NAME = 'xilian-pet'
 const STAGE_DIR = join(STAGE_ROOT, PKG_NAME)
 const INFO_NAME = 'VERSION.txt'
+const RELEASE_DIR = join(ROOT, 'dist-release')
+
+// ── `--prune-only`：不打包，只收拾目录 ─────────────────────────────
+// 放在版本检查**之前**：收拾旧包跟"版本号一致不一致"没关系，不该被那个拦住。
+// ⚠️ 这里是纯同步代码（没有 pending 的 fetch/定时器），所以 process.exit 是安全的 ——
+//    强退撞 libuv 断言那种事只发生在还有异步句柄没收尾的时候。
+if (pruneOnly) {
+  console.log('昔涟桌宠 · 清理旧发行包')
+  console.log('─'.repeat(52))
+  if (!existsSync(RELEASE_DIR)) {
+    console.log('  没有 dist-release/ 目录，无需清理 ✓')
+    process.exit(0)
+  }
+  const names = readdirSync(RELEASE_DIR)
+  const stale = staleByFlavor(names)
+  console.log(`  目录 : ${RELEASE_DIR}`)
+  console.log(`  文件 : ${names.length} 个；按形态"各留最新一份"该删 ${stale.length} 个`)
+  if (stale.length === 0) {
+    console.log('\n没有要删的 ✓')
+    process.exit(0)
+  }
+  for (const one of stale) console.log(`   · ${one}`)
+  if (dryRun) {
+    console.log('\n（--dry-run）没有真删')
+    process.exit(0)
+  }
+  for (const one of stale) rmSync(join(RELEASE_DIR, one), { force: true })
+  console.log(`\n已删除 ${stale.length} 个 ✓`)
+  process.exit(0)
+}
 
 // ── 版本：根 package.json 是唯一来源；三处不一致就**直接拒绝打包** ──────
 const versions = readVersions(ROOT)
@@ -229,6 +275,24 @@ const upserted = upsertManifest(manifestBefore, {
 })
 writeManifest(ROOT, upserted.manifest)
 
+// ── 顺手清掉**同形态**的旧包 ──────────────────────────────────────
+// 白名单式：只删"名字是这一种格式、同一形态、但不是这一份"的文件（见 staleReleaseArtifacts）。
+// 2026-10-06 的教训：以前这里用的是"不在保留列表里就删"，于是把
+// `dist-release/RELEASE-NOTES.md` 一起扫掉了 ✗ —— 所以那个函数里有两条保守规则
+// （拿不准就一个都不删），并且**绝不**匹配我们自己的产物名以外的任何文件。
+if (!noPrune) {
+  const builtName = basename(zipPath)
+  const stale = staleReleaseArtifacts(readdirSync(dirname(zipPath)), {
+    keepNames: [builtName, `${builtName}.sha256`],
+    flavor: variant,
+  })
+  if (stale.length > 0) {
+    for (const one of stale) rmSync(join(dirname(zipPath), one), { force: true })
+    console.log(`\n🧹 清掉 ${stale.length} 个同形态旧包（只留刚打出来的这一份）：`)
+    for (const one of stale) console.log(`     · ${one}`)
+  }
+}
+
 console.log(`\n✅ 发行包：${zipPath}`)
 console.log(`   版本 v${version} · 形态 ${variant} · 文件数 ${copied}（含包内 ${INFO_NAME}）`)
 console.log(`   zip 内共 ${zipInfo.entries} 个条目（含目录条目）`)
@@ -246,8 +310,8 @@ if (upserted.notesMissing) {
 console.log('')
 console.log('下一步：')
 console.log(`   1. 提交 ${MANIFEST_FILE}（它变了，检查更新靠它）`)
-console.log(`   2. 去 GitHub 发 Release：tag 用 v${version}，把 zip 与 .sha256 都传上去`)
-console.log('      —— 清单里的下载地址是按 Releases 的标准规则推导的，传上去就对得上')
+console.log(`   2. 发布到 GitHub Releases（一条命令，幂等可重跑）：node tools/publish-release.mjs`)
+console.log(`      —— 它按清单里的下载地址发布，tag 用 v${version}；重复执行不会重复上传`)
 console.log('   3. 接收方解压到**一个新目录**（别覆盖旧目录，避免半新半旧的残留文件）')
 console.log('   4. 双击「安装.cmd」→ 重启 DSH → 双击 start-pet.cmd')
-console.log('（暂存目录 .release/ 留着便于核对；不用了可以删。）')
+console.log('（暂存 .release/ 留着核对；不打包时用 --prune-only 收拾旧包；想留历史版本加 --no-prune）')

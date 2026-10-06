@@ -53,6 +53,8 @@ import {
   requiredInRelease,
   shouldDescend,
   shouldInclude,
+  staleByFlavor,
+  staleReleaseArtifacts,
 } from './lib/release-files.mjs'
 import {
   checkForUpdate,
@@ -3230,6 +3232,78 @@ check('发布脚本：token 不出屏、幂等、传完回读核对、不用 pro
     .join('\n')
   assert.ok(!/process\.exit\(/.test(codeOnly), '不要用 process.exit() —— 用 process.exitCode')
   assert.ok(src.includes("from './lib/release-publish.mjs'"), '纯逻辑要在 lib 里（可自测）')
+})
+
+check('清旧包：**白名单** —— 只删同形态的旧产物，绝不碰其它文件', () => {
+  // 2026-10-06 的教训：上一版清理用的是"不在保留列表里就删"，于是把
+  // `dist-release/RELEASE-NOTES.md` 一起扫掉了 ✗。现在只认
+  // `<前缀>-<形态>-<时间戳>.zip(.sha256)` 这一种格式，其它文件一律不动。
+  const names = [
+    'xilian-pet-v0.1.0-slim-model-20261006-1901.zip',
+    'xilian-pet-v0.1.0-slim-model-20261006-1901.zip.sha256',
+    'xilian-pet-v0.1.0-slim-model-20261006-1817.zip', // ← 该删
+    'xilian-pet-v0.1.0-slim-model-20261006-1817.zip.sha256', // ← 该删
+    'xilian-pet-v0.1.0-full-model-20261006-1901.zip', // 别的形态 → 不动
+    'xilian-pet-v0.1.0-full-model-20261006-1901.zip.sha256',
+    'RELEASE-NOTES.md', // ← 上次被误删的那个
+    'versions.json',
+    'xilian-pet.zip', // 老的手打名，不匹配就不动（要删得用 --prune-only 或手工）
+    'notes.txt',
+  ]
+  const keep = [
+    'xilian-pet-v0.1.0-slim-model-20261006-1901.zip',
+    'xilian-pet-v0.1.0-slim-model-20261006-1901.zip.sha256',
+  ]
+  assert.deepEqual(staleReleaseArtifacts(names, { keepNames: keep, flavor: 'slim-model' }), [
+    'xilian-pet-v0.1.0-slim-model-20261006-1817.zip',
+    'xilian-pet-v0.1.0-slim-model-20261006-1817.zip.sha256',
+  ])
+  // 白名单：不是我们格式的一律不返回
+  assert.deepEqual(
+    staleReleaseArtifacts(['RELEASE-NOTES.md', 'a.zip', 'xilian-pet.zip'], { keepNames: keep, flavor: 'slim-model' }),
+    [],
+  )
+  // 保守规则 ①：keepNames 为空 → 一个都不删（否则会把该形态全删光）
+  assert.deepEqual(staleReleaseArtifacts(names, { keepNames: [], flavor: 'slim-model' }), [])
+  // 保守规则 ②：keepNames 里的文件一个都不在目录里（目录不对 / 打包没成功）→ 一个都不删
+  assert.deepEqual(
+    staleReleaseArtifacts(names, {
+      keepNames: ['xilian-pet-v9-slim-model-20260101-0000.zip'],
+      flavor: 'slim-model',
+    }),
+    [],
+  )
+  assert.deepEqual(staleReleaseArtifacts(names, { flavor: 'slim-model' }), [], '缺 keepNames 同样不删')
+  assert.deepEqual(staleReleaseArtifacts(null, { keepNames: keep, flavor: 'slim-model' }), [])
+})
+
+check('清旧包：--prune-only 的「每种形态留最新一份」', () => {
+  const names = [
+    'xilian-pet-v0.1.0-slim-model-20261006-1817.zip',
+    'xilian-pet-v0.1.0-slim-model-20261006-1817.zip.sha256',
+    'xilian-pet-v0.1.0-slim-model-20261006-1901.zip',
+    'xilian-pet-v0.1.0-slim-model-20261006-1901.zip.sha256',
+    'xilian-pet-v0.1.0-full-model-20261006-1601.zip',
+    'xilian-pet-v0.1.0-full-model-20261006-1901.zip',
+    'RELEASE-NOTES.md',
+  ]
+  assert.deepEqual(staleByFlavor(names), [
+    'xilian-pet-v0.1.0-full-model-20261006-1601.zip',
+    'xilian-pet-v0.1.0-slim-model-20261006-1817.zip',
+    'xilian-pet-v0.1.0-slim-model-20261006-1817.zip.sha256',
+  ])
+  // 一个我们的产物都没有 → 什么都不删（目录里可能全是别的东西）
+  assert.deepEqual(staleByFlavor(['RELEASE-NOTES.md', 'xilian-pet.zip']), [])
+  assert.deepEqual(staleByFlavor([]), [])
+  assert.deepEqual(staleByFlavor(null), [])
+})
+
+check('打包脚本：默认顺手清同形态旧包（走白名单 lib），并留了开关', () => {
+  const src = readFileSync(new URL('../tools/package-release.mjs', import.meta.url), 'utf8')
+  assert.ok(src.includes('staleReleaseArtifacts'), '打完包要走白名单清理')
+  assert.ok(src.includes('staleByFlavor'), '--prune-only 要能只收拾目录')
+  assert.ok(src.includes('--no-prune'), '要留「保留历史版本」的开关')
+  assert.ok(src.includes('--prune-only'), '要能只收拾目录而不打包')
 })
 
 check('拖拽链路：移动要续期 + 复位要通知渲染端 + 失焦复位必须有条件', () => {

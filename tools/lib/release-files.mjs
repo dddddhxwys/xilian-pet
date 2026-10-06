@@ -266,6 +266,70 @@ export function formatSha256Sidecar(hash, filename) {
   return `${hash}  ${filename}\n`
 }
 
+/** 三种形态的名字（给"按形态清理旧包"用） */
+export const RELEASE_FLAVORS = ['slim-model', 'full-model', 'allinone-model']
+
+/**
+ * 认一个**我们自己的发行产物**：`xilian-pet-v<版本>-<形态>-<时间戳>.zip` 及其 `.sha256`。
+ * @returns `{ flavor, stamp }`；不是我们的产物返回 null
+ */
+export function parseReleaseArtifact(name) {
+  if (typeof name !== 'string') return null
+  const m = /^xilian-pet-.+-(slim-model|full-model|allinone-model)-(\d{8}-\d{4})\.zip(\.sha256)?$/.exec(name)
+  return m === null ? null : { flavor: m[1], stamp: m[2] }
+}
+
+/**
+ * 挑出**该删的旧产物** —— 只删"和这次打出来的是同一形态、但不是这一份"的那些。
+ *
+ * ⚠️ 这里必须是**白名单**：只认 `<前缀>-<形态>-<时间戳>.zip(.sha256)` 这一种格式，
+ *    其它任何文件一律不碰。2026-10-06 踩过反例 —— 当时的清理脚本用的是"不在保留
+ *    列表里就删"，于是把 `dist-release/RELEASE-NOTES.md` 一起扫掉了 ✗。
+ *
+ * ⚠️ 两条**保守**规则（拿不准就什么都不删）：
+ *     · `keepNames` 为空 → 返回 []（否则会把该形态的所有包全删光）
+ *     · `keepNames` 里的文件一个都不在 `names` 里 → 返回 []（说明目录不对/打包没成功）
+ *
+ * @param {string[]} names 目录里的文件名
+ * @param {{ keepNames: string[], flavor: string }} options keepNames 含刚打出来的 zip 与它的 .sha256
+ * @returns {string[]} 该删的文件名（已排序）
+ */
+export function staleReleaseArtifacts(names, { keepNames = [], flavor } = {}) {
+  const list = Array.isArray(names) ? names : []
+  const keep = new Set(keepNames.filter((one) => typeof one === 'string' && one !== ''))
+  if (keep.size === 0) return []
+  if (!list.some((one) => keep.has(one))) return []
+  return list
+    .filter((one) => {
+      const parsed = parseReleaseArtifact(one)
+      return parsed !== null && parsed.flavor === flavor && !keep.has(one)
+    })
+    .sort()
+}
+
+/**
+ * 每种形态**保留最新那一份**（按文件名里的时间戳比），返回该删的其它文件。
+ * 用于 `--prune-only`：不打包，只收拾目录。
+ */
+export function staleByFlavor(names) {
+  const list = Array.isArray(names) ? names : []
+  const newest = new Map()
+  for (const one of list) {
+    const parsed = parseReleaseArtifact(one)
+    if (parsed === null) continue
+    const current = newest.get(parsed.flavor)
+    if (current === undefined || parsed.stamp > current) newest.set(parsed.flavor, parsed.stamp)
+  }
+  // 一种形态都没认出来 → 什么都不删（目录里可能全是别的东西）
+  if (newest.size === 0) return []
+  return list
+    .filter((one) => {
+      const parsed = parseReleaseArtifact(one)
+      return parsed !== null && newest.get(parsed.flavor) !== parsed.stamp
+    })
+    .sort()
+}
+
 /**
  * 读当前 git 提交（短哈希）。
  *
