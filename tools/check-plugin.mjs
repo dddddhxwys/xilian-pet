@@ -34,6 +34,8 @@ import { createSseLink } from '../packages/pet-shell/sse-link.js'
 import { addPluginRow, looksLikePluginEntryPath, looksLikeProfilePatch, pluginRowSnippet, readPluginRowPath, removePluginRow } from './lib/patch-edit.mjs'
 import {
   assetUploadUrl,
+  needsBodySync,
+  releaseApiUrl,
   releaseAssetFiles,
   releaseByTagUrl,
   releasePayload,
@@ -3210,6 +3212,14 @@ check('发布：tag 与 Release 标题的约定', () => {
   // URL：资产走 uploads.github.com（不是 api.github.com），文件名要转义
   assert.match(assetUploadUrl(7, 'a b.zip'), /^https:\/\/uploads\.github\.com\/repos\/.+\/releases\/7\/assets\?name=a%20b\.zip$/)
   assert.match(releaseByTagUrl('v0.1.0'), /\/releases\/tags\/v0\.1\.0$/)
+  assert.match(releaseApiUrl(7), /\/releases\/7$/)
+})
+
+check('发布：说明改了要能**同步到已发布的 Release**（否则只能上网页手改）', () => {
+  assert.equal(needsBodySync('# 新\n', '# 新'), false, '只差尾随换行不算变（否则每次跑都 PATCH 一次）')
+  assert.equal(needsBodySync('# 旧', '# 新'), true)
+  assert.equal(needsBodySync(null, '# 新'), true, '远端本来没正文 → 要同步')
+  assert.equal(needsBodySync('# 新', null), true, '本地说明为空 → 也要同步')
 })
 
 check('发布脚本：token 不出屏、幂等、传完回读核对、不用 process.exit', () => {

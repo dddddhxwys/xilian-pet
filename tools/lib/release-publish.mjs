@@ -18,6 +18,11 @@ export function releaseByTagUrl(tag) {
   return `https://api.github.com/repos/${PROJECT_SLUG}/releases/tags/${encodeURIComponent(tag)}`
 }
 
+/** PATCH 某个 Release（改说明正文 / 标题） */
+export function releaseApiUrl(releaseId) {
+  return `https://api.github.com/repos/${PROJECT_SLUG}/releases/${releaseId}`
+}
+
 /** 传资产：注意是 uploads.github.com，不是 api.github.com */
 export function assetUploadUrl(releaseId, fileName) {
   return `https://uploads.github.com/repos/${PROJECT_SLUG}/releases/${releaseId}/assets?name=${encodeURIComponent(fileName)}`
@@ -44,6 +49,17 @@ export function releaseAssetFiles(manifest) {
 /** tag 名：与 `versions.json` 里 url 的约定一致（`…/releases/download/v0.1.0/…`） */
 export function releaseTag(manifest) {
   return `v${manifest?.latest ?? '0.0.0'}`
+}
+
+/**
+ * 已发布 Release 的正文需不需要更新？
+ *
+ * 为什么要有：Release 正文是**用户看到的那段话**（怎么装、怎么用、许可证）。
+ * 发现写错了却只能上网页手改，迟早没人改 —— 而错的说明比没有说明更糟。
+ * 比较时 `trimEnd()`：文件末尾多个换行不该触发一次无意义的 PATCH。
+ */
+export function needsBodySync(currentBody, notesText) {
+  return String(currentBody ?? '').trimEnd() !== String(notesText ?? '').trimEnd()
 }
 
 /**

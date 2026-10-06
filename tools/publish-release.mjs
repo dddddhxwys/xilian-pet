@@ -30,6 +30,8 @@ import {
   CREATE_RELEASE_URL,
   RELEASES_PAGE,
   assetUploadUrl,
+  needsBodySync,
+  releaseApiUrl,
   releaseAssetFiles,
   releaseByTagUrl,
   releasePayload,
@@ -149,6 +151,20 @@ async function main() {
     console.log(`\n✓ 已创建 Release：${release.html_url}`)
   } else {
     console.log(`\n已存在 Release，复用它：${release.html_url}`)
+    // 说明文件改了就把正文同步过去 —— 否则改错别字都要上网页手改，于是没人改
+    if (needsBodySync(release.body, notesText)) {
+      const payload = releasePayload({ tag, notesText })
+      const res = await fetch(releaseApiUrl(release.id), {
+        method: 'PATCH',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ name: payload.name, body: payload.body }),
+      })
+      if (!res.ok) throw new Error(`更新 Release 说明失败 ${res.status}：${await res.text()}`)
+      release = await res.json()
+      console.log('  ✓ Release 说明与本地文件不一致，已同步更新')
+    } else {
+      console.log('  说明与本地文件一致，无需更新')
+    }
   }
 
   const uploaded = new Set((release.assets ?? []).map((one) => one.name))
