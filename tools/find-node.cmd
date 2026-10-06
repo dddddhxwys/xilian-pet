@@ -93,23 +93,34 @@ rem    variable is still empty - so the scan silently searched "\resources\..."
 rem    instead. Measured: the variable was correctly found as F:\dsh while the
 rem    scan still failed. Delayed expansion (!VAR!) is not an option here: this
 rem    file is called by launchers that do not all enable it.
+rem    This block now runs UNCONDITIONALLY (it used to be skipped whenever Node was
+rem    already found). Reason: the installer needs the DSH install directory to
+rem    locate DSH's own CLI, at
+rem      [install]\resources\runtime\cli\bin\dsh.cmd
+rem    and driving that CLI is how a plugin gets **officially** installed:
+rem      dsh plugin --profile [profile] add [local dir]
+rem    does the whole job (writes the link: dependency AND registers
+rem    dsh.profile.bundles, i.e. it shows up in DSH's plugin list). Verified by
+rem    hand on 2026-10-06 with remove-then-add against the real desktop profile.
+rem    Cost of always asking the registry: one reg query per launcher run.
 set "PET_DSH_INSTALL="
-if not defined PET_NODE (
-  for %%H in (
-    "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
-    "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
-  ) do (
-    if not defined PET_DSH_INSTALL (
-      for /f "delims=" %%K in ('reg query %%H /s /f "DeepSeek Harness" /d 2^>nul ^| findstr /r /i "^HKEY_"') do (
-        if not defined PET_DSH_INSTALL (
-          for /f "tokens=2,*" %%A in ('reg query "%%K" /v InstallLocation 2^>nul ^| findstr /r /i "^ *InstallLocation"') do (
-            if exist "%%B\resources\runtime" set "PET_DSH_INSTALL=%%B"
-          )
+for %%H in (
+  "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+  "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+) do (
+  if not defined PET_DSH_INSTALL (
+    for /f "delims=" %%K in ('reg query %%H /s /f "DeepSeek Harness" /d 2^>nul ^| findstr /r /i "^HKEY_"') do (
+      if not defined PET_DSH_INSTALL (
+        for /f "tokens=2,*" %%A in ('reg query "%%K" /v InstallLocation 2^>nul ^| findstr /r /i "^ *InstallLocation"') do (
+          if exist "%%B\resources\runtime" set "PET_DSH_INSTALL=%%B"
         )
       )
     )
   )
 )
+rem DSH's own CLI - the official (plugin-list) install runs through this.
+set "PET_DSH_CLI="
+if defined PET_DSH_INSTALL if exist "%PET_DSH_INSTALL%\resources\runtime\cli\bin\dsh.cmd" set "PET_DSH_CLI=%PET_DSH_INSTALL%\resources\runtime\cli\bin\dsh.cmd"
 if not defined PET_NODE if defined PET_DSH_INSTALL (
   for /d %%D in ("%PET_DSH_INSTALL%\resources\runtime\*") do (
     if not defined PET_NODE if exist "%%~fD\dependencies\node\bin\node.exe" set "PET_NODE=%%~fD\dependencies\node\bin\node.exe"

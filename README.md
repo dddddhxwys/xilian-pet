@@ -677,18 +677,24 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 
 | 方式 | 怎么做 | 何时用 |
 |---|---|---|
-| **① 官方 bundle 安装（推荐；唯一会出现在插件列表里的）** | `plugin_manager` 的 `install_bundle`，`target` = `packages/pet-plugin` 的**绝对路径** | 正常安装 / 换机器 |
-| ② 免安装直挂（备选，零依赖） | `node tools/setup.mjs`（手写 patch 行） | 手上没有 `plugin_manager` 工具时（比如把包发给别人的那台机器） |
+| **① 官方安装（默认；唯一会出现在插件列表里的）** | `.\安装.cmd` —— 它会调 **DSH 自己的 CLI**：`dsh plugin --profile <profile> add <packages/pet-plugin 的绝对路径>` | 正常安装 / 换机器 / 发给别人 |
+| ② 手写 patch（退路，零依赖） | `.\安装.cmd --patch`（往 profile 的 `cordis.patch.yml` 写一行） | 找得到 DSH 但 CLI 用不了；或官方路径出问题时 |
+| ③ 图形界面里装 | `plugin_manager` 的 `install_bundle`，`target` = `packages/pet-plugin` 的**绝对路径** | agent 侧操作 / 想手动点一遍 |
 
 **⚠️ 两条路只能走一条**，否则插件会被**加载两次**（两个实例、两套 SSE）：
 
 ```powershell
-node tools/setup.mjs --official    # 切官方：删手写行（自动备份）→ 打印注册表状态
-node tools/setup.mjs               # 切回手写行（幂等）
+.\安装.cmd --patch          # 换手写行：官方那条会先被摘掉
+.\安装.cmd                  # 换回官方（默认）
 ```
 
-> ⚠️ 官方要求**由 `install_bundle` 写注册表** —— 不要手改 profile 的 `package.json`。
-> 本项目的 `安装.cmd --official` 也**刻意不代写注册表**，只做「清手写行 + 指路」。
+> **⚠️ 2026-10-06 更正**：以前这里写着「官方只能由 `install_bundle` 写注册表，本项目刻意不代写」——
+> 现在**不再成立**。实测 `dsh plugin --profile desktop add <本地目录>` 会完整完成官方安装
+> （写 `link:` 依赖 **+** 登记 `dsh.profile.bundles`），所以 `安装.cmd` 默认就走它，
+> **不需要点图形界面**。逐条证据见 `docs/交接给插件开发模式.md` §12.8。
+>
+> 仍然成立的部分：**不要手改 profile 的 `package.json`** —— 依赖链接与 lockfile 由 pnpm 负责，
+> 我们只通过 DSH 自己的 CLI 触发它。
 
 #### 装完怎么验（三条，都不需要批准）
 

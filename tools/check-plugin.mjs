@@ -3307,6 +3307,39 @@ check('多 profile：**逐个都挂上**，而不是猜一个（实机踩过：�
   assert.match(src, /这台机器上有 \$\{allProfiles\.length\} 个 profile/, '要把发现的 profile 全列出来（远程排查全靠它）')
 })
 
+check('默认走 DSH 官方 CLI 安装（进插件列表），找不到才退回手写 patch', () => {
+  // 实测（2026-10-06，本机 desktop profile，先 remove 再 add）：
+  //   dsh plugin --profile desktop add <本地目录>
+  // 会写回 link: 依赖 **并且**把包登记进 dsh.profile.bundles —— 也就是"官方安装"，
+  // 于是插件会出现在 DSH 的插件列表里（手写 patch 永远做不到这点）。
+  const src = readFileSync(new URL('../tools/setup.mjs', import.meta.url), 'utf8')
+  assert.ok(src.includes('PET_DSH_INSTALL'), 'DSH 安装目录由 find-node.cmd 传进来')
+  assert.ok(src.includes("'plugin'") && src.includes("'add'"), '要真的调用 dsh plugin … add')
+  assert.ok(src.includes('ELECTRON_RUN_AS_NODE'), '按 dsh.cmd 的方式起那个 exe（ELECTRON_RUN_AS_NODE=1）')
+  assert.ok(src.includes('PATCH_ONLY'), '--patch 退路必须留着（官方失败时唯一一定能装的路）')
+  assert.ok(/回读/.test(src) && /bundles/.test(src), '装完要回读 package.json 校验，不能只信退出码')
+  // ⚠️ 实测踩过：cli.js 在 **app.asar 内部**，对普通 Node 来说 asar 只是个文件 ——
+  //    任何 existsSync(cliJs) 都恒为 false，会让 cliReady 永远为假、白白退回手写 patch。
+  //    只查**代码行**：注释里正需要写出这个错误写法来解释它，不该被误报。
+  const codeOnly = src
+    .split('\n')
+    .filter((one) => !/^\s*(\/\/|\*|\/\*)/.test(one))
+    .join('\n')
+  assert.ok(!/existsSync\(cliJs\)/.test(codeOnly), '不能用 existsSync(cliJs) 判断 —— asar 是文件不是目录')
+})
+
+check('查找器：**无条件**解析 DSH 安装目录与它自己的 CLI', () => {
+  // 默认安装路径要靠这两个变量；以前注册表那段只在"找不到 Node"时才跑，
+  // 于是"Node 已就绪 + 要装插件"这条最常见的路上，它反而拿不到安装目录。
+  const finder = readFileSync(new URL('../tools/find-node.cmd', import.meta.url), 'utf8')
+  assert.ok(finder.includes('PET_DSH_CLI'), '要解析 DSH 自己的 CLI 位置')
+  assert.ok(finder.includes('InstallLocation'), '安装目录来自注册表的 InstallLocation')
+  assert.ok(
+    !/if not defined PET_NODE \(\s*\r?\n\s*for %%H/.test(finder),
+    '注册表那段不能再包在「找不到 Node」的条件里',
+  )
+})
+
 // ─────────────────────────────────────────────────────────────
 console.log('\n[5] 官方 bundle 元数据（插件卡片 / install_bundle 契约）')
 

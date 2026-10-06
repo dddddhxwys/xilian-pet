@@ -45,6 +45,12 @@ const DRY_RUN = argv.includes('--dry-run')
  *    两套 SSE、端口打架）✗
  */
 const OFFICIAL = argv.includes('--official')
+/**
+ * `--patch`：强制走**手写 patch**（旧默认）。
+ * 默认路径现在是"能走官方就走官方"（见下面 CLI 那段）—— 留这个开关是为了
+ * 出问题时有一条**一定能用**的退路：手写 patch 零依赖，不碰 profile 的 package.json。
+ */
+const PATCH_ONLY = argv.includes('--patch')
 const profileArg = argv.find((a) => a.startsWith('--profile='))?.split('=')[1]
 
 /** 读我们自己包的 name（官方注册表里比对用） */
@@ -106,10 +112,11 @@ const bad = (title, detail = '') => {
   if (detail) line(`     ${detail}`)
 }
 
-const run = (file, args, label) => {
+const run = (file, args, label, envExtra) => {
   line(`    → ${label ?? `${file} ${args.join(' ')}`}`)
   if (DRY_RUN) return 0
-  const r = spawnSync(file, args, { cwd: ROOT, stdio: 'inherit', env: process.env })
+  const env = envExtra === undefined ? process.env : { ...process.env, ...envExtra }
+  const r = spawnSync(file, args, { cwd: ROOT, stdio: 'inherit', env })
   return r.status ?? 1
 }
 
@@ -186,13 +193,103 @@ if (profileDir === null) {
 }
 line('')
 
+// ── DSH 自己的 CLI：官方安装（登记进插件列表）靠它 ────────────────────
+// find-node.cmd 把 <install>\resources\runtime\cli\bin\dsh.cmd 所在位置传进来
+// （PET_DSH_CLI），而**不直接跑那个 .cmd**：
+//   · Windows 上 Node **不能直接 spawn .cmd**（Node >=18.20/20.12 起抛 EINVAL）
+//   · 绕 cmd.exe 又要趟引号沼泽（路径里有空格和中文）
+// dsh.cmd 本体只有三行，做的就是下面这件事；我们照做，参数交给 Node 正常转义：
+//   ELECTRON_RUN_AS_NODE=1 "<install>\DeepSeek Harness.exe" --expose-internals
+//     "<install>\resources\app.asar\dsh\node_modules\@deepseek-ai\dsh-desktop-host\lib\cli.js" ...
+// 实测（2026-10-06，本机 desktop profile）：
+//   dsh plugin --profile desktop remove <pkg>  → 同时摘掉 link: 依赖与 bundles 项
+//   dsh plugin --profile desktop add <本地目录> → 写回 link: 依赖并把包登记进 bundles ✓
+const dshInstallDir = process.env.PET_DSH_INSTALL ?? ''
+const cliExe = dshInstallDir === '' ? '' : join(dshInstallDir, 'DeepSeek Harness.exe')
+const cliJs =
+  dshInstallDir === ''
+    ? ''
+    : join(
+        dshInstallDir,
+        'resources',
+        'app.asar',
+        'dsh',
+        'node_modules',
+        '@deepseek-ai',
+        'dsh-desktop-host',
+        'lib',
+        'cli.js',
+      )
+const cliReady = cliExe !== '' && existsSync(cliExe)
+// ⚠️ 不要用 existsSync(cliJs) 判断！cli.js 在 **app.asar 内部**，而 asar 对普通 Node
+//    来说只是一个**文件**、不是目录 —— 任何 existsSync 都会返回 false（实测踩过，
+//    结果就是 cliReady 永远为假、默认路径白白退回手写 patch）。
+//    Electron（也就是那个 exe）自己能读 asar 内部，所以只要 exe 在就交给它去解析。
+
 // ── ② 挂载 Host 插件 ───────────────────────────────────────────────
-// 两种路径：
-//   · 默认：手写 profile patch（**零依赖**，谁都能一键装；但 DSH 插件列表里看不到它）
-//   · --official：把手写行**删掉**，改走官方 bundle 注册（插件列表里才显示卡片）
-line(OFFICIAL ? '② 切到官方安装路径（bundle 注册）' : '② 挂载 Host 插件')
+// 三条路径：
+//   · 默认（本机找得到 DSH CLI 时）：走**官方 bundle 注册** → 插件出现在 DSH 插件列表里 ✓
+//   · 默认（找不到 CLI）：退回手写 profile patch（零依赖，但列表里看不到）
+//   · --patch：强制手写 patch；--official：强制官方（找不到 CLI 时提示去界面装）
+// ⚠️ 两条路**只能走一条**：手写行不删就装官方包 → 插件被加载两次（两个实例、
+//    两套 SSE、端口打架）✗ —— 所以走官方时会先把手写行摘掉。
+const WANT_OFFICIAL = OFFICIAL || (!PATCH_ONLY && cliReady)
+line(WANT_OFFICIAL ? '② 官方安装（bundle 注册 → 会出现在 DSH 插件列表里）' : '② 挂载 Host 插件（手写 patch）')
 if (!profileDir) {
   warn('跳过（上一步没找到 DSH profile）')
+} else if (WANT_OFFICIAL && cliReady) {
+  const pkgName = readPackageName()
+  const pluginDir = join(ROOT, 'packages', 'pet-plugin')
+  const pkgFile = join(profileDir, 'package.json')
+  const profileLeaf = basename(profileDir)
+  const patchFile = join(profileDir, 'cordis.patch.yml')
+
+  // ① 手写行必须先摘掉：手写 + 官方 = 插件被加载两次（两个实例、两套 SSE）
+  const current = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : null
+  const removal = current === null ? { changed: false } : removePluginRow(current)
+  if (removal.changed && !DRY_RUN) {
+    const backup = `${patchFile}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`
+    copyFileSync(patchFile, backup)
+    writeFileSync(patchFile, removal.text, 'utf8')
+    ok('已摘掉手写插件行（避免与官方安装**加载两次**）', `备份：${backup}`)
+  } else if (removal.changed) {
+    warn('（dry-run）实际执行时会先摘掉手写插件行，避免加载两次')
+  }
+
+  // ② 用 DSH 自己的 CLI 做官方安装
+  line('  用 DSH 自己的 CLI 登记进插件注册表：')
+  line(`    profile「${profileLeaf}」`)
+  if (DRY_RUN) {
+    warn('（dry-run）不写任何东西 —— 实际执行时会跑上面那条命令，再回读 package.json 校验')
+  } else {
+    const code = run(cliExe, [cliJs, 'plugin', '--profile', profileLeaf, 'add', pluginDir], undefined, {
+      ELECTRON_RUN_AS_NODE: '1',
+    })
+
+    // ③ 不信退出码 —— 回读 package.json 校验（官方安装 = link: 依赖 + bundles 两项都要有）
+    let good = false
+    let detail = ''
+    try {
+      const pkg = JSON.parse(readFileSync(pkgFile, 'utf8'))
+      const dep = pkg?.dependencies?.[pkgName] ?? ''
+      const bundles = pkg?.dsh?.profile?.bundles
+      const listed = Array.isArray(bundles) && bundles.includes(pkgName)
+      good = dep.startsWith('link:') && listed
+      detail = `dependencies["${pkgName}"] = ${dep || '(缺失)'}；bundles 里${listed ? '有' : '**没有**'}`
+    } catch (error) {
+      detail = `读不动 ${pkgFile}：${error.message}`
+    }
+    if (code === 0 && good) {
+      ok('官方安装完成 —— 重启 DSH 后插件会出现在插件列表里 ✓', `      ${detail}`)
+    } else {
+      bad(
+        code === 0 ? '官方安装后回读校验没通过' : `官方安装失败（退出码 ${code}）`,
+        `      ${detail}\n` +
+          '  退路：改用**手写 patch**（零依赖，装在 profile 的 cordis.patch.yml 上）：\n' +
+          '      安装.cmd --patch',
+      )
+    }
+  }
 } else if (OFFICIAL) {
   const patchFile = join(profileDir, 'cordis.patch.yml')
   const profilePkg = join(profileDir, 'package.json')
@@ -310,6 +407,7 @@ if (!profileDir) {
 // 所以不会出现"双实例"。实现方式是**带 --profile 重新跑一遍自己**，
 // 这样每个 profile 都走完全相同的、已被自测覆盖的代码路径（幂等）。
 if (!DRY_RUN && !onlyThisProfile && allProfiles.length > 1) {
+  const modeArgs = OFFICIAL ? ['--official'] : PATCH_ONLY ? ['--patch'] : []
   for (const other of allProfiles) {
     if (other === profileDir) continue
     line(`  ↻ 也挂到 profile「${basename(other)}」（无法确定 DSH 启动的是哪个，索性都挂）`)
@@ -317,6 +415,7 @@ if (!DRY_RUN && !onlyThisProfile && allProfiles.length > 1) {
       fileURLToPath(import.meta.url),
       `--profile=${basename(other)}`,
       '--only-this-profile',
+      ...modeArgs,
     ])
     if (code !== 0) warn(`profile「${basename(other)}」那一次返回了 ${code}`)
   }
