@@ -13,6 +13,7 @@
     "deps:electron": "node tools/fetch-electron.mjs",
     "asset:placeholder": "node tools/make-placeholder.mjs",
     "version:check": "node tools/bump-version.mjs --check",
+    "update:check": "node tools/check-update.mjs",
     "release": "node tools/package-release.mjs --with-model",
     "release:full": "node tools/package-release.mjs --with-model --with-electron",
     "release:allinone": "node tools/package-release.mjs --with-model --with-electron --with-node"

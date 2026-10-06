@@ -8,11 +8,16 @@
  *   node tools/package-release.mjs --with-node         # 三合一（再内置便携 Node）
  *   node tools/package-release.mjs --dry-run           # 只列清单，不复制不压缩
  *   node tools/package-release.mjs --out=<zip 路径>     # 覆盖输出路径（默认已带版本+时间戳）
+ *   node tools/package-release.mjs --notes="改了什么"   # 写进发行清单的更新说明
  *
- * 产物三件：
+ * 产物四件：
  *   dist-release/xilian-pet-v<版本>-<形态>-<时间戳>.zip
  *   dist-release/<同一个名字>.sha256      ← **两个空格**分隔，`sha256sum -c` 认这个格式
  *   包内 VERSION.txt                      ← 接收方靠它自证版本，排查时不必问人
+ *   versions.json（仓库根，**受版本控制**）← 「检查更新」比对用的发布清单，打完包记得提交
+ *
+ * 为什么由打包脚本写 versions.json：清单里最要命的字段是 `sha256`，手抄一定和实际 zip
+ * 对不上 —— 而用户正是拿它核对下载完整性。顺带把 latest / 发布日期一起抬上去。
  *
  * 为什么名字里必须有版本与时间戳（2026-10-06）：
  *   原来叫 `xilian-pet{,-full,-allinone}.zip`，既没有版本也没有时间戳，而且
@@ -39,6 +44,7 @@ import {
   releaseZipName,
   requiredInRelease,
 } from './lib/release-files.mjs'
+import { MANIFEST_FILE, readManifest, releaseAssetUrl, upsertManifest, writeManifest } from './lib/update-check.mjs'
 import { writeZipFile } from './lib/zip-writer.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -50,6 +56,8 @@ const withElectron = argv.includes('--with-electron')
 const withNode = argv.includes('--with-node')
 const dryRun = argv.includes('--dry-run')
 const outArg = argv.find((a) => a.startsWith('--out='))?.split('=')[1]
+/** 这一版的更新说明。不传的话清单里 notes 会留空，并在结尾**大声提醒**（别静默发布空说明） */
+const notesArg = argv.find((a) => a.startsWith('--notes='))?.slice('--notes='.length)
 
 const options = { withModel, withElectron, withNode }
 const STAGE_ROOT = join(ROOT, '.release')
@@ -203,14 +211,43 @@ for await (const chunk of createReadStream(zipPath)) hash.update(chunk)
 const digest = hash.digest('hex')
 writeFileSync(checksumPath, formatSha256Sidecar(digest, basename(zipPath)), 'utf8')
 
+// ── 更新发布清单 versions.json ────────────────────────────────────
+// 为什么交给打包脚本写：清单里最要命的字段是 `sha256` —— 手抄一定会和实际 zip 对不上，
+// 而用户正是拿它核对"下到的这份是不是完整的那份"。这里直接用刚算出来的值。
+// ⚠️ 它会**改动一个受版本控制的文件**（versions.json），打完包记得提交。
+const pad = (n) => String(n).padStart(2, '0')
+const manifestBefore = readManifest(ROOT)
+const upserted = upsertManifest(manifestBefore, {
+  version,
+  flavor: variant,
+  file: basename(zipPath),
+  size: statSync(zipPath).size,
+  sha256: digest,
+  url: releaseAssetUrl(version, basename(zipPath)),
+  releasedAt: `${builtAt.getFullYear()}-${pad(builtAt.getMonth() + 1)}-${pad(builtAt.getDate())}`,
+  notes: notesArg,
+})
+writeManifest(ROOT, upserted.manifest)
+
 console.log(`\n✅ 发行包：${zipPath}`)
 console.log(`   版本 v${version} · 形态 ${variant} · 文件数 ${copied}（含包内 ${INFO_NAME}）`)
 console.log(`   zip 内共 ${zipInfo.entries} 个条目（含目录条目）`)
 console.log(`   zip 大小 ${zipMb.toFixed(2)} MB`)
 console.log(`   SHA256   ${digest}`)
 console.log(`   校验和已写入 ${checksumPath}`)
-console.log('\n下一步：')
-console.log('   1. 把 zip 和它的 .sha256 一起发出去（接收方可用 `sha256sum -c` 验证完整性）')
-console.log('   2. 接收方解压到**一个新目录**（别覆盖旧目录，避免半新半旧的残留文件）')
-console.log('   3. 双击「安装.cmd」→ 重启 DSH → 双击 start-pet.cmd')
+console.log(`\n📋 ${MANIFEST_FILE} 已更新（latest=${upserted.manifest.latest}）：`)
+for (const item of upserted.changed) console.log(`     · ${item}`)
+if (upserted.changed.length === 0) console.log('     · （无变化 —— 同一个包、同一版，重建了而已）')
+if (upserted.notesMissing) {
+  console.log('')
+  console.log(`⚠️  ${MANIFEST_FILE} 的 notes 还是空的 —— 那是用户会在「检查更新」里看到的**更新说明**。`)
+  console.log('    补上再发布：重跑一次并带 --notes="这一版改了什么"')
+}
+console.log('')
+console.log('下一步：')
+console.log(`   1. 提交 ${MANIFEST_FILE}（它变了，检查更新靠它）`)
+console.log(`   2. 去 GitHub 发 Release：tag 用 v${version}，把 zip 与 .sha256 都传上去`)
+console.log('      —— 清单里的下载地址是按 Releases 的标准规则推导的，传上去就对得上')
+console.log('   3. 接收方解压到**一个新目录**（别覆盖旧目录，避免半新半旧的残留文件）')
+console.log('   4. 双击「安装.cmd」→ 重启 DSH → 双击 start-pet.cmd')
 console.log('（暂存目录 .release/ 留着便于核对；不用了可以删。）')

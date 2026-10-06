@@ -49,6 +49,9 @@ export const EXCLUDED_FILE_PATTERNS = [
   /^Cyrene\.zip$/i,
   /^\.DS_Store$/i,
   /\.bak$/i,
+  // 发行清单**不进发行包**：它是"线上最新是哪一版"的比对基准，给用户一份副本只会造成困惑
+  // （用户手里那份的 latest 是打包那一刻的值）。检查更新永远走网络拿清单。
+  /^versions\.json$/i,
   // 安装脚本自己产生的日志（不该跟着发行包走；它们由 setup.mjs / 安装.cmd 每次运行时重写）
   /^(setup|install)-log\.txt$/i,
 ]

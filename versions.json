@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "latest": "0.1.0",
+  "releasedAt": "2026-10-06",
+  "notes": "首个公开版本：官方 bundle 安装、模型与插件图标随包、发行包带版本号与 SHA256 校验和。",
+  "releaseUrl": "https://github.com/dddddhxwys/xilian-pet/releases",
+  "assets": [
+    {
+      "flavor": "slim-model",
+      "file": "xilian-pet-v0.1.0-slim-model-20261006-1244.zip",
+      "size": 1902967,
+      "sha256": "34f60b70cf5827b5b5263b38647c3b3c7ec975a931c6bf5e28390aae2e1cd25a",
+      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.0/xilian-pet-v0.1.0-slim-model-20261006-1244.zip"
+    }
+  ]
+}

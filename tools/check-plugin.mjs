@@ -47,6 +47,15 @@ import {
   shouldDescend,
   shouldInclude,
 } from './lib/release-files.mjs'
+import {
+  checkForUpdate,
+  compareVersions,
+  formatCheckResult,
+  parseManifest,
+  pickAsset,
+  serializeManifest,
+  upsertManifest,
+} from './lib/update-check.mjs'
 import { writeZipToBuffer } from './lib/zip-writer.mjs'
 import {
   BASE_MOTION,
@@ -2972,12 +2981,30 @@ check('zip 写入器：目录条目齐全（不依赖解压工具隐式建目录
   }
 })
 
+const repoRoot = fileURLToPath(new URL('..', import.meta.url))
+
+/**
+ * 仓库根的**全部** `.cmd` —— 自动发现，不硬编码清单。
+ * 为什么：实测教育过一次 —— 当初只给 `安装.cmd` 加了"找包内便携 Node"的检查，
+ * 忘了 `start-pet.cmd`，于是在"什么都没有"的机器上装完**启动不起来**。
+ * 自动发现之后，将来新增的 `.cmd` 会被下面几条护栏自动覆盖。
+ */
+const rootCmdFiles = readdirSync(repoRoot)
+  .filter((name) => name.toLowerCase().endsWith('.cmd'))
+  .sort()
+
+check('`.cmd` 护栏覆盖仓库根的全部脚本（自动发现，不是硬编码清单）', () => {
+  for (const rel of ['安装.cmd', 'start-pet.cmd', '检查更新.cmd']) {
+    assert.ok(rootCmdFiles.includes(rel), `没发现 ${rel} —— 自动发现坏了，下面几条护栏会静默跳过它`)
+  }
+  assert.ok(rootCmdFiles.length >= 3, `只发现 ${rootCmdFiles.length} 个 .cmd，像是发现逻辑坏了`)
+})
+
 check('`.cmd` 必须纯 ASCII —— 注释也算（cmd.exe 按 GBK 解析，中文会变成乱码"命令"）', () => {
   // ⚠️ 这条是踩出来的：我在安装脚本里写了中文注释，cmd 把 UTF-8 字节按 GBK 解析，
   //    结果屏幕上冒出 `'串（实测踩过：屏幕打出' is not recognized as an internal
   //    or external command` 这种鬼东西 —— 而脚本本身还"看起来"能跑。
-  const files = ['安装.cmd', 'start-pet.cmd']
-  for (const rel of files) {
+  for (const rel of rootCmdFiles) {
     const bytes = readFileSync(new URL(`../${rel}`, import.meta.url))
     const bad = []
     for (let i = 0; i < bytes.length; i++) {
@@ -3013,11 +3040,11 @@ check('发行包：便携 Node 的源在 .cache、包内名字必须是 node/（
   assert.ok(!requiredInRelease({}).includes('node/node.exe'), '不开 --with-node 时不该要求它')
 })
 
-check('两个 `.cmd` 都要能找到包内的便携 Node（零前置版的关键）', () => {
+check('每个 `.cmd` 都要能找到包内的便携 Node（零前置版的关键）', () => {
   // 漏了这个的后果：包里明明带着 node.exe，启动器却只找 DSH 运行时和 PATH
   // → 在"什么都没有"的朋友机器上，装完了却**启动不起来**。
-  // 实测踩过：只给 安装.cmd 加了这条，忘了 start-pet.cmd。
-  for (const rel of ['安装.cmd', 'start-pet.cmd']) {
+  // 实测踩过：只给 安装.cmd 加了这条，忘了 start-pet.cmd —— 所以改成自动发现全部 .cmd。
+  for (const rel of rootCmdFiles) {
     const src = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
     assert.ok(src.includes('%~dp0node\\node.exe'), `${rel} 里缺少包内 Node 的查找（%~dp0node\\node.exe）`)
     assert.ok(src.includes('dsh-runtimes'), `${rel} 里缺少 DSH 运行时的查找`)
@@ -3028,7 +3055,7 @@ check('`.cmd` 的注释里不能出现 `>`（cmd 会先做重定向，凭空造�
   // ⚠️ 实测：`rem    -> keeps the launcher working...` 在运行后于**当前目录**
   //    留下一个名为 `keeps` 的空文件 —— 因为重定向在 rem 执行之前就被处理了。
   //    写 `rem a -> b` 这种箭头注释非常自然，所以必须用测试挡住。
-  for (const rel of ['安装.cmd', 'start-pet.cmd']) {
+  for (const rel of rootCmdFiles) {
     const lines = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8').split('\n')
     lines.forEach((line, index) => {
       if (/^\s*rem\b/i.test(line)) {
@@ -3285,8 +3312,6 @@ check('bundle 补丁：insert 行的 name 必须等于包名（否则官方装�
 // ─────────────────────────────────────────────────────────────
 console.log('\n[6] 发行元数据：版本 / 命名 / 校验和')
 
-const repoRoot = fileURLToPath(new URL('..', import.meta.url))
-
 check('版本号：根是唯一来源，插件与外壳必须与它一致', () => {
   // 为什么要有这条：插件卡片显示的是**插件自己**的版本，发行包名用的是**根**的版本。
   // 两处漂移不会有任何报错，只会让用户看到"插件 0.0.1 / 压缩包 v0.1.0"。
@@ -3395,6 +3420,361 @@ check('发行包必需清单：LICENSE 与 NOTICE.md 必须在内（合规不能
       assert.ok(existsSync(join(repoRoot, rel)), `${rel} 不在仓库里，发行包自检会直接失败`)
     }
   }
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[8] 更新检查：版本比较 / 清单 / 失败与安静的边界')
+
+check('版本比较：语义正确（不是字符串比较）', () => {
+  // ⚠️ 这两条正是"拿字符串比"会错的经典例：字符串下 "0.1.10" < "0.1.9"
+  assert.equal(compareVersions('0.1.10', '0.1.9'), 1, '0.1.10 比 0.1.9 新（数值比较）')
+  assert.equal(compareVersions('1.0.0-rc.10', '1.0.0-rc.9'), 1, 'rc.10 比 rc.9 新（预发布也按数值）')
+  assert.equal(compareVersions('0.1.0', '0.1.0'), 0)
+  assert.equal(compareVersions('0.2.0', '0.1.99'), 1)
+  assert.equal(compareVersions('1.0.0', '0.9.9'), 1)
+  // semver：预发布 < 正式版
+  assert.equal(compareVersions('1.0.0', '1.0.0-rc.1'), 1, '正式版比预发布新')
+  assert.equal(compareVersions('1.0.0-rc.1', '1.0.0'), -1)
+  assert.equal(compareVersions('1.0.0-alpha', '1.0.0-beta'), -1)
+  assert.equal(compareVersions('1.0.0-alpha.1', '1.0.0-alpha'), 1, '前缀相同则更长的新')
+  // 不合法就必须抛错 —— 不能猜一个默认值出来
+  assert.throws(() => compareVersions('v0.1.0', '0.1.0'), /semver/)
+  assert.throws(() => compareVersions('0.1', '0.1.0'), /semver/)
+})
+
+check('清单解析：结构不对**必须抛错**（不能悄悄当成"没有新版本"）', () => {
+  const good = JSON.stringify({
+    schema: 1,
+    latest: '0.2.0',
+    releasedAt: '2026-10-08',
+    notes: 'x',
+    releaseUrl: 'https://example.com',
+    assets: [{ flavor: 'slim-model', file: 'a.zip', size: 10, sha256: 'a'.repeat(64), url: 'https://example.com/a.zip' }],
+  })
+  assert.equal(parseManifest(good).latest, '0.2.0')
+  // 逐条负向对照：这些都是"看起来像清单但其实不能信"的输入
+  assert.throws(() => parseManifest('not json'), /JSON/)
+  assert.throws(() => parseManifest('[]'), /对象/)
+  assert.throws(() => parseManifest(JSON.stringify({ schema: 2, latest: '0.1.0' })), /schema/)
+  assert.throws(() => parseManifest(JSON.stringify({ schema: 1, latest: 'latest' })), /latest/)
+  assert.throws(() => parseManifest(JSON.stringify({ schema: 1, latest: '0.1.0', assets: {} })), /assets/)
+  // sha256 必填且必须是 64 位十六进制 —— 用户就拿它核对下载
+  assert.throws(
+    () => parseManifest(JSON.stringify({ schema: 1, latest: '0.1.0', assets: [{ flavor: 's', file: 'a.zip' }] })),
+    /sha256/,
+  )
+  assert.throws(
+    () =>
+      parseManifest(
+        JSON.stringify({ schema: 1, latest: '0.1.0', assets: [{ flavor: 's', file: 'a.zip', sha256: 'XYZ' }] }),
+      ),
+    /sha256/,
+  )
+})
+
+check('清单挑包：只给同形态；没有就返回 null，**不凑一个别的形态**', () => {
+  const manifest = parseManifest(
+    JSON.stringify({
+      schema: 1,
+      latest: '0.2.0',
+      assets: [
+        { flavor: 'slim-model', file: 'a.zip', sha256: 'a'.repeat(64) },
+        { flavor: 'full-model', file: 'b.zip', sha256: 'b'.repeat(64) },
+      ],
+    }),
+  )
+  assert.equal(pickAsset(manifest, 'full-model').file, 'b.zip')
+  assert.equal(pickAsset(manifest, 'allinone-model'), null, '没有同形态必须是 null')
+  assert.equal(pickAsset(manifest, null), null)
+  assert.equal(pickAsset(manifest, '  '), null)
+})
+
+check('清单序列化 ↔ 解析：往返一致（固定键序，git diff 才干净）', () => {
+  const manifest = parseManifest(
+    JSON.stringify({
+      schema: 1,
+      latest: '0.2.0',
+      releasedAt: '2026-10-08',
+      notes: '改了拖拽',
+      releaseUrl: 'https://example.com/releases',
+      // 故意乱序，验证输出会按 flavor 排好
+      assets: [
+        { flavor: 'slim-model', file: 'a.zip', size: 100, sha256: 'a'.repeat(64), url: 'https://e/a.zip' },
+        { flavor: 'full-model', file: 'b.zip', size: 200, sha256: 'b'.repeat(64), url: null },
+      ],
+    }),
+  )
+  const text = serializeManifest(manifest)
+  assert.ok(text.endsWith('\n'), '结尾要有换行（不然 git 会标记 no newline at end of file）')
+  const back = parseManifest(text)
+  // 内容必须一字不差（顺序单独断言，见下）
+  assert.equal(back.latest, manifest.latest)
+  assert.equal(back.notes, manifest.notes)
+  assert.equal(back.releaseUrl, manifest.releaseUrl)
+  assert.equal(back.releasedAt, manifest.releasedAt)
+  assert.deepEqual(
+    back.assets.find((a) => a.flavor === 'slim-model'),
+    manifest.assets.find((a) => a.flavor === 'slim-model'),
+  )
+  assert.deepEqual(
+    back.assets.find((a) => a.flavor === 'full-model'),
+    manifest.assets.find((a) => a.flavor === 'full-model'),
+  )
+  assert.deepEqual(
+    back.assets.map((a) => a.flavor),
+    ['full-model', 'slim-model'],
+    '按 flavor 排序，输出稳定',
+  )
+  // 真正的性质：读出来再写回去**逐字节不变** —— 否则每次打包都会在 git 里产生噪音 diff
+  assert.equal(serializeManifest(back), text, '序列化必须幂等')
+})
+
+// 假的 fetch：按 URL 查表。数字 = HTTP 状态码；字符串 = 响应体；查不到 = 网络错误
+function fakeFetch(routes) {
+  return async (url) => {
+    const value = routes[url]
+    if (value === undefined) throw new Error('ENOTFOUND 假装网络不通')
+    if (typeof value === 'number') return { ok: false, status: value, text: async () => '' }
+    return { ok: true, status: 200, text: async () => value }
+  }
+}
+
+const MANIFEST_020 = JSON.stringify({
+  schema: 1,
+  latest: '0.2.0',
+  releasedAt: '2026-10-08',
+  notes: '修了分数 DPI 下拖拽抖动',
+  releaseUrl: 'https://github.com/dddddhxwys/xilian-pet/releases/tag/v0.2.0',
+  assets: [
+    { flavor: 'slim-model', file: 'xilian-pet-v0.2.0-slim-model-20261008-1200.zip', size: 1876543, sha256: 'c'.repeat(64) },
+  ],
+})
+const SRC_A = 'https://example.invalid/primary/versions.json'
+const SRC_B = 'https://example.invalid/fallback/versions.json'
+
+await checkAsync('检查：线上更新 → available，并按形态挑到包', async () => {
+  const result = await checkForUpdate({
+    localVersion: '0.1.0',
+    localFlavor: 'slim-model',
+    sources: [SRC_A],
+    fetchImpl: fakeFetch({ [SRC_A]: MANIFEST_020 }),
+  })
+  assert.equal(result.status, 'available')
+  assert.equal(result.latest, '0.2.0')
+  assert.equal(result.asset?.file, 'xilian-pet-v0.2.0-slim-model-20261008-1200.zip')
+  assert.equal(result.source, SRC_A)
+})
+
+await checkAsync('检查：版本相同 → up-to-date；本地更新 → ahead（不是"已最新"）', async () => {
+  const same = await checkForUpdate({
+    localVersion: '0.2.0',
+    localFlavor: 'slim-model',
+    sources: [SRC_A],
+    fetchImpl: fakeFetch({ [SRC_A]: MANIFEST_020 }),
+  })
+  assert.equal(same.status, 'up-to-date')
+  const ahead = await checkForUpdate({
+    localVersion: '0.3.0',
+    localFlavor: 'slim-model',
+    sources: [SRC_A],
+    fetchImpl: fakeFetch({ [SRC_A]: MANIFEST_020 }),
+  })
+  assert.equal(ahead.status, 'ahead', '本地比线上新时既不是"有新版"也不是"已最新"')
+})
+
+await checkAsync('多来源回退：第一个坏、第二个好 → 必须成功（加镜像就是加一行）', async () => {
+  const result = await checkForUpdate({
+    localVersion: '0.1.0',
+    sources: [SRC_A, SRC_B],
+    fetchImpl: fakeFetch({ [SRC_A]: 503, [SRC_B]: MANIFEST_020 }),
+  })
+  assert.equal(result.status, 'available')
+  assert.equal(result.source, SRC_B, '要报告真正答话的那个来源')
+  assert.equal(result.attempts.length, 2)
+  assert.equal(result.attempts[0].ok, false)
+  assert.equal(result.attempts[1].ok, true)
+})
+
+await checkAsync('全部来源不可达 → failed（**绝不能变成 up-to-date**）', async () => {
+  const result = await checkForUpdate({
+    localVersion: '0.1.0',
+    sources: [SRC_A, SRC_B],
+    fetchImpl: fakeFetch({}),
+  })
+  assert.equal(result.status, 'failed')
+  assert.match(result.reason, /都没问到/)
+  assert.equal(result.attempts.length, 2, '每个来源的失败原因都要留着，用户报问题时能看出堵在哪')
+})
+
+await checkAsync('清单结构坏 → 也算检查失败（不能当成"没有新版本"）', async () => {
+  const result = await checkForUpdate({
+    localVersion: '0.1.0',
+    sources: [SRC_A],
+    fetchImpl: fakeFetch({ [SRC_A]: '{"schema":1}' }),
+  })
+  assert.equal(result.status, 'failed')
+  assert.match(result.attempts[0].reason, /latest/)
+})
+
+await checkAsync('本地版本读不到 → failed（不猜）', async () => {
+  const result = await checkForUpdate({ localVersion: null, sources: [SRC_A], fetchImpl: fakeFetch({ [SRC_A]: MANIFEST_020 }) })
+  assert.equal(result.status, 'failed')
+  assert.match(result.reason, /本地版本/)
+})
+
+await checkAsync('总预算用尽 → 后面的来源不再问（安装时不能被网络拖住）', async () => {
+  let clock = 0
+  const result = await checkForUpdate({
+    localVersion: '0.1.0',
+    sources: [SRC_A, SRC_B],
+    totalBudgetMs: 1000,
+    fetchImpl: fakeFetch({ [SRC_A]: MANIFEST_020, [SRC_B]: MANIFEST_020 }),
+    now: () => (clock += 1000), // 每问一次时间就跳 1 秒 → 第一次判断预算就已用尽
+  })
+  assert.equal(result.status, 'failed')
+  assert.ok(
+    result.attempts.some((a) => /超出总预算/.test(a.reason ?? '')),
+    `应有一条"超出总预算"的记录，实际：${JSON.stringify(result.attempts)}`,
+  )
+  assert.ok(
+    result.attempts.every((a) => a.ok === false),
+    '预算用尽就不该再去抓 —— 一个来源都不该成功',
+  )
+})
+
+check('★ 方案 A 的核心：失败在**安装时必须一个字都不打**', () => {
+  const failed = { status: 'failed', localVersion: '0.1.0', localFlavor: 'slim', attempts: [{ source: SRC_A, ok: false, reason: 'ECONNRESET' }], reason: '所有来源都没问到（试了 2 个）' }
+  assert.deepEqual(formatCheckResult(failed, { quiet: true }), [], '安装时的失败必须完全静默（否则 install-log 里那句"失败"会被当成安装失败）')
+  const loud = formatCheckResult(failed, {})
+  assert.ok(loud.length > 0, '用户主动查时要说话')
+  assert.ok(
+    loud.some((line) => /不等于/.test(line)),
+    '必须要说清"没查到 ≠ 已是最新" —— 这是更新检查器最经典的谎言',
+  )
+  // 断言"不能出现 ✅" —— 那是成功确认的标记；失败输出里出现它，用户会以为查过了
+  assert.ok(
+    !loud.join('\n').includes('✅'),
+    '失败输出里不能出现 ✅（成功确认的标记）—— 那会让人以为"已经查过了"',
+  )
+})
+
+check('★ 已是最新 / 开发版：安装时也不出声；用户主动查时才说', () => {
+  const upToDate = { status: 'up-to-date', localVersion: '0.2.0', localFlavor: 'slim', latest: '0.2.0', source: SRC_A, attempts: [] }
+  assert.deepEqual(formatCheckResult(upToDate, { quiet: true }), [], '安装时"已是最新"不用打，保持安装输出干净')
+  assert.ok(formatCheckResult(upToDate, {}).some((line) => /已是最新/.test(line)))
+  const ahead = { status: 'ahead', localVersion: '0.3.0', localFlavor: null, latest: '0.2.0', source: SRC_A, attempts: [] }
+  assert.deepEqual(formatCheckResult(ahead, { quiet: true }), [])
+  assert.ok(formatCheckResult(ahead, {}).some((line) => /比线上还新/.test(line)))
+})
+
+check('★ 有新版本：安装时只出**一行**；用户主动查时给全（说明/下载/sha256）', () => {
+  const available = {
+    status: 'available',
+    localVersion: '0.1.0',
+    localFlavor: 'slim-model',
+    latest: '0.2.0',
+    releasedAt: '2026-10-08',
+    notes: '修了分数 DPI 下拖拽抖动',
+    releaseUrl: 'https://github.com/dddddhxwys/xilian-pet/releases/tag/v0.2.0',
+    asset: { flavor: 'slim-model', file: 'xilian-pet-v0.2.0-slim-model-20261008-1200.zip', size: 1876543, sha256: 'c'.repeat(64), url: null },
+    assetMissingForFlavor: false,
+    source: SRC_A,
+    attempts: [],
+  }
+  const quietLines = formatCheckResult(available, { quiet: true })
+  assert.equal(quietLines.length, 1, '安装时只准出一行')
+  assert.match(quietLines[0], /0\.1\.0/)
+  assert.match(quietLines[0], /0\.2\.0/)
+  assert.match(quietLines[0], /检查更新\.cmd/, '要告诉用户去哪看详情')
+
+  const loudLines = formatCheckResult(available, {})
+  const text = loudLines.join('\n')
+  assert.match(text, /修了分数 DPI/, '要带更新说明')
+  assert.match(text, /SHA256/, '要给校验和')
+  assert.match(text, new RegExp('c'.repeat(64)))
+  assert.match(text, /1\.79 MB/, '要显示体积')
+  assert.match(text, /新目录/, '要提醒解压到新目录，别覆盖')
+
+  // 线上没有同形态的包：如实说，别推荐一个不是他那个形态的
+  const missing = { ...available, asset: null, assetMissingForFlavor: true }
+  assert.match(formatCheckResult(missing, {}).join('\n'), /没有与你同形态/)
+  assert.equal(formatCheckResult(missing, { quiet: true }).length, 1)
+})
+
+check('清单更新：新包入账 + latest 抬升；重复打包是**原地替换**不新增条目', () => {
+  const empty = { schema: 1, latest: '0.1.0', releasedAt: '2026-10-01', notes: '旧说明', releaseUrl: null, assets: [] }
+  const first = upsertManifest(empty, {
+    version: '0.2.0',
+    flavor: 'slim-model',
+    file: 'a.zip',
+    size: 100,
+    sha256: 'a'.repeat(64),
+    url: 'https://e/a.zip',
+    releasedAt: '2026-10-08',
+    notes: '新说明',
+  })
+  assert.equal(first.manifest.latest, '0.2.0')
+  assert.equal(first.manifest.notes, '新说明')
+  assert.equal(first.manifest.assets.length, 1)
+  assert.equal(first.notesMissing, false)
+
+  // 同一版重新打包：sha256 变了，必须原地刷新，**不能变成两条**
+  const rebuilt = upsertManifest(first.manifest, {
+    version: '0.2.0',
+    flavor: 'slim-model',
+    file: 'a.zip',
+    size: 100,
+    sha256: 'b'.repeat(64),
+    url: 'https://e/a.zip',
+    releasedAt: '2026-10-08',
+    notes: '新说明',
+  })
+  assert.equal(rebuilt.manifest.assets.length, 1, '同一个文件重新打包不该新增条目')
+  assert.equal(rebuilt.manifest.assets[0].sha256, 'b'.repeat(64), 'sha256 必须跟着刷新')
+  assert.ok(rebuilt.changed.some((c) => /sha256 已刷新/.test(c)))
+
+  // 补打旧版：只入账，**不把 latest 降级**
+  const older = upsertManifest(rebuilt.manifest, {
+    version: '0.1.0',
+    flavor: 'full-model',
+    file: 'old.zip',
+    size: 50,
+    sha256: 'd'.repeat(64),
+    url: null,
+    releasedAt: '2026-10-01',
+  })
+  assert.equal(older.manifest.latest, '0.2.0', 'latest 不能被旧版降级')
+  assert.equal(older.manifest.assets.length, 2)
+  assert.ok(older.changed.some((c) => /保留 latest/.test(c)))
+
+  // latest 抬升但没给说明 → 必须提醒（别静默发布空说明）
+  const noNotes = upsertManifest(empty, {
+    version: '0.3.0',
+    flavor: 'slim',
+    file: 'b.zip',
+    size: 10,
+    sha256: 'e'.repeat(64),
+    url: null,
+    releasedAt: '2026-10-09',
+  })
+  assert.equal(noNotes.notesMissing, true, '没给 notes 时必须报出来')
+  assert.equal(noNotes.manifest.notes, '')
+})
+
+check('仓库里的 versions.json 合法，且**不会宣传一个不存在的版本**', () => {
+  const manifest = parseManifest(readFileSync(join(repoRoot, 'versions.json'), 'utf8'))
+  const versions = readVersions(repoRoot)
+  // latest 可以比当前仓库版本旧（刚 bump 完还没打包），但**绝不能更新** ——
+  // 那等于告诉所有用户"有新版本"，而那个版本根本还没做出来。
+  assert.ok(
+    compareVersions(manifest.latest, versions.source) <= 0,
+    `versions.json 的 latest=${manifest.latest} 比 package.json 的 ${versions.source} 还新 —— 会宣传一个不存在的版本`,
+  )
+  assert.match(manifest.releaseUrl ?? '', /github\.com\/dddddhxwys\/xilian-pet/, '发布页要指向本仓库')
+})
+
+check('发行清单不进发行包（用户手里那份的 latest 是打包那一刻的，只会造成困惑）', () => {
+  assert.equal(shouldInclude('versions.json', { withModel: true }), false)
 })
 
 console.log(`\n${'─'.repeat(56)}`)

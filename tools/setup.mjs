@@ -21,6 +21,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { addPluginRow, hasPluginRow, removePluginRow, ROW_ID } from './lib/patch-edit.mjs'
+import { checkForUpdate, formatCheckResult, readLocalRelease } from './lib/update-check.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(here, '..')
@@ -50,22 +51,13 @@ function readPackageName() {
 }
 
 /**
- * 版本号 —— **发行包里优先读 `VERSION.txt`**（它带形态与构建时间，信息更全），
- * 仓库里没有那个文件就退回根 `package.json` 的 version。
+ * 版本号 —— 复用更新检查那边的读取逻辑（单一来源），并附带形态。
  * 为什么值得单独读：用户报问题时第一句总是"我装的是哪一版"，这个数字必须能一眼打出来。
  */
 function readVersion() {
-  try {
-    const matched = /^版本\s*:\s*(.+)$/m.exec(readFileSync(join(ROOT, 'VERSION.txt'), 'utf8'))
-    if (matched) return matched[1].trim()
-  } catch {
-    /* 仓库里没有 VERSION.txt —— 正常，它是打包时生成的 */
-  }
-  try {
-    return `v${JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version}`
-  } catch {
-    return '(未知)'
-  }
+  const local = readLocalRelease(ROOT)
+  if (local.version === null) return '(未知)'
+  return local.flavor === null ? `v${local.version}` : `v${local.version}（${local.flavor}）`
 }
 
 const counts = { ok: 0, warn: 0, fail: 0 }
@@ -332,3 +324,20 @@ line('  2. 双击仓库根目录的 `start-pet.cmd` → 她会出现在桌面上
 line('  3. 退出：按 Ctrl+Shift+Q')
 if (counts.warn > 0) line('\n（上面有告警项，多数不影响运行 —— 比如缺模型时会显示占位形象。）')
 line('')
+
+// ── ⑦ 顺带看一眼有没有新版 ────────────────────────────────────────
+// ⚠️ **失败必须完全静默**：本文件的输出会**整份写进 install-log.txt**，而那是用户出问题时
+//    发给开发者看的。里面冒出一句"检查更新失败"，会被**误读成安装失败** ——
+//    一个装饰性功能把安装流程的可信度毁掉，不值。所以用 quiet 模式：
+//    只有"确实有新版本"才出一行；已最新 / 网络不通 / 超时，一个字都不打。
+//    也**不影响退出码**（这里是直接调函数，不是起子进程）；总预算 4 秒，拖不住安装。
+if (!DRY_RUN) {
+  const local = readLocalRelease(ROOT)
+  const update = await checkForUpdate({
+    localVersion: local.version,
+    localFlavor: local.flavor,
+    timeoutMs: 2500,
+    totalBudgetMs: 4000,
+  })
+  for (const text of formatCheckResult(update, { quiet: true })) line(text)
+}
