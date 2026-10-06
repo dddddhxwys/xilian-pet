@@ -3086,6 +3086,24 @@ check('`.cmd` 的注释里不能出现 `>`（cmd 会先做重定向，凭空造�
   }
 })
 
+check('`.cmd` 的 echo 行里括号必须转义成 ^( ^)（在 if 块里裸括号会截断语句）', () => {
+  // ⚠️ 同一个会话里踩到的第三个 .cmd 解析坑：我在 `if not defined PET_TEE (` 块里写了
+  //    `echo ... (in this folder) ...` —— 那个 `)` 被当成块的结束符，后面整段崩掉，
+  //    报的是 `and was unexpected at this time.`
+  //    括号在 echo 里是常见内容，所以必须挡住：允许 `^(` `^)`，裸的一律拦。
+  for (const rel of cmdFilesForSafety) {
+    const lines = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8').split('\n')
+    lines.forEach((line, index) => {
+      if (!/^\s*echo\b/i.test(line)) return
+      const withoutEscaped = line.replace(/\^\(/g, '').replace(/\^\)/g, '')
+      assert.ok(
+        !/[()]/.test(withoutEscaped),
+        `${rel}:${index + 1} 的 echo 里有未转义的括号（要写 ^( ^) ）：${line.trim()}`,
+      )
+    })
+  }
+})
+
 check('拖拽链路：移动要续期 + 复位要通知渲染端 + 失焦复位必须有条件', () => {
   // ⚠️ 这三条都是用户实机报出来的（"一开始能拖，后面突然拖不动了"）。
   //    链条：失焦或定时器断档 → 看门狗复位 draggingNow → 主进程恢复"按掩码判穿透"

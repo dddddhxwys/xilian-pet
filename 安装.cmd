@@ -27,10 +27,29 @@ set "PET_LOG=%~dp0install-log.txt"
 rem ------------------------------------------------------------
 rem  Tee: re-run this script once with ALL output redirected into
 rem  the log (including Node's own error output), then echo it back.
+rem
+rem  IMPORTANT - say so BEFORE redirecting. Because every line of the
+rem  child goes into the log and is only printed at the end, this window
+rem  is COMPLETELY BLANK for the whole run. Reported as "double-clicked
+rem  and nothing happens" by a real tester, who was in fact watching a
+rem  ~100 MB Electron download. The banner below removes that illusion.
 rem ------------------------------------------------------------
 if not defined PET_TEE (
   set "PET_TEE=1"
   chcp 65001 >nul
+  echo ============================================================
+  echo  Xilian Pet installer
+  echo.
+  echo  This window stays BLANK while it works. That is normal.
+  echo.
+  echo  All output goes to install-log.txt ^(in this folder^) and is
+  echo  shown here when the run finishes. You can open that file at
+  echo  any time to watch progress.
+  echo.
+  echo  If Electron has to be downloaded ^(about 100 MB^), this can
+  echo  take several minutes. Please leave the window open.
+  echo ============================================================
+  echo.
   call "%~f0" %* > "%PET_LOG%" 2>&1
   set "CODE=!ERRORLEVEL!"
   type "%PET_LOG%"

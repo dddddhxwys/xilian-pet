@@ -8,10 +8,10 @@
     {
       "version": "0.1.0",
       "flavor": "slim-model",
-      "file": "xilian-pet-v0.1.0-slim-model-20261006-1357.zip",
-      "size": 1907874,
-      "sha256": "88e8d64c1c9612fea493790c7be8df63da670faf9650768fc491837842228582",
-      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.0/xilian-pet-v0.1.0-slim-model-20261006-1357.zip"
+      "file": "xilian-pet-v0.1.0-slim-model-20261006-1408.zip",
+      "size": 1908586,
+      "sha256": "7685be453218683bafe80b50173888c58c91d45040ba81f9674b820555051e64",
+      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.0/xilian-pet-v0.1.0-slim-model-20261006-1408.zip"
     }
   ]
 }
