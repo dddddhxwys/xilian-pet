@@ -2993,6 +2993,9 @@ const rootCmdFiles = readdirSync(repoRoot)
   .filter((name) => name.toLowerCase().endsWith('.cmd'))
   .sort()
 
+/** 所有 .cmd（含 tools/ 下的共享脚本）—— 纯 ASCII / 注释里不能有 `>` 这两条要全覆盖 */
+const cmdFilesForSafety = [...rootCmdFiles, 'tools/find-node.cmd']
+
 check('`.cmd` 护栏覆盖仓库根的全部脚本（自动发现，不是硬编码清单）', () => {
   for (const rel of ['安装.cmd', 'start-pet.cmd', '检查更新.cmd']) {
     assert.ok(rootCmdFiles.includes(rel), `没发现 ${rel} —— 自动发现坏了，下面几条护栏会静默跳过它`)
@@ -3004,7 +3007,7 @@ check('`.cmd` 必须纯 ASCII —— 注释也算（cmd.exe 按 GBK 解析，中
   // ⚠️ 这条是踩出来的：我在安装脚本里写了中文注释，cmd 把 UTF-8 字节按 GBK 解析，
   //    结果屏幕上冒出 `'串（实测踩过：屏幕打出' is not recognized as an internal
   //    or external command` 这种鬼东西 —— 而脚本本身还"看起来"能跑。
-  for (const rel of rootCmdFiles) {
+  for (const rel of cmdFilesForSafety) {
     const bytes = readFileSync(new URL(`../${rel}`, import.meta.url))
     const bad = []
     for (let i = 0; i < bytes.length; i++) {
@@ -3040,22 +3043,40 @@ check('发行包：便携 Node 的源在 .cache、包内名字必须是 node/（
   assert.ok(!requiredInRelease({}).includes('node/node.exe'), '不开 --with-node 时不该要求它')
 })
 
-check('每个 `.cmd` 都要能找到包内的便携 Node（零前置版的关键）', () => {
-  // 漏了这个的后果：包里明明带着 node.exe，启动器却只找 DSH 运行时和 PATH
-  // → 在"什么都没有"的朋友机器上，装完了却**启动不起来**。
-  // 实测踩过：只给 安装.cmd 加了这条，忘了 start-pet.cmd —— 所以改成自动发现全部 .cmd。
+check('Node 探测**只有一处实现**，三个入口都 call 它（以前三份拷贝，已经漏过一次）', () => {
+  // 历史教训：以前 安装.cmd / start-pet.cmd 各抄了一份探测逻辑，
+  // 给一个加了"找包内 Node"、忘了另一个 → 在"什么都没有"的机器上装完**启动不起来**。
   for (const rel of rootCmdFiles) {
     const src = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
-    assert.ok(src.includes('%~dp0node\\node.exe'), `${rel} 里缺少包内 Node 的查找（%~dp0node\\node.exe）`)
-    assert.ok(src.includes('dsh-runtimes'), `${rel} 里缺少 DSH 运行时的查找`)
+    assert.ok(
+      src.includes('call "%~dp0tools\\find-node.cmd"'),
+      `${rel} 必须 call 共享的 tools/find-node.cmd`,
+    )
+    // 目录扫描（for /d）属于探测逻辑，只准出现在 find-node.cmd 里
+    assert.ok(
+      !/for \/d %%D in/.test(src),
+      `${rel} 里还有内联的目录扫描 —— 探测逻辑必须集中在 tools/find-node.cmd`,
+    )
   }
+  const finder = readFileSync(new URL('../tools/find-node.cmd', import.meta.url), 'utf8')
+  for (const [needle, why] of [
+    ['node\\node.exe', '包内便携 Node（零前置版的关键）'],
+    ['dsh-runtimes', 'DSH home 下解包的运行时'],
+    ['InstallLocation', 'DSH 安装目录 —— 2026-10-06 实测：机器上 DSH 装着且在跑，但 home 里没有运行时，Node 在安装目录'],
+    ['$PATH:N', 'PATH 兜底'],
+  ]) {
+    assert.ok(finder.includes(needle), `find-node.cmd 缺少 ${needle}（${why}）`)
+  }
+  // 靠 set 把 PET_NODE 交给调用方 —— 一旦 setlocal，变量就传不回去了
+  assert.ok(!/^\s*setlocal/mi.test(finder), 'find-node.cmd 不能 setlocal，否则 PET_NODE 传不回调用方')
 })
 
 check('`.cmd` 的注释里不能出现 `>`（cmd 会先做重定向，凭空造出文件）', () => {
   // ⚠️ 实测：`rem    -> keeps the launcher working...` 在运行后于**当前目录**
   //    留下一个名为 `keeps` 的空文件 —— 因为重定向在 rem 执行之前就被处理了。
   //    写 `rem a -> b` 这种箭头注释非常自然，所以必须用测试挡住。
-  for (const rel of rootCmdFiles) {
+  //    （写这条护栏时我自己就在 find-node.cmd 的注释里写了 `<install>` 被抓过一次。）
+  for (const rel of cmdFilesForSafety) {
     const lines = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8').split('\n')
     lines.forEach((line, index) => {
       if (/^\s*rem\b/i.test(line)) {

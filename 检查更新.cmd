@@ -25,40 +25,18 @@ cd /d "%~dp0"
 
 set "PET_NODE="
 
-rem 0) Node shipped INSIDE this package (the all-in-one build has one)
-for %%P in (
-  "%~dp0node\node.exe"
-  "%~dp0tools\node\node.exe"
-  "%~dp0vendor\node\node.exe"
-) do (
-  if exist "%%~fP" if not defined PET_NODE set "PET_NODE=%%~fP"
-)
-
-rem 1) DSH's own bundled runtime (DSH unpacks it on its FIRST launch)
-set "DSH_HOME_DIR=%USERPROFILE%\.dsh"
-if defined DSH_HOME set "DSH_HOME_DIR=%DSH_HOME%"
-for /d %%D in ("%DSH_HOME_DIR%\dsh-runtimes\*") do (
-  if not defined PET_NODE if exist "%%~fD\dependencies\node\bin\node.exe" set "PET_NODE=%%~fD\dependencies\node\bin\node.exe"
-)
-for /d %%D in ("%DSH_HOME_DIR%\dsh-runtimes\*") do (
-  if not defined PET_NODE if exist "%%~fD\dependencies\node\node.exe" set "PET_NODE=%%~fD\dependencies\node\node.exe"
-)
-
-rem 2) node on PATH
-if not defined PET_NODE (
-  for %%N in (node.exe) do if not "%%~$PATH:N"=="" set "PET_NODE=%%~$PATH:N"
-)
+rem ONE shared searcher for all three root .cmd files - see tools\find-node.cmd.
+rem (Package node, DSH home runtime, Node inside the DSH INSTALL directory,
+rem  then PATH.) Do not inline a copy here: three copies is how a location
+rem went missing in one of them once already.
+call "%~dp0tools\find-node.cmd"
 
 if not defined PET_NODE (
   echo [ERROR] No Node runtime found - cannot check for updates.
   echo.
-  echo   Checked these locations:
-  echo     %~dp0node\node.exe
-  echo     %DSH_HOME_DIR%\dsh-runtimes\*\dependencies\node\bin\node.exe
-  echo     PATH: node.exe
-  echo.
   echo   Start DSH once - it unpacks its runtime on the first launch -
-  echo   then run this file again.
+  echo   then run this file again. If DSH is already running, send me
+  echo   install-log.txt from the installer instead.
   echo   Nothing was changed on this machine.
   if "%~1"=="" pause
   exit /b 1

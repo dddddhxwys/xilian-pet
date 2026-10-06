@@ -22,32 +22,18 @@ cd /d "%~dp0"
 
 set "PET_NODE="
 
-rem 0) Node shipped INSIDE this package (the "all-in-one" build has one)
-rem    keeps the launcher working with zero prerequisites
-for %%P in (
-  "%~dp0node\node.exe"
-  "%~dp0tools\node\node.exe"
-) do (
-  if exist "%%~fP" if not defined PET_NODE set "PET_NODE=%%~fP"
-)
-
-rem 1) DSH's own bundled runtime (unpacked on the first launch of DSH)
-if not defined PET_NODE (
-  for /d %%D in ("%USERPROFILE%\.dsh\dsh-runtimes\*") do (
-    if exist "%%~fD\dependencies\node\bin\node.exe" set "PET_NODE=%%~fD\dependencies\node\bin\node.exe"
-  )
-)
-
-rem 2) node on PATH
-if not defined PET_NODE (
-  for %%N in (node.exe) do if not "%%~$PATH:N"=="" set "PET_NODE=%%~$PATH:N"
-)
+rem ONE shared searcher for all three root .cmd files - see tools\find-node.cmd.
+rem (Package node, DSH home runtime, Node inside the DSH INSTALL directory,
+rem  then PATH.) It must not be inlined here again: three copies of this search
+rem is what let a location go missing in one of them.
+call "%~dp0tools\find-node.cmd"
 
 if not defined PET_NODE (
   echo [ERROR] No Node runtime found - cannot start the pet.
   echo.
   echo   Run the installer first ^(the other .cmd file in this folder^):
   echo   it sets everything up and reports whatever is missing.
+  echo   If you already ran it successfully, send me install-log.txt.
   echo.
   if "%~1"=="" pause
   exit /b 1

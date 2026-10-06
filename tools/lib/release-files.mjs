@@ -103,6 +103,9 @@ export function requiredInRelease(options = {}) {
     'NOTICE.md',
     '安装.cmd',
     'start-pet.cmd',
+    '检查更新.cmd',
+    // ⚠️ 三个 .cmd 全靠它找 Node —— 漏了它，包里三个入口全部跑不起来
+    'tools/find-node.cmd',
     'package.json',
     'packages/pet-plugin/index.js',
     'packages/pet-plugin/cordis.patch.yml',

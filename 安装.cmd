@@ -61,64 +61,38 @@ echo.
 
 set "PET_NODE="
 
-rem 0) a Node runtime shipped INSIDE this package (the "full" package has one)
-rem    checked first: most predictable, and needs no prerequisites at all
-for %%P in (
-  "%~dp0node\node.exe"
-  "%~dp0tools\node\node.exe"
-  "%~dp0vendor\node\node.exe"
-) do (
-  if exist "%%~fP" if not defined PET_NODE set "PET_NODE=%%~fP"
-)
-
-rem 1) DSH's own bundled Node runtime.
-rem    IMPORTANT: DSH unpacks this on its FIRST LAUNCH - installing DSH is
-rem    not enough, so a tester who "already installed DSH" can still have no
-rem    runtime here. That is why the error message below distinguishes the
-rem    two cases.
-set "DSH_HOME_DIR=%USERPROFILE%\.dsh"
-if defined DSH_HOME set "DSH_HOME_DIR=%DSH_HOME%"
-for /d %%D in ("%DSH_HOME_DIR%\dsh-runtimes\*") do (
-  if not defined PET_NODE if exist "%%~fD\dependencies\node\bin\node.exe" set "PET_NODE=%%~fD\dependencies\node\bin\node.exe"
-)
-rem a couple of other layouts seen in the wild
-for /d %%D in ("%DSH_HOME_DIR%\dsh-runtimes\*") do (
-  if not defined PET_NODE if exist "%%~fD\dependencies\node\node.exe" set "PET_NODE=%%~fD\dependencies\node\node.exe"
-)
-for /d %%D in ("%DSH_HOME_DIR%\dsh-runtimes\*\dependencies\node*") do (
-  if not defined PET_NODE if exist "%%~fD\bin\node.exe" set "PET_NODE=%%~fD\bin\node.exe"
-)
-
-rem 2) fall back to node on PATH
-if not defined PET_NODE (
-  for %%N in (node.exe) do if not "%%~$PATH:N"=="" set "PET_NODE=%%~$PATH:N"
-)
+rem ONE shared searcher for all three root .cmd files - see tools\find-node.cmd.
+rem It checks, in order: Node shipped in this package, the DSH runtime under the
+rem DSH home, the Node inside the DSH INSTALL directory (read from the uninstall
+rem registry entry), then PATH. That install-directory step is why this became a
+rem shared file: a tester had DSH installed AND running while the DSH home had no
+rem runtime yet, and the old per-file search missed the copy inside the install.
+rem
+rem NOTE: do not add setlocal here or in find-node.cmd - the caller has to see
+rem       the variable PET_NODE.
+call "%~dp0tools\find-node.cmd"
 
 if not defined PET_NODE (
+  if not defined PET_DSH_HOME set "PET_DSH_HOME=%USERPROFILE%\.dsh"
   echo [ERROR] No Node runtime found on this machine.
   echo.
-  echo   DSH home: %DSH_HOME_DIR%
-  if exist "%DSH_HOME_DIR%" echo     - that folder exists
-  if not exist "%DSH_HOME_DIR%" echo     - that folder does NOT exist
-  if exist "%DSH_HOME_DIR%\dsh-runtimes" echo     - it HAS a dsh-runtimes folder, contents:
-  if exist "%DSH_HOME_DIR%\dsh-runtimes" dir /b "%DSH_HOME_DIR%\dsh-runtimes"
-  if not exist "%DSH_HOME_DIR%\dsh-runtimes" echo     - it has NO dsh-runtimes folder yet
+  echo   DSH home: %PET_DSH_HOME%
+  if exist "%PET_DSH_HOME%" echo     - that folder exists
+  if not exist "%PET_DSH_HOME%" echo     - that folder does NOT exist
+  if exist "%PET_DSH_HOME%\dsh-runtimes" echo     - it HAS a dsh-runtimes folder, contents:
+  if exist "%PET_DSH_HOME%\dsh-runtimes" dir /b "%PET_DSH_HOME%\dsh-runtimes"
+  if not exist "%PET_DSH_HOME%\dsh-runtimes" echo     - it has NO dsh-runtimes folder yet
   echo.
-  echo   DSH unpacks its runtime on the FIRST LAUNCH. Installing DSH is
-  echo   not enough - it has to actually start once.
+  echo   The searcher also read the DSH install directory from the registry and
+  echo   checked PATH - it found nothing anywhere. The lines above are only a
+  echo   hint: an empty dsh-runtimes folder is NOT fatal by itself.
   echo.
   echo   Do this:
   echo     1. Start DSH once and let it fully open
   echo     2. Run this installer again
   echo.
-  echo   If DSH lives somewhere else, or you would rather not use DSH at all,
-  echo   send me this list - there is also a build that ships its own Node.
-  echo.
-  echo   Locations checked:
-  echo     %~dp0node\node.exe
-  echo     %DSH_HOME_DIR%\dsh-runtimes\*\dependencies\node\bin\node.exe
-  echo     %DSH_HOME_DIR%\dsh-runtimes\*\dependencies\node\node.exe
-  echo     PATH: node.exe
+  echo   Still failing? Send me install-log.txt - there is also a build that
+  echo   ships its own Node and needs nothing from this machine.
   echo.
   echo   Nothing was changed on this machine.
   echo.
