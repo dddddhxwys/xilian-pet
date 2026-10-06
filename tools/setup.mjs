@@ -20,7 +20,13 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { addPluginRow, hasPluginRow, removePluginRow, ROW_ID } from './lib/patch-edit.mjs'
+import {
+  addPluginRow,
+  looksLikePluginEntryPath,
+  readPluginRowPath,
+  removePluginRow,
+  ROW_ID,
+} from './lib/patch-edit.mjs'
 import { checkForUpdate, formatCheckResult, readLocalRelease } from './lib/update-check.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -202,16 +208,39 @@ if (!profileDir) {
     bad('插件入口不存在', `期望位置：${entry}\n  发行包不完整？请重新解压。`)
   } else {
     const current = readFileSync(patchFile, 'utf8')
-    if (hasPluginRow(current)) {
+    /**
+     * ⚠️ 光看「有没有那一行」不够：用户换个文件夹解压/运行（很常见）之后，
+     *    那一行还指着**旧路径** —— 旧目录在就"插件从旧副本加载"，被删掉就
+     *    **静默加载不到**（桌宠连不上 DSH、插件列表里也没有）。
+     *    所以要比对**它指向哪个目录**，不一样就改过来。
+     */
+    const mountedEntry = readPluginRowPath(current)
+    const config = { pathPrefix: '/xilian-pet', captureRawShapes: 20, minHoldMs: 500 }
+    /**
+     * ⚠️ 再分一层：官方 bundle 安装留下的行，`name` 是**包名**
+     *    （`@local/xilian-pet-plugin`），不是文件路径。那种行**不属于**手写挂载，
+     *    绝不能按"路径变了"去改 —— 那会改坏官方安装的配置覆盖（实测 dry-run 误报过）。
+     */
+    const mountedIsHandwritten = looksLikePluginEntryPath(mountedEntry)
+
+    if (mountedEntry === entry) {
       ok('已挂载过，跳过（幂等）')
+    } else if (mountedEntry !== null && !mountedIsHandwritten) {
+      ok(
+        '插件这一行来自**官方 bundle 安装**（name 是包名，不是文件路径）—— 手写挂载不需要，保持原样',
+        `      ${mountedEntry}`,
+      )
     } else if (DRY_RUN) {
-      warn('未挂载 —— 实际执行时会追加插件行并备份原文件')
+      warn(
+        mountedEntry === null
+          ? '未挂载 —— 实际执行时会追加插件行并备份原文件'
+          : `插件行指向**别的目录** —— 实际执行时会改到当前目录`,
+        mountedEntry === null ? '' : `      旧：${mountedEntry}\n      新：${entry}`,
+      )
     } else {
-      const { text, changed } = addPluginRow(current, {
-        rowId: ROW_ID,
-        pluginEntry: entry,
-        config: { pathPrefix: '/xilian-pet', captureRawShapes: 20, minHoldMs: 500 },
-      })
+      // 指向别的目录：先摘掉旧的那一段，再按当前目录追加（两个纯函数都已自测）
+      const base = mountedEntry === null ? current : removePluginRow(current).text
+      const { text, changed } = addPluginRow(base, { rowId: ROW_ID, pluginEntry: entry, config })
       if (!changed) {
         ok('已挂载过，跳过（幂等）')
       } else {
@@ -219,7 +248,14 @@ if (!profileDir) {
         try {
           copyFileSync(patchFile, backup)
           writeFileSync(patchFile, text, 'utf8')
-          ok('已写入插件行（并已备份原文件）', `备份：${backup}`)
+          if (mountedEntry === null) {
+            ok('已写入插件行（并已备份原文件）', `备份：${backup}`)
+          } else {
+            ok(
+              '插件行原本指着**别的目录**，已改到当前目录（并已备份原文件）',
+              `      旧：${mountedEntry}\n      新：${entry}\n      备份：${backup}`,
+            )
+          }
         } catch (error) {
           bad(
             `写入失败：${error.code ?? ''} ${error.message}`,

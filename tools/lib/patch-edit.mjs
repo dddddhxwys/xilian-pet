@@ -55,6 +55,45 @@ export function looksLikeProfilePatch(text) {
 }
 
 /**
+ * 读出我们那一行 `name:` 里写的路径（即插件入口指向哪里）。
+ *
+ * 为什么需要它：`hasPluginRow()` 只回答"**有没有**我们那一行"，于是
+ * 「已挂载过，跳过（幂等）」会把**指向别的目录**的行也一起跳过。
+ * 用户换一个文件夹解压/运行（很常见）之后，那一行还指着旧路径：
+ * 轻则插件从旧副本加载，重则旧目录已被删掉 → 插件**静默加载不到**
+ * （表现：桌宠连不上 DSH，插件列表里当然也没有）。
+ *
+ * @returns 路径字符串；没有我们那一行返回 null
+ */
+export function readPluginRowPath(text, rowId = ROW_ID) {
+  const source = typeof text === 'string' ? text : ''
+  const escaped = rowId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // 从 `id: <rowId>` 往后找**同一段**里的第一个 name:（限长，避免跨到别人的行上）
+  const matched = new RegExp(`-\\s*id:\\s*${escaped}\\b[\\s\\S]{0,300}?name:\\s*'([^']*)'`).exec(source)
+  return matched === null ? null : matched[1]
+}
+
+/**
+ * `name:` 写的是**文件路径**（= 手写挂载那一行），还是**包名**（= 官方 bundle 安装留下的行）？
+ *
+ * ⚠️ 必须分清，实测踩过：官方安装后 profile 里那行是
+ *      `- id: xilian-pet / name: '@local/xilian-pet-plugin' / config: {...}`
+ *    如果把它当成"指向旧目录的手写行"去更新路径，就会**改坏官方安装的配置覆盖**
+ *    （`setup.mjs --dry-run` 当场误报成"插件行指向别的目录"）。
+ */
+export function looksLikePluginEntryPath(name) {
+  if (typeof name !== 'string') return false
+  const value = name.trim()
+  if (value === '') return false
+  return (
+    /^file:/i.test(value) || // file:///C:/.../index.js
+    /^[A-Za-z]:[\\/]/.test(value) || // C:\... 或 C:/...
+    value.startsWith('\\\\') || // UNC \\server\share
+    value.startsWith('/') // /usr/local/...
+  )
+}
+
+/**
  * 幂等**移除**我们那一段 `- insert:` 块（切到官方安装路径时用）。
  *
  * ⚠️ 为什么需要它：走官方安装（bundle 注册表）之后，手写的这段 patch 还在的话

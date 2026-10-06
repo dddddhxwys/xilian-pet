@@ -31,7 +31,7 @@ import {
   rawToLocal,
 } from '../packages/pet-shell/hit-test.js'
 import { createSseLink } from '../packages/pet-shell/sse-link.js'
-import { addPluginRow, looksLikeProfilePatch, pluginRowSnippet, removePluginRow } from './lib/patch-edit.mjs'
+import { addPluginRow, looksLikePluginEntryPath, looksLikeProfilePatch, pluginRowSnippet, readPluginRowPath, removePluginRow } from './lib/patch-edit.mjs'
 import {
   collectReleaseFiles,
   describeVariant,
@@ -3253,6 +3253,47 @@ check('patch 改写 ↔ 移除：往返回到原文（这是"可安全切换"的
   const added = addPluginRow(SAMPLE_PATCH, { pluginEntry: 'C:/p/index.js', config: { pathPrefix: '/xilian-pet' } })
   const back = removePluginRow(added.text)
   assert.equal(back.text, SAMPLE_PATCH.trimEnd() + '\n', `往返后应回到原文，实际：\n${back.text}`)
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[9] 挂载行：指向哪里、以及"官方安装留下的行"不能动')
+
+check('读挂载行：能读出我们那一行指向哪；没有就返回 null', () => {
+  const entry = 'C:\\p\\xilian-pet\\packages\\pet-plugin\\index.js'
+  assert.equal(readPluginRowPath(SAMPLE_PATCH + pluginRowSnippet({ pluginEntry: entry })), entry)
+  assert.equal(readPluginRowPath(SAMPLE_PATCH), null, '没有我们那一行必须返回 null')
+  // 官方 bundle 安装留下的配置覆盖行（顶层 - id:，name 是包名）
+  const official = "- id: xilian-pet\n  name: '@local/xilian-pet-plugin'\n  config:\n    approval:\n      viaPet: true\n"
+  assert.equal(readPluginRowPath(official), '@local/xilian-pet-plugin')
+})
+
+check('区分「手写行（文件路径）」与「官方安装行（包名）」—— 后者绝不能按"路径变了"去改', () => {
+  // ⚠️ 实测误报过一次：把官方安装那行当成陈旧手写行，会把官方安装的配置覆盖**改坏**。
+  //    （setup.mjs --dry-run 当场报了"插件行指向别的目录"）
+  assert.equal(looksLikePluginEntryPath('@local/xilian-pet-plugin'), false, '包名不是文件路径')
+  assert.equal(looksLikePluginEntryPath('xilian-pet-plugin'), false)
+  assert.equal(looksLikePluginEntryPath(null), false)
+  assert.equal(looksLikePluginEntryPath('   '), false)
+  for (const p of [
+    'C:\\a\\index.js',
+    'C:/a/index.js',
+    'file:///C:/a/index.js',
+    '\\\\server\\share\\index.js',
+    '/usr/local/a.js',
+  ]) {
+    assert.equal(looksLikePluginEntryPath(p), true, `${p} 应被认作文件路径`)
+  }
+})
+
+check('安装脚本：换文件夹之后要**改指向**，是官方安装就**别动**', () => {
+  // 两个都是实机踩过的：
+  //  · 只判"有没有那一行" → 用户换文件夹后那行还指旧路径 → 插件静默加载不到
+  //  · 不区分包名与路径 → 会改坏官方 bundle 安装留下的配置覆盖
+  const src = readFileSync(new URL('../tools/setup.mjs', import.meta.url), 'utf8')
+  assert.ok(src.includes('readPluginRowPath'), 'setup.mjs 要比对"那一行指向哪个目录"')
+  assert.ok(src.includes('looksLikePluginEntryPath'), 'setup.mjs 要区分手写行与官方安装行')
+  assert.match(src, /官方 bundle 安装/, '是官方安装时要给出说明，而不是静默跳过')
+  assert.match(src, /插件行原本指着\*\*别的目录\*\*/, '换目录时要报出来它改指向了')
 })
 
 // ─────────────────────────────────────────────────────────────
