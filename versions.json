@@ -7,6 +7,14 @@
   "assets": [
     {
       "version": "0.1.0",
+      "flavor": "full-model",
+      "file": "xilian-pet-v0.1.0-full-model-20261006-1414.zip",
+      "size": 163411861,
+      "sha256": "1444c14c7ba40c0cc73d6567884366adae8564e6edce409c16c0957c9df1577b",
+      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.0/xilian-pet-v0.1.0-full-model-20261006-1414.zip"
+    },
+    {
+      "version": "0.1.0",
       "flavor": "slim-model",
       "file": "xilian-pet-v0.1.0-slim-model-20261006-1408.zip",
       "size": 1908586,
