@@ -1048,6 +1048,54 @@ await checkAsync('GET /health → 200 且 ok:true，并带 code 修订号', asyn
   assert.equal(typeof body.pendingApprovals, 'number')
 })
 
+await checkAsync('GET /health 回显**生效后**的配置（改 profile config 后能一眼验活）', async () => {
+  // 为什么必须有：`approval.viaPet` 这类开关只改变插件内部行为，**没有任何端点能读出它**
+  // —— 从手写 patch 切到官方 bundle 时，光看文件分不清生效的是包内默认值还是 profile 覆盖。
+  const body = await (await fetch(`${base}/xilian-pet/health`)).json()
+  assert.equal(typeof body.config, 'object', '/health 必须回显生效配置')
+  assert.equal(body.config.pathPrefix, '/xilian-pet')
+  assert.equal(body.config.minHoldMs, 0, '必须是**生效后**的值（这里传了 0），不是代码默认 500')
+  assert.equal(body.config.captureRawShapes, 20, '没传就该落到代码默认 20')
+  assert.equal(body.config.bubbleMode, 'activity')
+  assert.equal(body.config.approvalViaPet, false, '默认 false：绝不擅自改变宿主原有的审批行为')
+  assert.equal(body.config.remindersEnabled, true)
+})
+
+await checkAsync('配置回声的**正向对照**：显式打开 viaPet / 关掉提醒必须如实反映', async () => {
+  // 没有这条，"回声永远报默认值"也能让上面那条绿 —— 那回声就是假的（自测骗自己）。
+  const m = createMockCtx({ agents: () => undefined })
+  const teardown = apply(m.ctx, {
+    pathPrefix: '/xilian-pet',
+    approval: { viaPet: true, timeoutMs: 12_345 },
+    reminders: { enabled: false },
+  })
+  const srv = http.createServer((req, res) => {
+    const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
+    if (route === undefined) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    route.handler(req, res)
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  try {
+    const body = await (await fetch(`http://127.0.0.1:${srv.address().port}/xilian-pet/health`)).json()
+    assert.equal(body.config.approvalViaPet, true, 'viaPet=true 必须回声成 true')
+    assert.equal(body.config.approvalTimeoutMs, 12_345, 'timeoutMs 也要如实回声')
+    assert.equal(body.config.remindersEnabled, false, 'reminders.enabled=false 必须回声成 false')
+    // 回声必须**与行为一致**：开了 viaPet 就必须真的挂上审批应答者，不能只改数字
+    assert.equal(
+      m.listeners.get('approval/request')?.length ?? 0,
+      1,
+      'viaPet=true 时必须注册 approval/request（回声与行为不许各说各话）',
+    )
+  } finally {
+    await new Promise((resolve) => srv.close(resolve))
+    teardown()
+  }
+})
+
 await checkAsync('GET /state → 200 且 state:idle', async () => {
   const body = await (await fetch(`${base}/xilian-pet/state`)).json()
   assert.equal(body.state, 'idle')
@@ -3100,6 +3148,75 @@ check('patch 改写 ↔ 移除：往返回到原文（这是"可安全切换"的
   const added = addPluginRow(SAMPLE_PATCH, { pluginEntry: 'C:/p/index.js', config: { pathPrefix: '/xilian-pet' } })
   const back = removePluginRow(added.text)
   assert.equal(back.text, SAMPLE_PATCH.trimEnd() + '\n', `往返后应回到原文，实际：\n${back.text}`)
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[5] 官方 bundle 元数据（插件卡片 / install_bundle 契约）')
+
+const pkgDir = new URL('../packages/pet-plugin/', import.meta.url)
+const pkgJson = JSON.parse(readFileSync(new URL('package.json', pkgDir), 'utf8'))
+const pkgFile = (rel) => new URL(rel, pkgDir)
+
+check('bundle 声明：dsh.bundle.patch 指向真实存在的补丁文件', () => {
+  // 官方定义："bundle = 声明了 dsh.bundle.patch 的包" —— 这是能走 install_bundle 的前提。
+  assert.equal(pkgJson.dsh?.bundle?.patch, './cordis.patch.yml')
+  assert.ok(existsSync(pkgFile(pkgJson.dsh.bundle.patch)), '补丁文件必须真的在包里')
+})
+
+check('包名/可见性：合法 npm 名 + private（防误发布）', () => {
+  assert.match(
+    pkgJson.name,
+    /^(@[a-z0-9][a-z0-9-]*\/)?[a-z0-9][a-z0-9._-]*$/,
+    `包名不是合法 npm 名：${pkgJson.name}`,
+  )
+  // 官方 bundle 示例本身就是 "@local/xxx" + private —— 本地插件不该被误发到 registry。
+  assert.equal(pkgJson.private, true, '本地插件必须 private')
+  assert.match(pkgJson.version, /^\d+\.\d+\.\d+/, 'version 必须是 semver')
+})
+
+check('显示元数据：title / description / icon 齐全，且图标符合官方白名单', () => {
+  assert.ok(pkgJson.meta?.title, 'meta.title 缺失 → 插件卡片没有标题')
+  assert.ok(pkgJson.meta?.description, 'meta.description 缺失 → 插件卡片没有描述')
+  assert.equal(pkgJson.icon, './icon.svg', 'icon 必须是相对清单目录的路径')
+  const icon = readFileSync(pkgFile(pkgJson.icon))
+  assert.ok(icon.length > 0, '图标不能是空文件')
+  assert.ok(icon.length <= 256 * 1024, `图标超过官方上限 256 KiB：${icon.length} 字节`)
+  // 官方只接受 SVG / PNG / JPEG / WebP —— 按魔数嗅探，不信任扩展名
+  const head = icon.subarray(0, 4).toString('latin1')
+  const isSvg = icon.subarray(0, 5).toString('utf8').trimStart().startsWith('<')
+  const isPng = icon[0] === 0x89 && head.slice(1) === 'PNG'
+  const isJpeg = icon[0] === 0xff && icon[1] === 0xd8
+  const isWebp = head === 'RIFF' && icon.subarray(8, 12).toString('latin1') === 'WEBP'
+  assert.ok(isSvg || isPng || isJpeg || isWebp, `图标格式不在官方白名单内（前 4 字节：${head}）`)
+})
+
+check('exports / files：官方**不激活插件**就要读的那几条路径都在', () => {
+  assert.ok(pkgJson.exports?.['.'], '缺 "." 导出')
+  assert.ok(pkgJson.exports?.['./package.json'], '缺 "./package.json" 导出 → 官方读不到 meta')
+  assert.ok(pkgJson.exports?.['./locale/*.json'], '缺 locale 导出 → 卡片没有多语言文案')
+  assert.ok(pkgJson.files?.includes('icon.svg'), 'files 缺图标 → 发行包里没有它')
+  assert.ok(pkgJson.files?.some((f) => f.startsWith('locale/')), 'files 缺 locale')
+  assert.ok(pkgJson.files?.includes('cordis.patch.yml'), 'files 缺补丁 → 装上去是个空包')
+})
+
+check('locale 文件：可解析、无 BOM、字段齐全', () => {
+  for (const lang of ['zh', 'en']) {
+    const raw = readFileSync(pkgFile(`locale/${lang}.json`), 'utf8')
+    // BOM 会让 JSON.parse 直接抛 —— 卡片文案就静默退化成包名（实测踩过编码坑）
+    assert.ok(!raw.startsWith('\uFEFF'), `${lang}.json 带 BOM → JSON.parse 会抛`)
+    const meta = JSON.parse(raw)
+    assert.ok(meta.title, `${lang}.json 缺 title`)
+    assert.ok(meta.description, `${lang}.json 缺 description`)
+  }
+})
+
+check('bundle 补丁：insert 行的 name 必须等于包名（否则官方装完解析不到）', () => {
+  const patch = readFileSync(pkgFile('cordis.patch.yml'), 'utf8')
+  assert.match(patch, /- insert:/, '补丁里必须有 insert')
+  assert.ok(
+    patch.includes(`name: '${pkgJson.name}'`),
+    `补丁里的 name 必须是 ${pkgJson.name}；写成绝对路径会绕过 bundle 注册（插件列表里看不到它）`,
+  )
 })
 
 console.log(`\n${'─'.repeat(56)}`)

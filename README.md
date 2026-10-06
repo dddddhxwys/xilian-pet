@@ -119,7 +119,7 @@ FATAL:mojo\public\cpp\platform\platform_channel.cc:108] Check failed: 拒绝访�
 
 | 依赖 | 怎么补 |
 |---|---|
-| DSH 在跑，插件已挂载 | `/health` 应返回 `{"ok":true,...}` |
+| DSH 在跑，插件已挂载 | 官方 bundle 安装（见 §八）；`/health` 应返回 `{"ok":true,...}` |
 | Electron 二进制 | `& $NODE tools\fetch-electron.mjs` |
 | 渲染端 vendor（pixi + Cubism Core） | `& $NODE tools\prepare-renderer-vendor.mjs` |
 | Live2D 模型 | 手动放到 `assets\live2d\Cyrene\`（**不入库，clone 后没有**） |
@@ -618,6 +618,10 @@ profile patch 里保留着 `hmr` 行（现在是惰性配置、无害），但**
 |---|---|
 | 加完 config 后改插件源码 | ❌ `code` 不变 |
 | **重启 DSH 后**再改源码（只改一个常量，代码路径完全不变） | ❌ `code` 仍然不变 |
+| **2026-10-06 再确认**：官方 `install_bundle` 装成 `link:`（软链到源码目录）+ `hmr.root` 正指着 `packages/pet-plugin`，改 `index.js`（`CODE_REVISION` 25→26） | ❌ `code` 仍是 25。**但**同一时段改 profile 的 `cordis.patch.yml` 会让 `uptimeMs` 归零 ⇒ 重载只认**配置文件**，不会重新 import 源码模块（ESM 缓存不失效） |
+
+> 顺带一个有用的副产品：**改 profile patch 能让插件重新 `apply()`**（`uptimeMs` 归零），
+> 但它加载的仍是**旧模块** —— 所以别把"`uptimeMs` 归零"误当成"新代码生效了"，**要看 `code`**。
 
 已排除：不是 patch 优先级问题；`root` 用法与官方 README 示例一致。
 未定论的三种可能记在 `chajian/环境体检报告.md`。**不要再在这上面盲试。**
@@ -663,13 +667,51 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
           "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml" -Force
 ```
 
-### 挂载 Host 插件（两种方式，任选其一）
+### 挂载 Host 插件（**官方 bundle 安装为主**）
 
-- **方式 1｜bundle 安装**：把 `packages/pet-plugin` 作为 bundle 装进 `desktop` profile（走 GUI 插件管理页最稳）
-- **方式 2｜免安装直挂**：把 `cordis.patch.yml` 里的 `name` 换成 `index.js` 的绝对路径或 file URL，
-  粘进 profile 的 `cordis.patch.yml`（官方契约明确支持「包标识符 / 绝对文件系统路径 / file URL」）
+**本机现状（2026-10-06 已完成官方安装）**：`@local/xilian-pet-plugin` 已登记进
+`~/.dsh/profiles/desktop/package.json` 的 `dsh.profile.bundles`，并以 **`link:`** 方式依赖到仓库里的
+`packages/pet-plugin` —— 是**软链不是拷贝**（所以改源码仍然立即反映进 profile，但**仍需重启 DSH**，见上）。
+插件列表里能看到卡片「昔涟桌宠」。
 
-装好后自检：`GET http://127.0.0.1:19387/xilian-pet/health` 应返回 `{"ok":true,...}`。
+| 方式 | 怎么做 | 何时用 |
+|---|---|---|
+| **① 官方 bundle 安装（推荐；唯一会出现在插件列表里的）** | `plugin_manager` 的 `install_bundle`，`target` = `packages/pet-plugin` 的**绝对路径** | 正常安装 / 换机器 |
+| ② 免安装直挂（备选，零依赖） | `node tools/setup.mjs`（手写 patch 行） | 手上没有 `plugin_manager` 工具时（比如把包发给别人的那台机器） |
+
+**⚠️ 两条路只能走一条**，否则插件会被**加载两次**（两个实例、两套 SSE）：
+
+```powershell
+node tools/setup.mjs --official    # 切官方：删手写行（自动备份）→ 打印注册表状态
+node tools/setup.mjs               # 切回手写行（幂等）
+```
+
+> ⚠️ 官方要求**由 `install_bundle` 写注册表** —— 不要手改 profile 的 `package.json`。
+> 本项目的 `安装.cmd --official` 也**刻意不代写注册表**，只做「清手写行 + 指路」。
+
+#### 装完怎么验（三条，都不需要批准）
+
+```powershell
+# ① 活体在不在 + 代码修订号（code 变大且 uptimeMs 归零 = 新代码生效）
+#    → {"ok":true,"plugin":"xilian-pet","protocol":1,"code":26,...}
+
+# ② 生效的是哪一份 config —— /health 的 config 回声（2026-10-06 新增，正是为这个场景）
+#    → config:{pathPrefix,minHoldMs,captureRawShapes,bubbleMode,approvalViaPet,remindersEnabled}
+
+# ③ "这一行到底是谁提供的" —— 用官方 inspect，不用翻文件
+#    cordis_inspect_query / host / Config / listConfigs  { name: '@local/xilian-pet-plugin' }
+#    → 应恰好一条 include:xilian-pet，且 name == @local/xilian-pet-plugin
+#      若 name 变成 file:///…/index.js，说明手写行又回来了（= 会被加载两次）
+```
+
+**为什么要有 ②**：`approval.viaPet` 这类开关只改变插件内部行为，**原本没有任何端点能读出它**
+—— 把手写 patch 换成官方 bundle 时，光看文件根本分不清生效的是包内默认值还是 profile 里的覆盖
+（实测撞过）。所以把「生效后的配置」加进了 `/health`（**只读回显，字段只增不改**）。
+
+> ⚠️ **一个必须知道的坑（实测）**：`- id: <row>` 形式的 profile 配置覆盖是**整块替换 `config`**，
+> **不是深合并**。所以覆盖里必须把包内默认值**完整重述**一遍，否则会被清空成代码默认值。
+> 本机 profile 里就有一段这样的覆盖（为了保留 `approval.viaPet: true`），改它时请与
+> `packages/pet-plugin/cordis.patch.yml` 的 config 对齐。
 
 ### 依赖安装的三个本机坑（实测，换机器会复现）
 
@@ -732,11 +774,32 @@ Copy-Item "$env:USERPROFILE\.dsh\profiles\desktop\cordis.patch.yml.bak-<时间�
 > **每个"已修复"都要有可复现的证据**（截图、参数采样区间、逐条日志）。
 > 拿不到证据就老实写"未验证"。请继续按这个标准维护本节。
 
+### 🆕 2026-10-06：走完官方 bundle 安装（本次改动）
+
+| # | 做了什么 | 证据（可复现） |
+|---|---|---|
+| 1 | `plugin_manager` → `install_bundle`，`target` = `packages/pet-plugin` 的绝对路径 | 返回 `application:"applied"`、`warnings:[]`、`packageResult.exitCode=0`；装成 **`link:C:/…/packages/pet-plugin`**（软链，不是拷贝） |
+| 2 | 登记进 profile 注册表 | `~/.dsh/profiles/desktop/package.json` 的 `dsh.profile.bundles` 末尾出现 `@local/xilian-pet-plugin`，`dependencies` 里是同名 `link:` |
+| 3 | 清掉手写行（防双实例） | `node tools/setup.mjs --official` → **7 项就绪 · 0 告警 · 0 失败**；自动备份 `cordis.patch.yml.bak-2026-10-06T03-44-32-006Z`；`ui-chat` / `ui-settings` / `ui-settings-account` / `hmr` 四段完好 |
+| 4 | 「这一行到底是谁提供的」用**官方 inspect** 核对 | `Config.listConfigs {name:'@local/xilian-pet-plugin'}` → **恰好一条** `include:xilian-pet`，`name=@local/xilian-pet-plugin`（清手写行**之前**同名查询返回 **0 条** —— 那时行名是 `file:///…/index.js`） |
+| 5 | config **回声**进了 `/health`（本次新增功能） | `/debug/reminders` 回显的 `quietHours:["22:30","08:00"]` 与 profile 覆盖一致；`/health.config` 新增 `approvalViaPet` 等字段 |
+| 6 | 自测 **155 → 163 项全绿**，且做了**变异测试** | 给 `locale/en.json` 加 BOM → 精确报 `en.json 带 BOM → JSON.parse 会抛`（162 过 / 1 失败）；还原后 SHA256 与变异前一致 |
+
+**❌ 本次仍未验证 / 需要你做的**：
+
+| 项 | 为什么 |
+|---|---|
+| **`code: 26` 在活体生效** | 源码热重载**实测无效**（见 §八）→ 必须**重启 DSH**。重启后 `/health` 应报 `code:26` 且 `uptimeMs` 归零 |
+| **插件列表里那张卡片**（标题/描述/图标） | 只能你在 GUI 里肉眼看；元数据本身已由本次新增的 **6 项**自测守着 |
+| **`approval.viaPet: true` 真的还开着** | 已写进 profile 配置覆盖；重启后 `/health.config.approvalViaPet` 应报 `true`。真正"桌宠弹审批小窗"要等下一次审批才能看见 |
+| **确实没有双实例** | inspect 只看到**一条**行、`/health` 只有一个实例；但"开窗后会不会有两套 SSE"仍需看启动日志 |
+| **从干净 profile 能装成功**（DoD #7） | `install_bundle` 只能装进**当前** profile，本机没法在不影响真 profile 的前提下模拟 → **未做**，不假装做了 |
+
 ### ✅ 有截图/日志证据
 
 | 项 | 证据 |
 |---|---|
-| 插件被加载 | `/health` → `{"ok":true,"code":24,...}`。**`code` 是插件修订号**，每次改 `packages/pet-plugin/*.js` 都要 +1（活体实测 2026-10-05 = **24**；本文早前写死的 13 是旧值） |
+| 插件被加载 | `/health` → `{"ok":true,"code":25,...}`。**`code` 是插件修订号**，每次改 `packages/pet-plugin/*.js` 都要 +1（活体实测 2026-10-05 = 24；2026-10-06 = **25**，源码已到 **26**、**待重启 DSH 生效**；本文早前写死的 13 是更旧的值） |
 | **A6 派活端到端** | 用户在派活框输入的文字**真的到达了 agent**。客观判据：桌宠发的 `user/message` 的 `source` 只有 `{kind:'user'}`，而 GUI 发的带 `rpcId` —— 在 `/debug/shapes` 里一眼可分（实测同一条文案两种来源对比过） |
 | 自测 **122** 项 | 状态机 / 归一化 / mock 契约 / 真 HTTP + 真 SSE 往返 / waterfall 与 inject 的**回归 + 负向对照** / 派活兜底 + resolveAgent 恢复 + 宿主会话枚举 + 只读诊断 / **部件级命中测试（坐标换算边界值 + X 系数与 Y 取负两条反面断言 + `renderOrder` z 序 + 分区归属 + 两种"没配区"语义对照）** / **秋千连点（固定 3s 窗口、>5 次出晕）** / **摸头顶（缓动包络、混合/叠加语义、幅度下限）** / **渲染端模块守卫（相对 import 必须落在 `renderer/` 内）** / 外壳命中测试 + contentBand 身体对齐 / 活动摘要 + 通知帧 / token 四桶 + 宿主数据源 + 花销基线 + 会话标题 / 清理注销 |
 | 版本兼容性 | Cubism Core `05.01.0000`，`MsvGetLatestMocVersion=5`，模型 moc3 版本号 5 |

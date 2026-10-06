@@ -86,7 +86,7 @@ const HEARTBEAT_MS = 15_000
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 25
+const CODE_REVISION = 26
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -782,6 +782,22 @@ export function apply(ctx, config = {}) {
         // 派活用的 UserMessage 工厂来源：config / module:<路径> / builtin（内置等价实现）
         messageFactory: factorySource,
         messageFactoryAttempts: factoryAttempts,
+        // 生效后的配置**回声**（已应用默认值）。
+        //
+        // 为什么必须有：`approval.viaPet` 这类开关只改变插件内部行为，**没有任何端点
+        // 能读出它** —— 于是"我改的 profile 配置到底吃到了没有"完全无法验证。
+        // 实测撞过：把 profile 的手写行换成官方 bundle 后，行内 config 由包内默认值
+        // 提供，光看文件根本分不清生效的是哪一份。
+        // ⚠️ 纯只读回显，不带任何决定语义；字段**只增不改**（外壳协议是"加法优先"）。
+        config: {
+          pathPrefix,
+          minHoldMs,
+          captureRawShapes,
+          bubbleMode,
+          approvalViaPet,
+          approvalTimeoutMs,
+          remindersEnabled: reminderConfig.enabled,
+        },
       }),
     `xilian-pet: GET ${pathPrefix}/health`,
   )
