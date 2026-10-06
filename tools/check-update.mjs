@@ -61,4 +61,14 @@ if (asJson) {
   }
 }
 
-process.exit(exitCode)
+/**
+ * 退出码用 `process.exitCode`，**不要** `process.exit(code)`。
+ *
+ * ⚠️ 实测踩到（2026-10-06，推送之后第一次真正走"已是最新"这条成功路径时）：
+ *    `process.exit()` 会在 `AbortSignal.timeout()` 的定时器/连接还没收尾时强退，
+ *    Windows 上直接触发 libuv 断言：
+ *      Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 94
+ *    退出码变成 0xC0000409（-1073740791），用户那边会看到"检查更新崩了" ——
+ *    而输出其实是对的。设 exitCode 让事件循环自然结束就没有这个问题。
+ */
+process.exitCode = exitCode
