@@ -7,6 +7,7 @@
  */
 
 import { PROJECT_SLUG, RELEASES_PAGE } from './update-check.mjs'
+import { parseReleaseArtifact } from './release-files.mjs'
 
 export { PROJECT_SLUG, RELEASES_PAGE }
 
@@ -26,6 +27,30 @@ export function releaseApiUrl(releaseId) {
 /** 传资产：注意是 uploads.github.com，不是 api.github.com */
 export function assetUploadUrl(releaseId, fileName) {
   return `https://uploads.github.com/repos/${PROJECT_SLUG}/releases/${releaseId}/assets?name=${encodeURIComponent(fileName)}`
+}
+
+/** 删/改某个已上传的资产（GitHub 删资产是 DELETE 这个 URL，**不是** uploads 那个） */
+export function assetApiUrl(assetId) {
+  return `https://api.github.com/repos/${PROJECT_SLUG}/releases/assets/${assetId}`
+}
+
+/**
+ * 挑出该**从 Release 上摘掉**的旧资产。
+ *
+ * 为什么需要：重打一版之后 `versions.json` 只认新的那几个文件，而 Release 上
+ * 旧的那几个还挂着 —— 不摘掉就会出现"同一形态两个包"，用户不知道该下哪个。
+ *
+ * 与本地清理**同一条白名单规则**（2026-10-06 的教训）：
+ *   · 只认 `<前缀>-<形态>-<时间戳>.zip(.sha256)` 这种我们自己的产物名 ——
+ *     手工挂上去的截图/额外文件一律不碰
+ *   · `keepNames` 为空 → 一个都不删（拿不准就别动线上东西）
+ */
+export function staleReleaseAssets(remoteNames, keepNames) {
+  const keep = new Set((keepNames ?? []).filter((one) => typeof one === 'string' && one !== ''))
+  if (keep.size === 0) return []
+  return (remoteNames ?? [])
+    .filter((name) => typeof name === 'string' && parseReleaseArtifact(name) !== null && !keep.has(name))
+    .sort()
 }
 
 /**

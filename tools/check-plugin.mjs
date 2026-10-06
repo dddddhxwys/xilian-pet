@@ -33,6 +33,7 @@ import {
 import { createSseLink } from '../packages/pet-shell/sse-link.js'
 import { addPluginRow, looksLikePluginEntryPath, looksLikeProfilePatch, pluginRowSnippet, readPluginRowPath, removePluginRow } from './lib/patch-edit.mjs'
 import {
+  assetApiUrl,
   assetUploadUrl,
   needsBodySync,
   releaseApiUrl,
@@ -40,6 +41,7 @@ import {
   releaseByTagUrl,
   releasePayload,
   releaseTag,
+  staleReleaseAssets,
 } from './lib/release-publish.mjs'
 import {
   collectReleaseFiles,
@@ -3222,6 +3224,32 @@ check('发布：说明改了要能**同步到已发布的 Release**（否则只�
   assert.equal(needsBodySync('# 新', null), true, '本地说明为空 → 也要同步')
 })
 
+check('发布：Release 上「清单里已没有的旧资产」要摘掉（与本地清理同一条白名单）', () => {
+  // 重打一版之后，Release 上旧的还挂着 → 同一形态两个包，用户不知道该下哪个。
+  const remote = [
+    'xilian-pet-v0.1.0-slim-model-20261006-1901.zip', // ← 旧，该摘
+    'xilian-pet-v0.1.0-slim-model-20261006-1901.zip.sha256', // ← 旧，该摘
+    'xilian-pet-v0.1.0-slim-model-20261006-2100.zip',
+    'xilian-pet-v0.1.0-full-model-20261006-2100.zip',
+    'screenshot.png', // 手工挂上去的 → 绝不碰
+  ]
+  const keep = [
+    'xilian-pet-v0.1.0-slim-model-20261006-2100.zip',
+    'xilian-pet-v0.1.0-slim-model-20261006-2100.zip.sha256',
+    'xilian-pet-v0.1.0-full-model-20261006-2100.zip',
+  ]
+  assert.deepEqual(staleReleaseAssets(remote, keep), [
+    'xilian-pet-v0.1.0-slim-model-20261006-1901.zip',
+    'xilian-pet-v0.1.0-slim-model-20261006-1901.zip.sha256',
+  ])
+  // 拿不准就不动线上的东西
+  assert.deepEqual(staleReleaseAssets(remote, []), [])
+  assert.deepEqual(staleReleaseAssets(remote, null), [])
+  // 白名单：不是我们格式的一律不返回
+  assert.deepEqual(staleReleaseAssets(['screenshot.png', 'notes.txt', 'xilian-pet.zip'], keep), [])
+  assert.deepEqual(staleReleaseAssets(null, keep), [])
+})
+
 check('发布脚本：token 不出屏、幂等、传完回读核对、不用 process.exit', () => {
   const src = readFileSync(new URL('../tools/publish-release.mjs', import.meta.url), 'utf8')
   // token 只从环境读，且**值**从不进输出（打"token : 环境变量"这种标签没关系）
@@ -3235,6 +3263,17 @@ check('发布脚本：token 不出屏、幂等、传完回读核对、不用 pro
   assert.ok(src.includes('createReadStream') && src.includes('duplex'), '大文件要流式上传，别整个读进内存')
   // 传完必须回读核对大小
   assert.ok(src.includes('远端资产核对'), '传完要回读核对，不能只信"上传成功"')
+  // 摘旧资产必须在**核对通过之后**（万一这次没传上去，旧的那份还得留着兜底）
+  assert.ok(src.includes('staleReleaseAssets') && src.includes('assetApiUrl'), '要能摘掉 Release 上清单里没有的旧资产')
+  // ⚠️ 锚点要选**只出现在代码块里的字符串**：直接搜函数名会先命中顶部的 import，
+  //    于是这条顺序断言永远"通过"或永远失败（我第一版就是这么写的 ✗）。
+  const verifyAt = src.indexOf('\\n远端资产核对：')
+  const pruneAt = src.indexOf('摘掉 Release 上清单里已没有的旧资产')
+  assert.ok(verifyAt > 0 && pruneAt > 0, '两个锚点都要能找到')
+  assert.ok(
+    verifyAt < pruneAt,
+    '顺序必须是"先核对、后删旧资产" —— 反过来会在上传没成功时把唯一可用的一份删掉',
+  )
   // ⚠️ 2026-10-06 的教训：process.exit() 在 fetch/定时器未收尾时强退会撞 libuv 断言
   const codeOnly = src
     .split('\n')

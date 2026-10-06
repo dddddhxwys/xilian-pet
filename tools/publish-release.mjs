@@ -29,6 +29,7 @@ import { join } from 'node:path'
 import {
   CREATE_RELEASE_URL,
   RELEASES_PAGE,
+  assetApiUrl,
   assetUploadUrl,
   needsBodySync,
   releaseApiUrl,
@@ -36,6 +37,7 @@ import {
   releaseByTagUrl,
   releasePayload,
   releaseTag,
+  staleReleaseAssets,
 } from './lib/release-publish.mjs'
 
 const argv = process.argv.slice(2)
@@ -204,6 +206,30 @@ async function main() {
       console.log(`  ✅ ${file}  ${remote.size} 字节`)
     }
   }
+
+  // 摘掉清单里已经没有的旧资产 —— 否则同一形态会挂着两套，用户不知道该下哪个。
+  // ⚠️ 必须在**上传成功之后**才删：万一这次没传上去，旧的那份还得留着兜底。
+  //    （上传失败的路径上面已经抛错并结束，走不到这里 ✓）
+  if (bad === 0) {
+    const staleRemote = staleReleaseAssets(
+      (after.assets ?? []).map((one) => one.name),
+      files,
+    )
+    if (staleRemote.length > 0) {
+      console.log('\n🧹 摘掉 Release 上清单里已没有的旧资产：')
+      for (const name of staleRemote) {
+        const asset = (after.assets ?? []).find((one) => one.name === name)
+        const res = await fetch(assetApiUrl(asset.id), { method: 'DELETE', headers })
+        if (!res.ok && res.status !== 404) {
+          throw new Error(`删除旧资产 ${name} 失败 ${res.status}：${await res.text()}`)
+        }
+        console.log(`     · ${name}`)
+      }
+    }
+  } else {
+    console.log('\n（有资产对不上，这次**不删**任何旧资产 —— 先保证有可用的那份）')
+  }
+
   console.log(`\nRelease 页面：${after.html_url}`)
   console.log(`全部发布页：${RELEASES_PAGE}`)
   if (bad === 0) {
