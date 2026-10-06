@@ -3449,7 +3449,9 @@ check('清单解析：结构不对**必须抛错**（不能悄悄当成"没有�
     releasedAt: '2026-10-08',
     notes: 'x',
     releaseUrl: 'https://example.com',
-    assets: [{ flavor: 'slim-model', file: 'a.zip', size: 10, sha256: 'a'.repeat(64), url: 'https://example.com/a.zip' }],
+    assets: [
+      { version: '0.2.0', flavor: 'slim-model', file: 'a.zip', size: 10, sha256: 'a'.repeat(64), url: 'https://example.com/a.zip' },
+    ],
   })
   assert.equal(parseManifest(good).latest, '0.2.0')
   // 逐条负向对照：这些都是"看起来像清单但其实不能信"的输入
@@ -3458,31 +3460,49 @@ check('清单解析：结构不对**必须抛错**（不能悄悄当成"没有�
   assert.throws(() => parseManifest(JSON.stringify({ schema: 2, latest: '0.1.0' })), /schema/)
   assert.throws(() => parseManifest(JSON.stringify({ schema: 1, latest: 'latest' })), /latest/)
   assert.throws(() => parseManifest(JSON.stringify({ schema: 1, latest: '0.1.0', assets: {} })), /assets/)
+  // version 必填：清单会留住历史版本的条目，没有它就只能按文件名猜"这是哪一版"
+  assert.throws(
+    () =>
+      parseManifest(
+        JSON.stringify({ schema: 1, latest: '0.1.0', assets: [{ flavor: 's', file: 'a.zip', sha256: 'a'.repeat(64) }] }),
+      ),
+    /version/,
+  )
   // sha256 必填且必须是 64 位十六进制 —— 用户就拿它核对下载
   assert.throws(
-    () => parseManifest(JSON.stringify({ schema: 1, latest: '0.1.0', assets: [{ flavor: 's', file: 'a.zip' }] })),
+    () =>
+      parseManifest(
+        JSON.stringify({ schema: 1, latest: '0.1.0', assets: [{ version: '0.1.0', flavor: 's', file: 'a.zip' }] }),
+      ),
     /sha256/,
   )
   assert.throws(
     () =>
       parseManifest(
-        JSON.stringify({ schema: 1, latest: '0.1.0', assets: [{ flavor: 's', file: 'a.zip', sha256: 'XYZ' }] }),
+        JSON.stringify({
+          schema: 1,
+          latest: '0.1.0',
+          assets: [{ version: '0.1.0', flavor: 's', file: 'a.zip', sha256: 'XYZ' }],
+        }),
       ),
     /sha256/,
   )
 })
 
-check('清单挑包：只给同形态；没有就返回 null，**不凑一个别的形态**', () => {
+check('清单挑包：只给**最新版本**的同形态包，不给别的形态、也不给旧版本的文件', () => {
   const manifest = parseManifest(
     JSON.stringify({
       schema: 1,
       latest: '0.2.0',
       assets: [
-        { flavor: 'slim-model', file: 'a.zip', sha256: 'a'.repeat(64) },
-        { flavor: 'full-model', file: 'b.zip', sha256: 'b'.repeat(64) },
+        // 历史版本的条目（清单会留着便于追溯）—— 形态相同，但**绝不能**被挑出来
+        { version: '0.1.0', flavor: 'slim-model', file: 'old.zip', sha256: '0'.repeat(64) },
+        { version: '0.2.0', flavor: 'slim-model', file: 'a.zip', sha256: 'a'.repeat(64) },
+        { version: '0.2.0', flavor: 'full-model', file: 'b.zip', sha256: 'b'.repeat(64) },
       ],
     }),
   )
+  assert.equal(pickAsset(manifest, 'slim-model').file, 'a.zip', '必须挑最新版本那一版的同形态包')
   assert.equal(pickAsset(manifest, 'full-model').file, 'b.zip')
   assert.equal(pickAsset(manifest, 'allinone-model'), null, '没有同形态必须是 null')
   assert.equal(pickAsset(manifest, null), null)
@@ -3499,8 +3519,8 @@ check('清单序列化 ↔ 解析：往返一致（固定键序，git diff 才�
       releaseUrl: 'https://example.com/releases',
       // 故意乱序，验证输出会按 flavor 排好
       assets: [
-        { flavor: 'slim-model', file: 'a.zip', size: 100, sha256: 'a'.repeat(64), url: 'https://e/a.zip' },
-        { flavor: 'full-model', file: 'b.zip', size: 200, sha256: 'b'.repeat(64), url: null },
+        { version: '0.2.0', flavor: 'slim-model', file: 'a.zip', size: 100, sha256: 'a'.repeat(64), url: 'https://e/a.zip' },
+        { version: '0.2.0', flavor: 'full-model', file: 'b.zip', size: 200, sha256: 'b'.repeat(64), url: null },
       ],
     }),
   )
@@ -3546,7 +3566,13 @@ const MANIFEST_020 = JSON.stringify({
   notes: '修了分数 DPI 下拖拽抖动',
   releaseUrl: 'https://github.com/dddddhxwys/xilian-pet/releases/tag/v0.2.0',
   assets: [
-    { flavor: 'slim-model', file: 'xilian-pet-v0.2.0-slim-model-20261008-1200.zip', size: 1876543, sha256: 'c'.repeat(64) },
+    {
+      version: '0.2.0',
+      flavor: 'slim-model',
+      file: 'xilian-pet-v0.2.0-slim-model-20261008-1200.zip',
+      size: 1876543,
+      sha256: 'c'.repeat(64),
+    },
   ],
 })
 const SRC_A = 'https://example.invalid/primary/versions.json'
@@ -3718,20 +3744,36 @@ check('清单更新：新包入账 + latest 抬升；重复打包是**原地替�
   assert.equal(first.manifest.assets.length, 1)
   assert.equal(first.notesMissing, false)
 
-  // 同一版重新打包：sha256 变了，必须原地刷新，**不能变成两条**
+  // 同一版重新打包：**文件名会变**（时间戳变了），sha256 也变 —— 必须原地替换，不能变成两条
+  // ⚠️ 这条是实测撞出来的：旧逻辑按文件名找，于是清单里累积了两条同形态条目，
+  //    而挑包时拿到的是**旧的那条**
   const rebuilt = upsertManifest(first.manifest, {
     version: '0.2.0',
     flavor: 'slim-model',
-    file: 'a.zip',
+    file: 'a-2.zip',
     size: 100,
     sha256: 'b'.repeat(64),
-    url: 'https://e/a.zip',
+    url: 'https://e/a-2.zip',
     releasedAt: '2026-10-08',
     notes: '新说明',
   })
-  assert.equal(rebuilt.manifest.assets.length, 1, '同一个文件重新打包不该新增条目')
+  assert.equal(rebuilt.manifest.assets.length, 1, '同一版同一形态重新打包必须**原地替换**，不能累积成两条')
+  assert.equal(rebuilt.manifest.assets[0].file, 'a-2.zip', '替换后的必须是最新那次打出来的文件')
   assert.equal(rebuilt.manifest.assets[0].sha256, 'b'.repeat(64), 'sha256 必须跟着刷新')
   assert.ok(rebuilt.changed.some((c) => /sha256 已刷新/.test(c)))
+
+  // 形态相同但**版本不同**：两条都要在（追溯用），且挑包只挑 latest 那一版
+  const mixed = upsertManifest(rebuilt.manifest, {
+    version: '0.1.0',
+    flavor: 'slim-model',
+    file: 'old-slim.zip',
+    size: 50,
+    sha256: 'f'.repeat(64),
+    url: null,
+    releasedAt: '2026-10-01',
+  })
+  assert.equal(mixed.manifest.assets.length, 2, '不同版本的同形态包应各留一条')
+  assert.equal(pickAsset(mixed.manifest, 'slim-model').file, 'a-2.zip', '挑包必须挑 latest 那一版')
 
   // 补打旧版：只入账，**不把 latest 降级**
   const older = upsertManifest(rebuilt.manifest, {

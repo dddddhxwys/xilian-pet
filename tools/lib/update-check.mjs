@@ -125,6 +125,11 @@ export function parseManifest(text) {
   const assets = rawAssets.map((asset, index) => {
     const at = `assets[${index}]`
     if (asset === null || typeof asset !== 'object' || Array.isArray(asset)) throw new Error(`${at} 必须是对象`)
+    // ⚠️ version 是**必填**：清单里会留住历史版本的条目，靠它区分"这个文件是哪一版的"
+    //    （没有它就只能按文件名猜，而同一版重新打包会换文件名 —— 实测踩到过）
+    if (typeof asset.version !== 'string' || parseSemver(asset.version) === null) {
+      throw new Error(`${at}.version 缺失或不是 semver`)
+    }
     if (typeof asset.flavor !== 'string' || asset.flavor.trim() === '') throw new Error(`${at}.flavor 缺失`)
     if (typeof asset.file !== 'string' || asset.file.trim() === '') throw new Error(`${at}.file 缺失`)
     // sha256 是**必填**：它就是让用户能验证"下到的是不是我要的那份"
@@ -139,6 +144,7 @@ export function parseManifest(text) {
       throw new Error(`${at}.url 必须是字符串或 null`)
     }
     return {
+      version: asset.version,
       flavor: asset.flavor.trim(),
       file: asset.file.trim(),
       size: asset.size ?? null,
@@ -156,10 +162,16 @@ export function parseManifest(text) {
   }
 }
 
-/** 按形态挑包；没有同形态的返回 null（**不去凑一个别的形态给用户**） */
+/**
+ * 按形态挑**最新版本**的包；没有就返回 null（**不去凑一个别的形态、也不给旧版本的文件**）。
+ *
+ * ⚠️ 必须同时匹配 `latest`：清单里为方便追溯会留住历史版本的条目，
+ *    只按 flavor 找会挑到**旧版本的文件**（实测撞到：同一形态有两个构建时挑到了旧的）。
+ */
 export function pickAsset(manifest, flavor) {
   if (typeof flavor !== 'string' || flavor.trim() === '') return null
-  return manifest.assets.find((asset) => asset.flavor === flavor.trim()) ?? null
+  const wanted = flavor.trim()
+  return manifest.assets.find((asset) => asset.flavor === wanted && asset.version === manifest.latest) ?? null
 }
 
 /** 读仓库里的清单；文件不存在时给一个空壳（首次打包用） */
@@ -185,6 +197,7 @@ export function serializeManifest(manifest) {
     assets: [...manifest.assets]
       .sort((a, b) => (a.flavor === b.flavor ? a.file.localeCompare(b.file) : a.flavor.localeCompare(b.flavor)))
       .map((asset) => ({
+        version: asset.version,
         flavor: asset.flavor,
         file: asset.file,
         size: asset.size,
@@ -212,8 +225,11 @@ export function writeManifest(root, manifest) {
 export function upsertManifest(manifest, entry) {
   const changed = []
   const assets = [...manifest.assets]
-  const at = assets.findIndex((asset) => asset.file === entry.file)
+  // ⚠️ 按 **(版本, 形态)** 定位，不是按文件名 —— 同一版重新打包会换文件名（时间戳变了），
+  //    按文件名找就会累积成多条同形态条目，而挑包时可能拿到**旧的那条**（实测撞到过）
+  const at = assets.findIndex((asset) => asset.version === entry.version && asset.flavor === entry.flavor)
   const next = {
+    version: entry.version,
     flavor: entry.flavor,
     file: entry.file,
     size: entry.size,

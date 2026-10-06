@@ -6,11 +6,12 @@
   "releaseUrl": "https://github.com/dddddhxwys/xilian-pet/releases",
   "assets": [
     {
+      "version": "0.1.0",
       "flavor": "slim-model",
-      "file": "xilian-pet-v0.1.0-slim-model-20261006-1244.zip",
-      "size": 1902967,
-      "sha256": "34f60b70cf5827b5b5263b38647c3b3c7ec975a931c6bf5e28390aae2e1cd25a",
-      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.0/xilian-pet-v0.1.0-slim-model-20261006-1244.zip"
+      "file": "xilian-pet-v0.1.0-slim-model-20261006-1337.zip",
+      "size": 1904625,
+      "sha256": "edb01b7440e2675e0c5e9b553708f3e20de1032ef54a2d65230f4aa109294f95",
+      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.0/xilian-pet-v0.1.0-slim-model-20261006-1337.zip"
     }
   ]
 }
