@@ -1,5 +1,6 @@
 {
   "name": "xilian-pet",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "昔涟桌宠 —— DSH 桌面透明置顶窗桌宠（Phase 0 最小骨架）",
@@ -10,6 +11,10 @@
     "plugin:check": "node tools/check-plugin.mjs",
     "plugin:install": "node tools/install-plugin.mjs",
     "deps:electron": "node tools/fetch-electron.mjs",
-    "asset:placeholder": "node tools/make-placeholder.mjs"
+    "asset:placeholder": "node tools/make-placeholder.mjs",
+    "version:check": "node tools/bump-version.mjs --check",
+    "release": "node tools/package-release.mjs --with-model",
+    "release:full": "node tools/package-release.mjs --with-model --with-electron",
+    "release:allinone": "node tools/package-release.mjs --with-model --with-electron --with-node"
   }
 }

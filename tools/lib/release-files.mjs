@@ -13,9 +13,12 @@
  *          加回来之后朋友**不需要 pnpm install**，这是"开包即用"的前提。
  *        · `assets/live2d/Cyrene/`               —— 模型（1.4 MB），用 --with-model 控制。
  *        · `node_modules/electron/dist/`         —— Electron 二进制（367 MB），用 --with-electron 控制。
+ *
+ * 本文件同时还放**发行包的命名与版本**（下面 §命名），它们是纯函数、自测覆盖。
  */
-import { readdirSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+
 
 /** 路径里出现任一段就整块排除 */
 export const EXCLUDED_SEGMENTS = new Set([
@@ -173,4 +176,143 @@ export function collectReleaseFiles(root, options = {}) {
   }
   walkDir(root, '')
   return out
+}
+
+// ─────────────────────────────────────────────────────────────
+// §命名与版本 —— 发行包"叫什么、算不算对"
+//
+// 为什么有这一节（2026-10-06）：发行包原来叫 `xilian-pet{,-full,-allinone}.zip`，
+// **既没有版本也没有时间戳**；更糟的是 `--with-electron` 与 `--with-electron --with-model`
+// 会生成**同一个文件名** —— 正是交接文档里记过的那个坑（"同一补丁文件名反复用✗"）。
+// 现在名字里带 版本 + 形态 + 时间戳，并配一个 `.sha256` 旁车文件。
+
+/** 版本号的**唯一来源**：仓库根的 package.json */
+export const VERSION_SOURCE = 'package.json'
+
+/** 必须与它保持一致的镜像（插件卡片会显示插件版本，所以必须同步） */
+export const VERSION_MIRRORS = ['packages/pet-plugin/package.json', 'packages/pet-shell/package.json']
+
+/** 各处版本号；读不到就是 null（调用方当失败处理，别静默用默认值） */
+export function readVersions(root) {
+  const read = (rel) => {
+    try {
+      return JSON.parse(readFileSync(join(root, ...rel.split('/')), 'utf8')).version ?? null
+    } catch {
+      return null
+    }
+  }
+  return { source: read(VERSION_SOURCE), mirrors: VERSION_MIRRORS.map((rel) => ({ rel, version: read(rel) })) }
+}
+
+/**
+ * 形态名：一眼看出包里有什么。
+ *
+ * ⚠️ `withNode` 不能无条件压过 `withElectron` —— 第一版写成
+ *    `withNode ? 'allinone' : withElectron ? 'full' : 'slim'`，于是
+ *    **`--with-node` 与 `--with-node --with-electron` 生成同一个名字**
+ *    （自测里那条"八种组合互不撞名"当场抓出来）。现在两者都进名字：
+ *    `node`（只有便携 Node）≠ `allinone`（Node + Electron）。
+ */
+export function releaseVariant(options = {}) {
+  const base = options.withElectron
+    ? options.withNode
+      ? 'allinone'
+      : 'full'
+    : options.withNode
+      ? 'node'
+      : 'slim'
+  return options.withModel ? `${base}-model` : base
+}
+
+/** 形态的中文说明 —— 写进包内的 VERSION.txt，也用于控制台 */
+export function describeVariant(options = {}) {
+  return [
+    options.withNode ? '内置便携 Node' : '不含 Node（用 DSH 自带的）',
+    options.withElectron ? '内置 Electron' : '不含 Electron（首次运行自动下载约 100 MB）',
+    options.withModel ? '含 Live2D 模型' : '不含 Live2D 模型',
+  ].join('；')
+}
+
+/** 时间戳 `YYYYMMDD-HHMM`（本地时间）—— 与既有 `xilian-pet-patch-R8-20261006-1123.zip` 同格式 */
+export function releaseTimestamp(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`
+}
+
+/** 发行包文件名：`xilian-pet-v<版本>-<形态>-<时间戳>.zip` */
+export function releaseZipName({ version, ...options } = {}, date = new Date()) {
+  if (typeof version !== 'string' || version.trim() === '') {
+    throw new Error('releaseZipName: 需要 version（来自 package.json）')
+  }
+  return `xilian-pet-v${version.trim()}-${releaseVariant(options)}-${releaseTimestamp(date)}.zip`
+}
+
+/** `.sha256` 旁车文件的内容：**两个空格**是 `sha256sum -c` 认的格式 */
+export function formatSha256Sidecar(hash, filename) {
+  if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error(`formatSha256Sidecar: 不是 sha256 十六进制：${hash}`)
+  return `${hash}  ${filename}\n`
+}
+
+/**
+ * 读当前 git 提交（短哈希）。
+ *
+ * ⚠️ **刻意不 spawn `git`**：本沙箱下 Node 起子进程要管道 stdio（会 EPERM），
+ *    而且发行脚本不该假设 PATH 上有 git。直接读 `.git/HEAD` + loose ref / `packed-refs`。
+ * @returns 7 位短哈希；读不到返回 null（不猜、不编造）
+ */
+export function readGitCommit(root) {
+  const gitDir = join(root, '.git')
+  const readText = (rel) => {
+    try {
+      return readFileSync(join(gitDir, ...rel.split('/')), 'utf8')
+    } catch {
+      return null
+    }
+  }
+  const head = readText('HEAD')
+  if (head === null) return null
+  const trimmed = head.trim()
+  let hash = null
+  if (/^[0-9a-f]{40}$/.test(trimmed)) {
+    hash = trimmed // detached HEAD
+  } else {
+    const matched = /^ref:\s*(.+)$/.exec(trimmed)
+    if (matched) {
+      const ref = matched[1].trim()
+      const loose = readText(ref)
+      if (loose !== null) {
+        hash = loose.trim()
+      } else {
+        // ref 被打包进 packed-refs（git gc 之后）
+        const packed = readText('packed-refs')
+        const line = packed?.split('\n').find((l) => l.endsWith(` ${ref}`))
+        if (line) hash = line.split(' ')[0]
+      }
+    }
+  }
+  return hash !== null && /^[0-9a-f]{40}$/.test(hash) ? hash.slice(0, 7) : null
+}
+
+/** 包内 `VERSION.txt` 的内容 —— 接收方靠它自证版本，排查时也不用问人 */
+export function releaseInfoText({ version, options = {}, builtAt = new Date(), commit = null } = {}) {
+  const pad = (n) => String(n).padStart(2, '0')
+  const stamp =
+    `${builtAt.getFullYear()}-${pad(builtAt.getMonth() + 1)}-${pad(builtAt.getDate())} ` +
+    `${pad(builtAt.getHours())}:${pad(builtAt.getMinutes())}:${pad(builtAt.getSeconds())}`
+  return [
+    '昔涟桌宠 xilian pet',
+    '========================================',
+    `版本      : v${version}`,
+    `形态      : ${releaseVariant(options)} —— ${describeVariant(options)}`,
+    `构建时间  : ${stamp}（本机本地时间）`,
+    `构建来源  : ${commit ?? '(未知)'}`,
+    '仓库      : https://github.com/dddddhxwys/xilian-pet',
+    '',
+    '⚠️ 本项目是**非官方的爱好者作品**，与米哈游及《崩坏：星穹铁道》项目组没有任何关联，',
+    '   严格限于个人、非商业用途：不收费、不销售、不含广告或赞助。',
+    '   角色与素材的权利归各自所有者；署名与使用范围见随包的 NOTICE.md（请勿删除）。',
+    '',
+    '怎么用：解压后双击 安装.cmd —— 它会打印版本并检查环境。',
+    '',
+  ].join('\n')
 }

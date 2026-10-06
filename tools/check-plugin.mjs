@@ -32,7 +32,21 @@ import {
 } from '../packages/pet-shell/hit-test.js'
 import { createSseLink } from '../packages/pet-shell/sse-link.js'
 import { addPluginRow, looksLikeProfilePatch, pluginRowSnippet, removePluginRow } from './lib/patch-edit.mjs'
-import { collectReleaseFiles, nodeRuntimeFiles, requiredInRelease, shouldDescend, shouldInclude } from './lib/release-files.mjs'
+import {
+  collectReleaseFiles,
+  describeVariant,
+  formatSha256Sidecar,
+  nodeRuntimeFiles,
+  readGitCommit,
+  readVersions,
+  releaseInfoText,
+  releaseTimestamp,
+  releaseVariant,
+  releaseZipName,
+  requiredInRelease,
+  shouldDescend,
+  shouldInclude,
+} from './lib/release-files.mjs'
 import { writeZipToBuffer } from './lib/zip-writer.mjs'
 import {
   BASE_MOTION,
@@ -3266,6 +3280,85 @@ check('bundle 补丁：insert 行的 name 必须等于包名（否则官方装�
     patch.includes(`name: '${pkgJson.name}'`),
     `补丁里的 name 必须是 ${pkgJson.name}；写成绝对路径会绕过 bundle 注册（插件列表里看不到它）`,
   )
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[6] 发行元数据：版本 / 命名 / 校验和')
+
+const repoRoot = fileURLToPath(new URL('..', import.meta.url))
+
+check('版本号：根是唯一来源，插件与外壳必须与它一致', () => {
+  // 为什么要有这条：插件卡片显示的是**插件自己**的版本，发行包名用的是**根**的版本。
+  // 两处漂移不会有任何报错，只会让用户看到"插件 0.0.1 / 压缩包 v0.1.0"。
+  const versions = readVersions(repoRoot)
+  assert.match(versions.source ?? '', /^\d+\.\d+\.\d+/, '根 package.json 必须有 semver 版本')
+  for (const mirror of versions.mirrors) {
+    assert.equal(
+      mirror.version,
+      versions.source,
+      `${mirror.rel} 的版本与根不一致 —— 跑 node tools/bump-version.mjs ${versions.source}`,
+    )
+  }
+})
+
+check('发行包名：版本 + 形态 + 时间戳，八种开关组合互不撞名', () => {
+  const at = new Date(2026, 9, 6, 11, 23) // 本地时间 2026-10-06 11:23（月份从 0 数）
+  assert.equal(releaseTimestamp(at), '20261006-1123', '时间戳格式要与既有 patch 包一致')
+  const seen = new Map()
+  for (const withModel of [false, true]) {
+    for (const withElectron of [false, true]) {
+      for (const withNode of [false, true]) {
+        const options = { withModel, withElectron, withNode }
+        const name = releaseZipName({ version: '0.1.0', ...options }, at)
+        const variant = releaseVariant(options)
+        assert.ok(name.includes(`-v0.1.0-${variant}-`), `名字要含 版本+形态：${name}`)
+        assert.ok(name.endsWith('-20261006-1123.zip'), `名字要含时间戳：${name}`)
+        // 这条是本次改动的**核心目的**：以前 electron 与 electron+model 会生成同名文件
+        assert.equal(seen.get(name), undefined, `两种开关生成了同一个名字：${name}`)
+        seen.set(name, options)
+      }
+    }
+  }
+  assert.equal(seen.size, 8, '八种组合必须生成 8 个互不相同的名字')
+})
+
+check('发行包名：没有版本号时**必须报错**，不能编一个默认值', () => {
+  assert.throws(() => releaseZipName({}), /version/)
+  assert.throws(() => releaseZipName({ version: '  ' }), /version/)
+})
+
+check('校验和旁车：两个空格分隔 + 结尾换行（`sha256sum -c` 认的格式）', () => {
+  const line = formatSha256Sidecar('a'.repeat(64), 'xilian-pet-v0.1.0-slim-20261006-1123.zip')
+  assert.equal(line, `${'a'.repeat(64)}  xilian-pet-v0.1.0-slim-20261006-1123.zip\n`)
+  assert.throws(() => formatSha256Sidecar('not-a-hash', 'x.zip'), /sha256/)
+})
+
+check('包内 VERSION.txt：版本 / 形态 / 时间 / 提交 / 非商业声明都在', () => {
+  const text = releaseInfoText({
+    version: '0.1.0',
+    options: { withModel: true },
+    builtAt: new Date(2026, 9, 6, 11, 23, 45),
+    commit: 'abc1234',
+  })
+  assert.match(text, /版本\s*:\s*v0\.1\.0/)
+  assert.match(text, /形态\s*:\s*slim-model/)
+  assert.match(text, /2026-10-06 11:23:45/)
+  assert.match(text, /abc1234/, '构建来源要能对上提交，排查时不用问人')
+  assert.match(text, /NOTICE\.md/, '必须提醒保留署名声明（公开分发的前提）')
+  assert.match(text, /非商业/, '必须写明非商业')
+})
+
+check('读 git 提交：对真实仓库能读出 7 位短哈希（且不 spawn git）', () => {
+  const commit = readGitCommit(repoRoot)
+  assert.ok(commit === null || /^[0-9a-f]{7}$/.test(commit), `提交哈希形状不对：${commit}`)
+  assert.ok(commit !== null, '本仓库有 .git，应能读出提交；返回 null 说明 HEAD/refs 解析坏了')
+})
+
+check('形态说明：三档都要讲清带不带 Electron / 模型', () => {
+  assert.match(describeVariant({}), /不含 Electron/)
+  assert.match(describeVariant({}), /不含 Live2D 模型/)
+  assert.match(describeVariant({ withElectron: true, withModel: true }), /内置 Electron/)
+  assert.match(describeVariant({ withElectron: true, withModel: true }), /含 Live2D 模型/)
 })
 
 console.log(`\n${'─'.repeat(56)}`)

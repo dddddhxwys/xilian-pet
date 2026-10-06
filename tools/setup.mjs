@@ -49,6 +49,25 @@ function readPackageName() {
   }
 }
 
+/**
+ * 版本号 —— **发行包里优先读 `VERSION.txt`**（它带形态与构建时间，信息更全），
+ * 仓库里没有那个文件就退回根 `package.json` 的 version。
+ * 为什么值得单独读：用户报问题时第一句总是"我装的是哪一版"，这个数字必须能一眼打出来。
+ */
+function readVersion() {
+  try {
+    const matched = /^版本\s*:\s*(.+)$/m.exec(readFileSync(join(ROOT, 'VERSION.txt'), 'utf8'))
+    if (matched) return matched[1].trim()
+  } catch {
+    /* 仓库里没有 VERSION.txt —— 正常，它是打包时生成的 */
+  }
+  try {
+    return `v${JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version}`
+  } catch {
+    return '(未知)'
+  }
+}
+
 const counts = { ok: 0, warn: 0, fail: 0 }
 /** 没找到 DSH profile（不是致命错误，见步骤①） */
 let profileMissing = false
@@ -98,6 +117,7 @@ const run = (file, args, label) => {
 
 line('昔涟桌宠 · 一键安装')
 line('─'.repeat(56))
+line(`  版本     : ${readVersion()}`)
 line(`  安装目录 : ${ROOT}`)
 line(`  Node     : ${process.version}  (${process.platform}/${process.arch})`)
 line(`  模式     : ${DRY_RUN ? '只检查（--dry-run，不写任何东西）' : '实际执行'}`)
