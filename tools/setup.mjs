@@ -258,7 +258,9 @@ if (!profileDir) {
     const mountedIsHandwritten = looksLikePluginEntryPath(mountedEntry)
 
     if (mountedEntry === entry) {
-      ok('已挂载过，跳过（幂等）')
+      // 把路径打出来：远程排查时"已挂载过，跳过"这句话本身没有信息量，
+      // 而"跳过的是哪个路径"才决定这次到底能不能加载。
+      ok('已挂载过，跳过（幂等）', `      指向：${entry}`)
     } else if (mountedEntry !== null && !mountedIsHandwritten) {
       ok(
         '插件这一行来自**官方 bundle 安装**（name 是包名，不是文件路径）—— 手写挂载不需要，保持原样',
