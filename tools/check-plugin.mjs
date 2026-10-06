@@ -13,7 +13,8 @@
 
 import http from 'node:http'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { inflateRawSync } from 'node:zlib'
 
@@ -3174,27 +3175,75 @@ check('包名/可见性：合法 npm 名 + private（防误发布）', () => {
   assert.match(pkgJson.version, /^\d+\.\d+\.\d+/, 'version 必须是 semver')
 })
 
-check('显示元数据：title / description / icon 齐全，且图标符合官方白名单', () => {
+/**
+ * 官方宿主认的图标媒体类型 —— 照抄 `app.asar` 里 `dsh-app-boot/lib/index.js`
+ * 的 `package-meta.js`：`ICON_MEDIA_TYPES`。**别自己发明白名单**。
+ */
+const OFFICIAL_ICON_TYPES = new Map([
+  ['.svg', 'image/svg+xml'],
+  ['.png', 'image/png'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.webp', 'image/webp'],
+])
+
+check('显示元数据：title / description / icon 齐全，且图标过官方那几道校验', () => {
   assert.ok(pkgJson.meta?.title, 'meta.title 缺失 → 插件卡片没有标题')
   assert.ok(pkgJson.meta?.description, 'meta.description 缺失 → 插件卡片没有描述')
-  assert.equal(pkgJson.icon, './icon.svg', 'icon 必须是相对清单目录的路径')
-  const icon = readFileSync(pkgFile(pkgJson.icon))
-  assert.ok(icon.length > 0, '图标不能是空文件')
-  assert.ok(icon.length <= 256 * 1024, `图标超过官方上限 256 KiB：${icon.length} 字节`)
-  // 官方只接受 SVG / PNG / JPEG / WebP —— 按魔数嗅探，不信任扩展名
-  const head = icon.subarray(0, 4).toString('latin1')
-  const isSvg = icon.subarray(0, 5).toString('utf8').trimStart().startsWith('<')
-  const isPng = icon[0] === 0x89 && head.slice(1) === 'PNG'
-  const isJpeg = icon[0] === 0xff && icon[1] === 0xd8
-  const isWebp = head === 'RIFF' && icon.subarray(8, 12).toString('latin1') === 'WEBP'
-  assert.ok(isSvg || isPng || isJpeg || isWebp, `图标格式不在官方白名单内（前 4 字节：${head}）`)
+  // 以下逐条复刻宿主的 iconOf()：它抛错 → 卡片的图标位置会退回默认图案（静默，很难发现）。
+  const icon = pkgJson.icon
+  assert.equal(typeof icon, 'string', 'icon 必须是字符串')
+  assert.ok(icon.trim() !== '', 'icon 不能是空白字符串')
+  assert.ok(
+    !isAbsolute(icon) && !/^[A-Za-z][A-Za-z\d+.-]*:/.test(icon),
+    `icon 必须是相对文件路径（不能绝对路径 / 不能带 URL scheme）：${icon}`,
+  )
+  const mediaType = OFFICIAL_ICON_TYPES.get(extname(icon).toLowerCase())
+  assert.ok(mediaType, `扩展名不在官方白名单（SVG / PNG / JPEG / WebP）内：${icon}`)
+  // ⚠️ 官方是「先 realpath 再算相对」，所以软链指到目录外也算越界
+  const base = realpathSync(fileURLToPath(pkgDir))
+  const iconPath = realpathSync(resolve(base, icon))
+  const local = relative(base, iconPath)
+  assert.ok(
+    !(local === '..' || local.startsWith(`..${sep}`) || isAbsolute(local)),
+    `图标必须留在清单目录内，实际解析到：${local}`,
+  )
+  const stat = statSync(iconPath)
+  assert.ok(stat.isFile(), `图标必须是普通文件：${iconPath}`)
+  assert.ok(stat.size <= 256 * 1024, `图标超过官方上限 256 KiB：${stat.size} 字节`)
+  const bytes = readFileSync(iconPath)
+  assert.ok(bytes.length <= 256 * 1024, `图标读取后超过 256 KiB：${bytes.length} 字节`)
+  // 官方**只按扩展名**挑 mediaType、不看内容 —— 所以"扩展名与字节对不上"得由这里把关
+  const head = bytes.subarray(0, 4).toString('latin1')
+  const isSvg = bytes.subarray(0, 5).toString('utf8').trimStart().startsWith('<')
+  const isPng = bytes[0] === 0x89 && head.slice(1) === 'PNG'
+  const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8
+  const isWebp = head === 'RIFF' && bytes.subarray(8, 12).toString('latin1') === 'WEBP'
+  const sniffed = isSvg
+    ? 'image/svg+xml'
+    : isPng
+      ? 'image/png'
+      : isJpeg
+        ? 'image/jpeg'
+        : isWebp
+          ? 'image/webp'
+          : null
+  assert.ok(sniffed, `图标内容不是官方接受的任何格式（前 4 字节：${head}）`)
+  assert.equal(
+    sniffed,
+    mediaType,
+    `扩展名声明 ${mediaType}，实际字节是 ${sniffed} —— 宿主会按扩展名发 Content-Type，对不上卡片就裂图`,
+  )
 })
 
 check('exports / files：官方**不激活插件**就要读的那几条路径都在', () => {
   assert.ok(pkgJson.exports?.['.'], '缺 "." 导出')
   assert.ok(pkgJson.exports?.['./package.json'], '缺 "./package.json" 导出 → 官方读不到 meta')
+  // ⚠️ locale 是**经 exports 解析**的（宿主走 ModuleLoader），少了这条卡片就没多语言文案
   assert.ok(pkgJson.exports?.['./locale/*.json'], '缺 locale 导出 → 卡片没有多语言文案')
-  assert.ok(pkgJson.files?.includes('icon.svg'), 'files 缺图标 → 发行包里没有它')
+  // 图标相反：官方按清单目录直接读文件，**不需要** exports 条目，但**必须在 files 里**才进发行包
+  const iconName = pkgJson.icon.replace(/^\.\//, '')
+  assert.ok(pkgJson.files?.includes(iconName), `files 缺图标 ${iconName} → 发行包里没有它`)
   assert.ok(pkgJson.files?.some((f) => f.startsWith('locale/')), 'files 缺 locale')
   assert.ok(pkgJson.files?.includes('cordis.patch.yml'), 'files 缺补丁 → 装上去是个空包')
 })

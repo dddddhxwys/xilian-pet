@@ -8,7 +8,7 @@
     "title": "昔涟桌宠",
     "description": "把 DSH 的状态变成桌面上一只昔涟：干活时她荡秋千思考，有审批积压会冒泡提醒你。支持点击互动与拖拽。"
   },
-  "icon": "./icon.svg",
+  "icon": "./icon.webp",
   "exports": {
     ".": "./index.js",
     "./package.json": "./package.json",
@@ -19,7 +19,7 @@
     "reducer.js",
     "reminders.js",
     "cordis.patch.yml",
-    "icon.svg",
+    "icon.webp",
     "locale/*.json"
   ],
   "dsh": {

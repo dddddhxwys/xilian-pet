@@ -784,6 +784,7 @@ node tools/setup.mjs               # 切回手写行（幂等）
 | 4 | 「这一行到底是谁提供的」用**官方 inspect** 核对 | `Config.listConfigs {name:'@local/xilian-pet-plugin'}` → **恰好一条** `include:xilian-pet`，`name=@local/xilian-pet-plugin`（清手写行**之前**同名查询返回 **0 条** —— 那时行名是 `file:///…/index.js`） |
 | 5 | config **回声**进了 `/health`（本次新增功能） | `/debug/reminders` 回显的 `quietHours:["22:30","08:00"]` 与 profile 覆盖一致；`/health.config` 新增 `approvalViaPet` 等字段 |
 | 6 | 自测 **155 → 163 项全绿**，且做了**变异测试** | 给 `locale/en.json` 加 BOM → 精确报 `en.json 带 BOM → JSON.parse 会抛`（162 过 / 1 失败）；还原后 SHA256 与变异前一致 |
+| 7 | 插件图标换成作者提供的 `icon.webp`（270×310 / 11.6 KB / RGBA 透明底） | **原样入库**（SHA256 与所给文件一致，未重编码）；自测按**宿主真实校验逐条复刻**（白名单 / 目录内 / 普通文件 / ≤256 KiB / 魔数与扩展名相符）；`list_bundles` 仍报 `installed:true`、**恰好一行**、`overrides:[]` |
 
 **❌ 本次仍未验证 / 需要你做的**：
 
@@ -794,6 +795,7 @@ node tools/setup.mjs               # 切回手写行（幂等）
 | **`approval.viaPet: true` 真的还开着** | 已写进 profile 配置覆盖；重启后 `/health.config.approvalViaPet` 应报 `true`。真正"桌宠弹审批小窗"要等下一次审批才能看见 |
 | **确实没有双实例** | inspect 只看到**一条**行、`/health` 只有一个实例；但"开窗后会不会有两套 SSE"仍需看启动日志 |
 | **从干净 profile 能装成功**（DoD #7） | `install_bundle` 只能装进**当前** profile，本机没法在不影响真 profile 的前提下模拟 → **未做**，不假装做了 |
+| **卡片上确实显示成新图标** | 图标是**内联进元数据**的（`data:image/webp;base64,…`，约 15.5 KB），不是一条路由 ⇒ 要让宿主**重读一次元数据**（刷新页面／重启 DSH）才看得到。我无法看 GUI，不假装看过 |
 
 ### ✅ 有截图/日志证据
 
