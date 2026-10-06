@@ -3104,6 +3104,30 @@ check('`.cmd` 的 echo 行里括号必须转义成 ^( ^)（在 if 块里裸括�
   }
 })
 
+check('在压缩包里直接双击运行 → 必须被识别出来，并用人话说明怎么修', () => {
+  // 实机踩到（2026-10-06）：朋友在 zip 的浏览视图里直接双击 start-pet.cmd，
+  // Windows 只把那一个文件解到 %TEMP%\GUID_name.zip.HEX\ 再运行，于是：
+  //   Error: Cannot find module '...\Temp\...zip.8ff\xilian-pet\packages\...\launch.mjs'
+  // 这是公开分发时**最可能大量发生**的用户错误，必须给一句人话而不是 Node 堆栈。
+  const finder = readFileSync(new URL('../tools/find-node.cmd', import.meta.url), 'utf8')
+  assert.match(finder, /PET_ZIP_RUN/, 'find-node.cmd 要检测"在压缩包里运行"')
+  assert.ok(finder.includes('/c:".zip"'), '检测依据之一是路径里带 .zip')
+  assert.ok(
+    finder.includes('/c:"\\Temp"'),
+    '还必须同时命中 \\Temp（注意**不能**带尾部反斜杠 —— 它会把引号转义掉）',
+  )
+  for (const rel of rootCmdFiles) {
+    const src = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
+    assert.ok(src.includes('PET_ZIP_RUN'), `${rel} 必须在 call 之后检查 PET_ZIP_RUN 并中止`)
+  }
+  // 中文提示靠 base64 承载（.cmd 必须纯 ASCII）—— 顺手解回来确认它没被写坏
+  const encoded = /Buffer\.from\('([A-Za-z0-9+/=]{40,})','base64'\)/.exec(finder)?.[1]
+  assert.ok(encoded, '应能从 find-node.cmd 里取出那段 base64 提示')
+  const decoded = Buffer.from(encoded, 'base64').toString('utf8')
+  assert.match(decoded, /压缩包/, '中文提示要提到"压缩包"')
+  assert.match(decoded, /解压缩/, '要告诉用户去"全部解压缩"')
+})
+
 check('拖拽链路：移动要续期 + 复位要通知渲染端 + 失焦复位必须有条件', () => {
   // ⚠️ 这三条都是用户实机报出来的（"一开始能拖，后面突然拖不动了"）。
   //    链条：失焦或定时器断档 → 看门狗复位 draggingNow → 主进程恢复"按掩码判穿透"

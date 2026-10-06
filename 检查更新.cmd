@@ -31,6 +31,12 @@ rem  then PATH.) Do not inline a copy here: three copies is how a location
 rem went missing in one of them once already.
 call "%~dp0tools\find-node.cmd"
 
+rem Running from inside the zip: find-node.cmd already explained it.
+if defined PET_ZIP_RUN (
+  if "%~1"=="" pause
+  exit /b 1
+)
+
 if not defined PET_NODE (
   echo [ERROR] No Node runtime found - cannot check for updates.
   echo.

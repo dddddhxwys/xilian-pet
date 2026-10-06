@@ -33,6 +33,27 @@ rem ============================================================
 set "PET_NODE="
 set "PET_ROOT=%~dp0.."
 
+rem -- 0) running from INSIDE a .zip? ---------------------------------
+rem Explorer extracts a single file out of a zip into
+rem   %TEMP%\GUID_name.zip.HEX\
+rem before running it, so the package's folders are simply not there and every
+rem relative path dies with MODULE_NOT_FOUND. Seen in the wild 2026-10-06: a
+rem tester double-clicked start-pet.cmd inside the zip and got exactly that
+rem (the temp path in the error message was the give-away).
+rem BOTH tests are required: ".zip" alone would also match a folder someone
+rem happened to name "...zip..." while sitting outside a temp directory.
+rem NOTE the search string is "\Temp", NOT "\Temp\": a trailing backslash
+rem before a closing quote escapes that quote in Windows argument parsing
+rem (the C runtime rule), so findstr would receive '\Temp"' and never match.
+rem Measured: the ".zip" test matched while "\Temp\" did not, on a path that
+rem visibly contained both.
+set "PET_ZIP_RUN="
+echo "%PET_ROOT%" | findstr /i /c:".zip" >nul
+if not errorlevel 1 (
+  echo "%PET_ROOT%" | findstr /i /c:"\Temp" >nul
+  if not errorlevel 1 set "PET_ZIP_RUN=1"
+)
+
 rem 0) Node shipped INSIDE this package (the all-in-one build has one).
 rem    Checked first: most predictable, needs no prerequisites at all.
 for %%P in (
@@ -113,6 +134,23 @@ if not defined PET_NODE (
   rem the DSH installation, which is what tells the two failure modes apart.
   if defined PET_DSH_INSTALL echo   DSH install found at %PET_DSH_INSTALL% - but no runtime under it.
   if not defined PET_DSH_INSTALL echo   No DSH uninstall entry with an InstallLocation was found.
+  echo.
+)
+
+rem -- running from inside the zip: say so, in plain words -----------
+rem The callers check PET_ZIP_RUN and stop; this is the only place that
+rem explains it. The Chinese text is carried as base64 so this file stays
+rem pure ASCII -- a non-ASCII byte in a .cmd is mangled by cmd's OEM
+rem codepage (that exact trap broke this very file earlier today).
+if defined PET_ZIP_RUN (
+  echo [ERROR] This script is running from INSIDE the .zip archive.
+  echo         Windows unpacked only this one file into a temp folder, so
+  echo         the rest of the package is not here and it cannot work.
+  echo.
+  echo         Fix: right-click the .zip, pick "Extract All...", then run
+  echo         the script from the folder that was extracted.
+  echo.
+  if defined PET_NODE "%PET_NODE%" -e "process.stdout.write(Buffer.from('ICDimqDvuI8g5L2g5piv5Zyo44CQ5Y6L57yp5YyF6YeM44CR55u05o6l5Y+M5Ye76L+Q6KGM55qEIOKAlOKAlCBXaW5kb3dzIOWPquaKiui/meS4gOS4quaWh+S7tuino+WIsOS4tOaXtuebruW9le+8jAogICAgIOaJgOS7peWug+aJvuS4jeWIsOWOi+e8qeWMhemHjOWFtuS9meeahOaWh+S7tuWkue+8jOW/heeEtuaKpemUmeOAggoKICDmraPnoa7lgZrms5XvvJrlhYjlj7PplK7pgqPkuKogLnppcCDihpIg5YWo6YOo6Kej5Y6L57yp77yM5YaN5LuO6Kej5Y6L5Ye65p2l55qE5paH5Lu25aS56YeM6L+Q6KGM5pys6ISa5pys44CCCg==','base64').toString('utf8'))"
   echo.
 )
 

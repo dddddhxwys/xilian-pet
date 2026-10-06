@@ -91,6 +91,10 @@ rem NOTE: do not add setlocal here or in find-node.cmd - the caller has to see
 rem       the variable PET_NODE.
 call "%~dp0tools\find-node.cmd"
 
+rem Running from inside the zip: find-node.cmd already explained it and how to
+rem fix it, so just stop here (the tee wrapper prints the log and pauses).
+if defined PET_ZIP_RUN exit /b 1
+
 if not defined PET_NODE (
   if not defined PET_DSH_HOME set "PET_DSH_HOME=%USERPROFILE%\.dsh"
   echo [ERROR] No Node runtime found on this machine.
