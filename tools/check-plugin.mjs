@@ -33,6 +33,13 @@ import {
 import { createSseLink } from '../packages/pet-shell/sse-link.js'
 import { addPluginRow, looksLikePluginEntryPath, looksLikeProfilePatch, pluginRowSnippet, readPluginRowPath, removePluginRow } from './lib/patch-edit.mjs'
 import {
+  assetUploadUrl,
+  releaseAssetFiles,
+  releaseByTagUrl,
+  releasePayload,
+  releaseTag,
+} from './lib/release-publish.mjs'
+import {
   collectReleaseFiles,
   describeVariant,
   formatSha256Sidecar,
@@ -3169,6 +3176,60 @@ check('在压缩包里直接双击运行 → 必须被识别出来，并用人�
   const decoded = Buffer.from(encoded, 'base64').toString('utf8')
   assert.match(decoded, /压缩包/, '中文提示要提到"压缩包"')
   assert.match(decoded, /解压缩/, '要告诉用户去"全部解压缩"')
+})
+
+check('发布：要上传的文件**只从 versions.json 来**（zip + 它的 .sha256），脏数据不造鬼文件', () => {
+  // 单一真相源。手工再写一份文件清单，迟早会"发了 A、清单写 B"（吃过亏）。
+  assert.deepEqual(
+    releaseAssetFiles({ assets: [{ file: 'a.zip' }, { file: 'b.zip' }] }),
+    ['a.zip', 'a.zip.sha256', 'b.zip', 'b.zip.sha256'],
+  )
+  assert.deepEqual(releaseAssetFiles({}), [])
+  assert.deepEqual(releaseAssetFiles(null), [])
+  // 脏数据必须跳过，而不是拼出 undefined.sha256 然后上传失败
+  assert.deepEqual(releaseAssetFiles({ assets: [{}, { file: '' }, { file: '  ' }, { file: 'ok.zip' }] }), [
+    'ok.zip',
+    'ok.zip.sha256',
+  ])
+})
+
+check('发布：tag 与 Release 标题的约定', () => {
+  assert.equal(releaseTag({ latest: '0.1.0' }), 'v0.1.0')
+  assert.equal(releaseTag({}), 'v0.0.0', '清单缺 latest 也不能拼出 "vundefined"')
+  const payload = releasePayload({ tag: 'v0.1.0', notesText: '# 昔涟桌宠 v0.1.0\n\n正文\n' })
+  assert.equal(payload.name, '昔涟桌宠 v0.1.0', '标题取说明第一行并去掉 #')
+  assert.equal(payload.body, '# 昔涟桌宠 v0.1.0\n\n正文\n', '说明正文原样发出')
+  assert.equal(payload.tag_name, 'v0.1.0')
+  assert.equal(payload.draft, false)
+  assert.equal(payload.prerelease, false)
+  // 说明为空/只有空行 → 回退到 tag，绝不发一个没名字的 Release
+  assert.equal(releasePayload({ tag: 'v9', notesText: '' }).name, 'v9')
+  assert.equal(releasePayload({ tag: 'v9', notesText: '\n  \n' }).name, 'v9')
+  // URL：资产走 uploads.github.com（不是 api.github.com），文件名要转义
+  assert.match(assetUploadUrl(7, 'a b.zip'), /^https:\/\/uploads\.github\.com\/repos\/.+\/releases\/7\/assets\?name=a%20b\.zip$/)
+  assert.match(releaseByTagUrl('v0.1.0'), /\/releases\/tags\/v0\.1\.0$/)
+})
+
+check('发布脚本：token 不出屏、幂等、传完回读核对、不用 process.exit', () => {
+  const src = readFileSync(new URL('../tools/publish-release.mjs', import.meta.url), 'utf8')
+  // token 只从环境读，且**值**从不进输出（打"token : 环境变量"这种标签没关系）
+  assert.ok(src.includes('GITHUB_TOKEN'), '要支持 GITHUB_TOKEN 环境变量')
+  assert.ok(
+    !/console\.(log|error)\([^)]*(\$\{\s*token\s*\}|[+]\s*token\b|\btoken\s*[+])/.test(src),
+    '不许把 token 的**值**打进输出（插值/拼接都不行）',
+  )
+  // 幂等：Release 复用 + 已传资产跳过（156 MB 传一半断了要能重跑）
+  assert.ok(src.includes('已存在 Release') && src.includes('跳过（远端已有）'), '要幂等')
+  assert.ok(src.includes('createReadStream') && src.includes('duplex'), '大文件要流式上传，别整个读进内存')
+  // 传完必须回读核对大小
+  assert.ok(src.includes('远端资产核对'), '传完要回读核对，不能只信"上传成功"')
+  // ⚠️ 2026-10-06 的教训：process.exit() 在 fetch/定时器未收尾时强退会撞 libuv 断言
+  const codeOnly = src
+    .split('\n')
+    .filter((one) => !/^\s*(\/\/|\*|\/\*)/.test(one))
+    .join('\n')
+  assert.ok(!/process\.exit\(/.test(codeOnly), '不要用 process.exit() —— 用 process.exitCode')
+  assert.ok(src.includes("from './lib/release-publish.mjs'"), '纯逻辑要在 lib 里（可自测）')
 })
 
 check('拖拽链路：移动要续期 + 复位要通知渲染端 + 失焦复位必须有条件', () => {

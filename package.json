@@ -16,6 +16,8 @@
     "update:check": "node tools/check-update.mjs",
     "release": "node tools/package-release.mjs --with-model",
     "release:full": "node tools/package-release.mjs --with-model --with-electron",
-    "release:allinone": "node tools/package-release.mjs --with-model --with-electron --with-node"
+    "release:allinone": "node tools/package-release.mjs --with-model --with-electron --with-node",
+    "release:publish": "node tools/publish-release.mjs",
+    "release:publish:dry": "node tools/publish-release.mjs --dry-run"
   }
 }
