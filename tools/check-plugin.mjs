@@ -3296,6 +3296,17 @@ check('安装脚本：换文件夹之后要**改指向**，是官方安装就**�
   assert.match(src, /插件行原本指着\*\*别的目录\*\*/, '换目录时要报出来它改指向了')
 })
 
+check('多 profile：**逐个都挂上**，而不是猜一个（实机踩过：挂到了没在启动的那个）', () => {
+  // 第二个朋友的机器：/xilian-pet/health 404、列表里没有，而安装一路"成功"。
+  // 根因是安装脚本"第一个命中就赢"（且默认先猜 desktop）—— 机器上若有多个 profile，
+  // 很容易挂进那个**没人启动**的 profile。
+  const src = readFileSync(new URL('../tools/setup.mjs', import.meta.url), 'utf8')
+  assert.ok(src.includes('listProfileDirs'), '要列出所有带 cordis.patch.yml 的 profile')
+  assert.ok(/allProfiles\.length > 1/.test(src), '多于一个 profile 时要逐个挂')
+  assert.ok(src.includes('--only-this-profile'), '逐个挂载是"再跑一遍自己"，必须给子进程防递归开关')
+  assert.match(src, /这台机器上有 \$\{allProfiles\.length\} 个 profile/, '要把发现的 profile 全列出来（远程排查全靠它）')
+})
+
 // ─────────────────────────────────────────────────────────────
 console.log('\n[5] 官方 bundle 元数据（插件卡片 / install_bundle 契约）')
 

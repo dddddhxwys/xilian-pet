@@ -17,7 +17,7 @@
 import { spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -122,33 +122,67 @@ line(`  模式     : ${DRY_RUN ? '只检查（--dry-run，不写任何东西）'
 line('')
 
 // ── ① 找 DSH profile ────────────────────────────────────────────────
-const profileCandidates = []
-if (process.env.DSH_PROFILE_DIR) profileCandidates.push(process.env.DSH_PROFILE_DIR)
+// ⚠️ 这里曾经是"**第一个**命中就赢"，而且默认把 `desktop` 排在候选最前面。
+//    实机踩过（2026-10-06 第二个朋友的机器）：机器上有多个 profile，而 DSH 实际
+//    启动的不是我们选中的那个 → 插件被写进**没人启动的** profile：
+//    /xilian-pet/health 返回 404、插件列表里当然也没有，重跑还"幂等跳过"，怎么都修不回来。
+//    现在：把所有 profile **都列出来**（这是远程排查最有用的一段），并且**每个都挂上**。
 const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-const profileName = profileArg ?? process.env.DSH_PROFILE ?? 'desktop'
-profileCandidates.push(join(dshHome, 'profiles', profileName))
-try {
-  for (const entry of readdirSync(join(dshHome, 'profiles'), { withFileTypes: true })) {
-    if (entry.isDirectory()) profileCandidates.push(join(dshHome, 'profiles', entry.name))
+const profilesRoot = join(dshHome, 'profiles')
+/** 显式指定的 profile（--profile= / DSH_PROFILE / DSH_PROFILE_DIR）优先 */
+const wantedProfile = profileArg ?? process.env.DSH_PROFILE ?? null
+const onlyThisProfile = argv.includes('--only-this-profile')
+
+/** 所有带 cordis.patch.yml 的 profile 目录（= 看起来真被 DSH 用过的） */
+function listProfileDirs() {
+  const found = []
+  const add = (dir) => {
+    if (typeof dir !== 'string' || dir === '') return
+    if (!existsSync(join(dir, 'cordis.patch.yml'))) return
+    if (!found.includes(dir)) found.push(dir)
   }
-} catch {
-  /* profiles 目录不存在就算了，下面会报 */
+  if (process.env.DSH_PROFILE_DIR) add(process.env.DSH_PROFILE_DIR)
+  if (wantedProfile !== null) add(join(profilesRoot, wantedProfile))
+  try {
+    for (const entry of readdirSync(profilesRoot, { withFileTypes: true })) {
+      if (entry.isDirectory()) add(join(profilesRoot, entry.name))
+    }
+  } catch {
+    /* profiles 目录不存在就算了，下面会报 */
+  }
+  return found
 }
 
-const profileDir = profileCandidates.find((p) => existsSync(join(p, 'cordis.patch.yml')))
+const allProfiles = listProfileDirs()
+/** 本次主挂的 profile：显式指定 > desktop > 唯一/第一个 */
+const profileDir =
+  (wantedProfile !== null && allProfiles.includes(join(profilesRoot, wantedProfile))
+    ? join(profilesRoot, wantedProfile)
+    : null) ??
+  (allProfiles.includes(join(profilesRoot, 'desktop')) ? join(profilesRoot, 'desktop') : null) ??
+  allProfiles[0] ??
+  null
+
 line('① 找 DSH profile')
-if (!profileDir) {
+if (profileDir === null) {
   // ⚠️ 这是**警告不是失败**：桌宠可以脱离 DSH 单独跑（待机 + 点击互动 + 拖拽都在渲染端），
   //    只是不会跟随 DSH 状态、没有审批提醒和派活面板。
   //    之前判成失败会让"没装 DSH 的朋友"看到一句 FAILED 却其实装得成。
   profileMissing = true
   warn(
     '没找到 DSH 的 profile —— 她仍能显示和互动，但**不会跟随 DSH 状态**',
-    `找过这些位置：\n      ${profileCandidates.join('\n      ')}\n` +
+    `找过：${profilesRoot}\\<任何带 cordis.patch.yml 的 profile>\n` +
       '  想接上 DSH：装好 DSH 并启动一次，然后重跑本安装即可（幂等）。',
   )
 } else {
   ok(`profile：${profileDir}`)
+  if (allProfiles.length > 1) {
+    line(`     这台机器上有 ${allProfiles.length} 个 profile（打 → 的是本次主挂的）：`)
+    for (const one of allProfiles) line(`       ${one === profileDir ? '→' : ' '} ${one}`)
+    line('     （下面会把**每一个**都挂上，避免挂到没在启动的那一个）')
+  } else {
+    line('     （本机只找到一个 profile）')
+  }
 }
 line('')
 
@@ -266,6 +300,25 @@ if (!profileDir) {
       }
     }
   }
+}
+
+// ── ②b 其它 profile 也顺手挂上 ────────────────────────────────────────
+// 为什么：我们**无法知道** DSH 实际启动的是哪个 profile（它没写在任何我们能读的地方）。
+// 与其猜，不如把每个有 patch 文件的 profile 都挂上 —— DSH 桌面端同时只跑一个，
+// 所以不会出现"双实例"。实现方式是**带 --profile 重新跑一遍自己**，
+// 这样每个 profile 都走完全相同的、已被自测覆盖的代码路径（幂等）。
+if (!DRY_RUN && !onlyThisProfile && allProfiles.length > 1) {
+  for (const other of allProfiles) {
+    if (other === profileDir) continue
+    line(`  ↻ 也挂到 profile「${basename(other)}」（无法确定 DSH 启动的是哪个，索性都挂）`)
+    const code = run(process.execPath, [
+      fileURLToPath(import.meta.url),
+      `--profile=${basename(other)}`,
+      '--only-this-profile',
+    ])
+    if (code !== 0) warn(`profile「${basename(other)}」那一次返回了 ${code}`)
+  }
+  line('')
 }
 line('')
 
