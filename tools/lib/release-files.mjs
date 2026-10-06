@@ -91,6 +91,13 @@ export function shouldInclude(rel, options = {}) {
 /** 发行包里必须存在的东西（打包后自检用） */
 export function requiredInRelease(options = {}) {
   return [
+    // ⚠️ 这两个**不是"顺手带上"，是硬要求**：
+    //   · LICENSE    —— MIT 本身要求随分发保留版权声明；也是"代码随便用"的依据
+    //   · NOTICE.md  —— 素材权利人（米哈游 / 模型作者）要求随作品呈现版权标识与署名
+    //   2026-10-06 之前它们只是"碰巧被收进来"（根目录没被排除），没有任何东西守着 ——
+    //   清单规则一改就会静默丢掉，而那是**许可违规**，不是小 bug。
+    'LICENSE',
+    'NOTICE.md',
     '安装.cmd',
     'start-pet.cmd',
     'package.json',

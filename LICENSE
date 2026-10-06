@@ -1,0 +1,43 @@
+MIT License
+
+Copyright (c) 2026 dddddhxwys
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+范围说明（重要）：本许可**不覆盖**第三方素材
+================================================================================
+
+上面那段 MIT **只覆盖本项目自己创作的代码与文档**，**不包括**下列内容 ——
+它们**不在 MIT 的授权范围内**，权利归各自所有者，约束见 `NOTICE.md`：
+
+| 不适用 MIT 的内容 | 权利归属 | 约束 |
+|---|---|---|
+| `assets/live2d/Cyrene/`（Live2D 模型，Cubism 5.0） | B站 **@是依七哒** | **注明用途 + 不得收费**（作者要求，见 `NOTICE.md` 第四节） |
+| `packages/pet-plugin/icon.webp`（插件图标） | **社区图片，作者不明** | 原作者或权利人主张时，**补署名或移除**（见 `NOTICE.md` 第五节） |
+| 角色形象「昔涟」及《崩坏：星穹铁道》相关素材 | **米哈游（miHoYo）** | 依同人衍生作品创作指引**严格限于个人、非商业**；须保留 `NOTICE.md` 的版权标识 |
+
+一句话：**代码随便用，角色的东西别乱用。**
+
+- 你拿本项目的代码去做别的事（改、合、发、甚至商用）—— MIT 允许，**不需要**再问我。
+- 但你若把角色素材一并拿走用于商业用途，那是**违反素材权利人**（米哈游 / 模型作者）的条款，
+  与本项目的许可无关，**本项目也无法替你授权**。
+
+因此，任何再分发（含打包给他人）都必须同时保留本文件与 `NOTICE.md`：
+`tools/lib/release-files.mjs` 里两者都是**必需文件**，缺一个就不让打包。

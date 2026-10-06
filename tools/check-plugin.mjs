@@ -14,7 +14,7 @@
 import http from 'node:http'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
-import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { inflateRawSync } from 'node:zlib'
 
@@ -3359,6 +3359,42 @@ check('形态说明：三档都要讲清带不带 Electron / 模型', () => {
   assert.match(describeVariant({}), /不含 Live2D 模型/)
   assert.match(describeVariant({ withElectron: true, withModel: true }), /内置 Electron/)
   assert.match(describeVariant({ withElectron: true, withModel: true }), /含 Live2D 模型/)
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[7] 授权：LICENSE 与第三方素材的边界')
+
+check('LICENSE 是本项目代码的 MIT，且**明确排除**第三方素材', () => {
+  // 为什么必须有这条：NOTICE/README 三处写着「本项目的 MIT 授权范围」，
+  // 而仓库里**曾经根本没有 LICENSE** —— 那等于「默认保留所有权利」，和文档说法正好相反。
+  const licensePath = join(repoRoot, 'LICENSE')
+  assert.ok(existsSync(licensePath), '仓库根必须有 LICENSE，否则文档里的「MIT 授权范围」是凭空捏造')
+  const license = readFileSync(licensePath, 'utf8')
+  assert.match(license, /^MIT License/, '正文要是标准 MIT（SPDX 识别用）')
+  assert.match(license, /Copyright \(c\) 2026 dddddhxwys/, '版权行要写全（年份 + 权利人）')
+  assert.match(license, /WITHOUT WARRANTY OF ANY KIND/, 'MIT 的免责声明段不能省')
+  // 关键：不能笼统说"本仓库是 MIT" —— 模型与图标必须被显式排除
+  assert.match(license, /NOTICE\.md/, '范围说明必须指向 NOTICE.md，否则读者不知道素材另有约束')
+  assert.match(license, /assets\/live2d/, '模型目录必须在排除清单里（作者要求不得收费）')
+  assert.match(license, /icon\.webp/, '插件图标必须在排除清单里（作者不明）')
+  assert.match(license, /米哈游/, '角色素材的权利人要写明')
+})
+
+check('文档互指：NOTICE 与 README 都要能点回 LICENSE', () => {
+  const notice = readFileSync(new URL('../NOTICE.md', import.meta.url), 'utf8')
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+  assert.match(notice, /\[`LICENSE`\]\(LICENSE\)/, 'NOTICE 要给出 LICENSE 链接')
+  assert.match(readme, /\[`LICENSE`\]\(LICENSE\)/, 'README 要给出 LICENSE 链接')
+})
+
+check('发行包必需清单：LICENSE 与 NOTICE.md 必须在内（合规不能靠"碰巧被收进来"）', () => {
+  for (const options of [{}, { withModel: true }, { withModel: true, withElectron: true }]) {
+    const list = requiredInRelease(options)
+    for (const rel of ['LICENSE', 'NOTICE.md']) {
+      assert.ok(list.includes(rel), `${JSON.stringify(options)} 的必需清单缺 ${rel} —— 发行人漏了就是许可违规`)
+      assert.ok(existsSync(join(repoRoot, rel)), `${rel} 不在仓库里，发行包自检会直接失败`)
+    }
+  }
 })
 
 console.log(`\n${'─'.repeat(56)}`)
