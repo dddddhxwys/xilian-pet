@@ -8,18 +8,18 @@
     {
       "version": "0.1.0",
       "flavor": "full-model",
-      "file": "xilian-pet-v0.1.0-full-model-20261006-1927.zip",
-      "size": 163443113,
-      "sha256": "f680a33455b68ced56b76b3929c60052256c790d5b23165ef017c34ab0e8021f",
-      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.0/xilian-pet-v0.1.0-full-model-20261006-1927.zip"
+      "file": "xilian-pet-v0.1.0-full-model-20261011-1958.zip",
+      "size": 163460171,
+      "sha256": "8f8c06ac3766a28b48ed2bb1ae06d6c586a01ca54307a5809c444625a19e9460",
+      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.0/xilian-pet-v0.1.0-full-model-20261011-1958.zip"
     },
     {
       "version": "0.1.0",
       "flavor": "slim-model",
-      "file": "xilian-pet-v0.1.0-slim-model-20261006-1927.zip",
-      "size": 1939840,
-      "sha256": "abd5fa1320f216433ee0588e98745062f0b84fa910a6f11bb9448b224cda73e7",
-      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.0/xilian-pet-v0.1.0-slim-model-20261006-1927.zip"
+      "file": "xilian-pet-v0.1.0-slim-model-20261011-1958.zip",
+      "size": 1956897,
+      "sha256": "f3a82e621631740abf818e42baa5f82824dc9f88bc2b9169e927b0abf7c4fe3f",
+      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.0/xilian-pet-v0.1.0-slim-model-20261011-1958.zip"
     }
   ]
 }

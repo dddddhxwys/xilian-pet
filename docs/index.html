@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>昔涟桌宠 · xilian pet</title>
+    <meta
+      name="description"
+      content="贴在 Windows 桌面上的昔涟（Cyrene）：跟着 DSH 的状态冒泡提示、能拖拽、能派活，还能替你在桌面上完成审批。"
+    />
+    <link rel="icon" href="assets/icon.webp" />
+    <style>
+      :root {
+        --bg: #0f1117;
+        --card: #171a23;
+        --line: #262b38;
+        --ink: #e8ebf2;
+        --dim: #9aa3b5;
+        --accent: #b98cf0;
+        --accent-2: #7fd1e8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: radial-gradient(900px 500px at 50% -5%, #241b3a 0%, var(--bg) 55%) no-repeat, var(--bg);
+        color: var(--ink);
+        font: 16px/1.75 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      }
+      .wrap { max-width: 880px; margin: 0 auto; padding: 56px 20px 72px; }
+      header { text-align: center; }
+      .icon {
+        width: 132px; height: auto;
+        filter: drop-shadow(0 10px 28px rgba(185, 140, 240, 0.35));
+      }
+      h1 { margin: 18px 0 6px; font-size: 34px; letter-spacing: 0.5px; }
+      .tagline { color: var(--dim); margin: 0 auto; max-width: 620px; }
+      .badges { margin: 14px 0 0; color: var(--dim); font-size: 13px; }
+      .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin: 26px 0 8px; }
+      a.btn {
+        display: inline-block; padding: 11px 22px; border-radius: 999px;
+        text-decoration: none; font-weight: 600; border: 1px solid var(--line);
+        color: var(--ink); background: var(--card); transition: transform 0.12s ease, border-color 0.12s;
+      }
+      a.btn:hover { transform: translateY(-1px); border-color: var(--accent); }
+      a.btn.primary { background: linear-gradient(120deg, var(--accent), var(--accent-2)); color: #14121c; border: 0; }
+      section { margin-top: 44px; }
+      h2 { font-size: 21px; margin: 0 0 14px; padding-left: 12px; border-left: 3px solid var(--accent); }
+      .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
+      ul, ol { margin: 0; padding-left: 22px; }
+      li + li { margin-top: 6px; }
+      code { background: #232839; padding: 1px 6px; border-radius: 6px; font-size: 13.5px; }
+      table { width: 100%; border-collapse: collapse; font-size: 15px; }
+      th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+      th { color: var(--dim); font-weight: 600; white-space: nowrap; }
+      td:first-child { white-space: nowrap; }
+      .warn { border-left: 3px solid #e0a33e; }
+      .steps li { margin-top: 10px; }
+      footer { margin-top: 52px; text-align: center; color: var(--dim); font-size: 14px; }
+      footer a { color: var(--accent-2); }
+      @media (max-width: 520px) {
+        h1 { font-size: 27px; }
+        td:first-child, th:first-child { white-space: normal; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <img class="icon" src="assets/icon.webp" alt="昔涟" />
+        <h1>昔涟桌宠</h1>
+        <p class="tagline">
+          贴在 Windows 桌面上的<b>昔涟（Cyrene）</b>：跟着 DSH 的状态冒气泡提示、能拖拽、能派活，
+          还能<b>替你在桌面上完成审批</b> —— agent 要执行需要授权的操作时，她自己弹一个小窗，你点「允许」或「拒绝」。
+        </p>
+        <div class="cta">
+          <a class="btn primary" href="https://github.com/dddddhxwys/xilian-pet/releases/latest">下载最新版</a>
+          <a class="btn" href="https://github.com/dddddhxwys/xilian-pet">看源码</a>
+        </div>
+        <p class="badges">Windows · DSH 插件 + Electron 外壳 · MIT（代码部分）</p>
+      </header>
+
+      <section>
+        <h2>下载哪一个</h2>
+        <div class="card">
+          <table>
+            <tr><th>文件</th><th>大小</th><th>什么时候用</th></tr>
+            <tr>
+              <td><b>slim-model</b></td><td>约 1.8 MB</td>
+              <td><b>通常选这个</b>。装的时候自动下载 Electron（约 150 MB），需要网络能访问华为云镜像</td>
+            </tr>
+            <tr>
+              <td><b>full-model</b></td><td>约 156 MB</td>
+              <td>上面那个装到一半报「下载失败」时用这个 —— 里面<b>已经含 Electron</b>，不需要下载任何东西</td>
+            </tr>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>三步装好</h2>
+        <div class="card">
+          <ol class="steps">
+            <li>
+              <b>解压到一个新文件夹</b>，路径用纯英文，例如 <code>C:\xilian-pet</code>。
+              <br />⚠️ <b>不要在压缩包窗口里直接双击里面的文件</b> —— 那样 Windows 只把那一个文件解到临时目录，必然报错。先「全部解压缩」。
+            </li>
+            <li>
+              <b>双击 <code>安装.cmd</code></b>，等它跑完。
+              <br />窗口会先显示一段英文说明，然后<b>一直空着是正常的</b>：所有输出都写进同目录的 <code>install-log.txt</code>，跑完才一次性回显。如果要下 Electron 可能要几分钟，<b>别关窗口</b>。
+            </li>
+            <li>
+              <b>重启 DSH</b>，然后双击 <code>start-pet.cmd</code> —— 她就出现了。退出按 <code>Ctrl+Shift+Q</code>。
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section>
+        <h2>平时怎么用</h2>
+        <div class="card">
+          <table>
+            <tr>
+              <th>操作</th><th>效果</th>
+            </tr>
+            <tr>
+              <td><b>左键点她</b></td>
+              <td>
+                <b>分区互动</b>（部件级判定）：点<b>脸</b> → 戴墨镜（2 秒自动摘）；
+                点<b>头顶</b>（头饰 / 头发 / 背饰）→ 摸头反应（舒服得眯起眼 + 轻轻歪头）；
+                点<b>两侧秋千翅膀</b> → 弹她一下；3 秒内点秋千超过 5 次 → <b>出晕</b>
+              </td>
+            </tr>
+            <tr><td>按住拖动</td><td>换位置，<b>位置会自动记住</b></td></tr>
+            <tr>
+              <td><b>右键点她</b></td>
+              <td>弹出<b>操作面板</b>（独立小窗）：派活目标、派活 / 打断、本次会话用量、缓存命中、插件连接状态</td>
+            </tr>
+            <tr><td>鼠标移到透明处</td><td>鼠标<b>穿过去</b>，不挡住下面的窗口</td></tr>
+            <tr><td><code>Ctrl+Shift+Q</code></td><td>退出</td></tr>
+          </table>
+          <p style="color: var(--dim); font-size: 14px; margin: 12px 0 0">
+            点身体 / 手 / 腿 / 裙摆等<b>没有配区的部件 → 什么都不做</b>（刻意如此：行为可预测、不会误触）。
+            <b>双击她也不做任何事</b> —— 面板只有右键这一条路。她会说话的地方是<b>状态气泡</b>（DSH 事件与主动提醒），不是点出来的。
+          </p>
+        </div>
+      </section>
+
+      <section>
+        <h2>装不上？先看这几条</h2>
+        <div class="card">
+          <table>
+            <tr><td>窗口一直空着</td><td>那是正常的 —— 输出在 <code>install-log.txt</code> 里，跑完才回显。盯那个文件的大小就知道在不在跑</td></tr>
+            <tr><td>报 <code>Cannot find module …\Temp\…zip…</code></td><td>你在压缩包里双击了文件。先全部解压缩，再从解压出来的文件夹里双击</td></tr>
+            <tr><td>报「找不到 Node runtime」</td><td>安装器会打印具体找过哪些位置。先启动一次 DSH 并让它真正干点活（它首次使用时会解包运行时），再重跑安装</td></tr>
+            <tr><td>插件列表里没有卡片 / <code>/health</code> 报 404</td><td>① 没重启 DSH；② 安装器走了「免安装直挂」模式（能用，但列表里不显示）。重跑 <code>安装.cmd</code> 或手动用 DSH 的 CLI 装</td></tr>
+            <tr><td>审批没走桌宠</td><td>看 <code>http://127.0.0.1:19387/xilian-pet/health</code>：<code>code</code> 应是 27、<code>approvalViaPet</code> 应是 true、<code>subscribers</code> 应 ≥ 1（她没连上时审批按设计立刻交给 DSH 界面）</td></tr>
+            <tr><td>她说自己退出了 / 状态不动</td><td><code>subscribers</code> 是 0 就说明外壳没连上，重新双击 <code>start-pet.cmd</code></td></tr>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>授权与第三方素材（请读）</h2>
+        <div class="card warn">
+          <p style="margin-top: 0">
+            <b>代码与文档</b>按 <b>MIT</b> 发布 —— 全文见仓库里的
+            <a href="https://github.com/dddddhxwys/xilian-pet/blob/main/LICENSE">LICENSE</a>。
+            <b>但发行包里的第三方素材不在 MIT 覆盖范围内</b>：
+          </p>
+          <ul>
+            <li>
+              <b>Live2D 模型</b>（<code>assets/live2d/Cyrene/</code>）：由模型作者
+              <b>B站 @是依七哒</b> 授权在本项目中使用，不是我们的作品，也不随 MIT 转授；
+              使用须<b>注明用途且不得收费</b>，<b>请勿单独提取再分发</b>。
+            </li>
+            <li>
+              <b>插件图标</b>（<code>packages/pet-plugin/icon.webp</code>，即本页顶部那张）：
+              来自网络社区，<b>作者不明</b>、权利状态不明。若你是作者并希望调整署名或移除，请在仓库提 issue。
+            </li>
+            <li>
+              <b>角色「昔涟」及《崩坏：星穹铁道》相关素材的权利属于米哈游（miHoYo）</b>。
+              本项目是非官方爱好者作品，与米哈游<b>无关联、未获授权</b>，使用<b>严格限于个人、非商业</b>。
+            </li>
+          </ul>
+          <p style="margin-bottom: 0">
+            一句话：<b>代码随便用，角色的东西别乱用。</b>完整声明见
+            <a href="https://github.com/dddddhxwys/xilian-pet/blob/main/NOTICE.md">NOTICE.md</a>。
+          </p>
+        </div>
+      </section>
+
+      <footer>
+        <p>
+          <a href="https://github.com/dddddhxwys/xilian-pet">仓库</a> ·
+          <a href="https://github.com/dddddhxwys/xilian-pet/releases/latest">下载</a> ·
+          <a href="https://github.com/dddddhxwys/xilian-pet#readme">说明与 FAQ</a>
+        </p>
+        <p style="opacity: 0.7">非官方同人作品 · 不用于任何商业用途 · 角色相关权利归米哈游所有</p>
+      </footer>
+    </div>
+  </body>
+</html>

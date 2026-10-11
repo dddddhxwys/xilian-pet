@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "license": "MIT",
   "description": "昔涟桌宠 Host 插件：会话事件 → 桌宠状态，经同源 SSE 推送，并提供反向操控入口",
   "meta": {
     "title": "昔涟桌宠",

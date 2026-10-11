@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "license": "MIT",
   "description": "昔涟桌宠 —— DSH 桌面透明置顶窗桌宠（Phase 0 最小骨架）",
   "packageManager": "pnpm@11.7.0",
   "scripts": {

@@ -3764,20 +3764,45 @@ check('形态说明：三档都要讲清带不带 Electron / 模型', () => {
 // ─────────────────────────────────────────────────────────────
 console.log('\n[7] 授权：LICENSE 与第三方素材的边界')
 
-check('LICENSE 是本项目代码的 MIT，且**明确排除**第三方素材', () => {
+check('LICENSE 必须是**纯** MIT（不加任何附加段落）—— 附加说明一律进 NOTICE.md', () => {
   // 为什么必须有这条：NOTICE/README 三处写着「本项目的 MIT 授权范围」，
   // 而仓库里**曾经根本没有 LICENSE** —— 那等于「默认保留所有权利」，和文档说法正好相反。
+  //
+  // 2026-10-06 改：原来 LICENSE 末尾带了一段中文「范围说明」，本意是好的，
+  // 但 GitHub 的许可证识别器只认**纯标准文本** → 仓库侧栏显示 `NOASSERTION` 而不是 `MIT`
+  // （实测：`GET /repos/dddddhxwys/xilian-pet` 返回 `license.spdx_id = "NOASSERTION"`）。
+  // 而"这份代码能不能用、能不能商用"正是别人第一眼要看的信息 ——
+  // **不能因为一段附加说明而丢掉这个信号**。排除信息改由 NOTICE.md 承载（下面一起断言）。
   const licensePath = join(repoRoot, 'LICENSE')
   assert.ok(existsSync(licensePath), '仓库根必须有 LICENSE，否则文档里的「MIT 授权范围」是凭空捏造')
   const license = readFileSync(licensePath, 'utf8')
   assert.match(license, /^MIT License/, '正文要是标准 MIT（SPDX 识别用）')
   assert.match(license, /Copyright \(c\) 2026 dddddhxwys/, '版权行要写全（年份 + 权利人）')
   assert.match(license, /WITHOUT WARRANTY OF ANY KIND/, 'MIT 的免责声明段不能省')
-  // 关键：不能笼统说"本仓库是 MIT" —— 模型与图标必须被显式排除
-  assert.match(license, /NOTICE\.md/, '范围说明必须指向 NOTICE.md，否则读者不知道素材另有约束')
-  assert.match(license, /assets\/live2d/, '模型目录必须在排除清单里（作者要求不得收费）')
-  assert.match(license, /icon\.webp/, '插件图标必须在排除清单里（作者不明）')
-  assert.match(license, /米哈游/, '角色素材的权利人要写明')
+  // 关键：**纯 ASCII**。任何附加段落（哪怕只是中文说明）都会让识别失败
+  assert.ok(
+    !/[^\x00-\x7f]/.test(license),
+    'LICENSE 必须只有标准英文文本 —— 附加说明（含中文）请写进 NOTICE.md，否则 GitHub 认不出 MIT',
+  )
+  assert.ok(
+    license.split('\n').length <= 25,
+    `LICENSE 不该有附加段落（现在 ${license.split('\n').length} 行，标准 MIT 是 21 行 + 空行）`,
+  )
+
+  // 排除清单改由 NOTICE.md 承载 —— 信息一点都不能少
+  const notice = readFileSync(new URL('../NOTICE.md', import.meta.url), 'utf8')
+  assert.match(notice, /assets\/live2d/, '模型目录必须在排除清单里（作者要求不得收费）')
+  assert.match(notice, /icon\.webp/, '插件图标必须在排除清单里（作者不明）')
+  assert.match(notice, /米哈游/, '角色素材的权利人要写明')
+  assert.match(notice, /\[`LICENSE`\]\(LICENSE\)/, 'NOTICE 要能点回 LICENSE（放在 NOTICE 里就要指得回去）')
+})
+
+check('三处 package.json 都声明 `"license": "MIT"`', () => {
+  // 与 LICENSE 文件互补：任何读元数据的地方（卡片、registry、工具）都能直接看出授权
+  for (const rel of ['package.json', 'packages/pet-plugin/package.json', 'packages/pet-shell/package.json']) {
+    const pkg = JSON.parse(readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8'))
+    assert.equal(pkg.license, 'MIT', `${rel} 要写 "license": "MIT"`)
+  }
 })
 
 check('文档互指：NOTICE 与 README 都要能点回 LICENSE', () => {
