@@ -3805,6 +3805,40 @@ check('三处 package.json 都声明 `"license": "MIT"`', () => {
   }
 })
 
+check('Pages 落地页：结构配平、下载指向 Release、授权声明必须在页面上', () => {
+  // 为什么要有：页面是**别人第一眼看到的东西**，但它不在任何构建流程里 ——
+  // 改了下载方式 / 交互说明 / 授权声明却忘了页面，就会长期挂着错的旧信息
+  // （这次的教训就在眼前：Release 正文里的左键说明写错过一次，页面差点重蹈覆辙）。
+  const page = readFileSync(new URL('../docs/index.html', import.meta.url), 'utf8')
+  assert.ok(existsSync(new URL('../docs/.nojekyll', import.meta.url)), '.nojekyll 要在，否则 Jekyll 会吃掉特殊路径')
+  assert.ok(existsSync(new URL('../docs/assets/icon.webp', import.meta.url)), '顶部图标要真的在（Pages 只服务 docs/ 目录）')
+
+  // 标签配平（只数成对标签；void 元素跳过）
+  const voidTags = new Set(['img', 'br', 'meta', 'link', 'hr', 'input', 'source'])
+  const found = new Set([...page.matchAll(/<\/?([a-z][a-z0-9]*)\b/gi)].map((m) => m[1].toLowerCase()))
+  for (const tag of found) {
+    if (voidTags.has(tag)) continue
+    const opens = (page.match(new RegExp(`<${tag}(?=[\\s>])`, 'gi')) ?? []).length
+    const closes = (page.match(new RegExp(`</${tag}\\s*>`, 'gi')) ?? []).length
+    assert.equal(opens, closes, `<${tag}> 开 ${opens} 闭 ${closes} —— 页面结构坏了`)
+  }
+
+  // ⚠️ 必须检查**每一处**下载入口，不能"任一处匹配就通过" ——
+  //    变异测试当场抓到过：把顶部按钮改成 /releases/tag/v0.0.0，页脚那处还在，
+  //    于是 `assert.match(page, /...releases\/latest/)` 照样绿 ✗（护栏等于没测）。
+  const releaseLinks = [...page.matchAll(/href="(https:\/\/github\.com\/dddddhxwys\/xilian-pet\/releases[^"]*)"/g)].map(
+    (m) => m[1],
+  )
+  assert.ok(releaseLinks.length >= 1, '页面至少要有一个下载入口')
+  for (const href of releaseLinks) {
+    assert.match(href, /\/releases\/latest$/, `下载入口必须指向 releases/latest（现在有一处是 ${href}）`)
+  }
+  assert.match(page, /米哈游/, '页面必须带角色权利声明（公开宣传页尤其要）')
+  assert.match(page, /@是依七哒/, '页面必须带模型作者署名（作者要求：注明用途）')
+  assert.ok(!page.includes('按当前状态说一句话'), '交互说明不许退回那个错误版本')
+  assert.ok(!/<(script|link)[^>]+https?:\/\//i.test(page), '页面要自足，不要引外链 CDN')
+})
+
 check('文档互指：NOTICE 与 README 都要能点回 LICENSE', () => {
   const notice = readFileSync(new URL('../NOTICE.md', import.meta.url), 'utf8')
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
