@@ -378,8 +378,28 @@ export function swingComboClick(state, now, cfg = SWING_COMBO) {
 //
 // 用户 2026-10-05 从 6 个候选里选了 **⑤「舒服得眯起眼 + 轻轻歪头」**，
 // 看过实机之后又提了两条：**幅度太小**、**没有过渡**（原来是"瞬间贴上、到点瞬间撤掉"）。
-// 于是本版：① 歪头 -8° → **-16°** 并加了身体一起倾；② 加**缓动包络**（起-停-回）。
+// 于是那版：① 歪头 -8° → **-16°** 并加了身体一起倾；② 加**缓动包络**（起-停-回）。
+// 2026-10-11 再修一条：**"眯"改成"闭到底"** —— 用户报"那个闭眼动作眼睛没有完全闭上"，
+// 原因是当时写的 `0.25` 只走完闭眼行程的 75%（证据与量测见下面的 `EYE_CLOSED_OPEN`）。
 //
+/**
+ * 「眼睛闭到底」的**唯一取值来源** —— `ParamEyeLOpen/ROpen` 写成这个值就是完全闭上。
+ *
+ * 为什么要有这个常量、而不是各写各的数字：眨眼（`live2d.js` 的 `applyBlink`）和摸头反应
+ * （下面的 `HEAD_PAT`）都在写同一对参数，**两处对"闭"的定义必须一致**，否则就会出现
+ * "该闭的时候没闭严"。2026-10-11 用户实测报的就是这个：
+ *   「桌宠在点击头部的时候有一个歪头加闭眼的动作，那个闭眼动作眼睛没有完全闭上」
+ *   根因：摸头当时写的是 `0.25`（25% 睁着），而眨眼写的是 `0` —— 两处各说各话。
+ *
+ * 取值依据（离线用官方 Cubism Core 直读 moc3 量的，`.cache/_probe-eyes.cjs`）：
+ *  · 模型自己声明 `ParamEyeLOpen/ROpen` 范围 **0..1、默认 1**；`min = 0` 就是"完全闭上"
+ *  · 眼睑画层（`Part14 左眼` / `Part16 右眼` 那 16 个画层）从睁到闭的总行程 = **53.9 画布像素**
+ *  · 写 `0.25` 只走完 **75%**（40.5 px）—— 眼框高 35 px，而闭到底只有 24 px，差的那 11 px
+ *    就是用户看到的"没闭上"的那条缝
+ *  · 写 `0` 走满 100%；而且它**正是自动眨眼每 3~6 秒就在用的值**（已长期在实机跑，观感正常）
+ */
+export const EYE_CLOSED_OPEN = 0
+
 // 为什么不用现成表情：
 //  - 原方案的 `surprise`（`Param=1`）实测只把 2 个画层打开，视觉上仅"瞳孔高光从菱形变星星"，
 //    在她脸上几乎看不出来；
@@ -390,7 +410,7 @@ export function swingComboClick(state, now, cfg = SWING_COMBO) {
 //    两者都会被下面的包络按 `k` 缩放。**这条不能搞错**：
 //    待机动作（`Scene4`，180 秒）**每帧都在写** `ParamAngleZ` / `ParamEyeLOpen` / `ParamBodyAngleZ`，
 //    对动作驱动的参数直接覆盖 = **把动作停了**（`live2d.js` 里 `stepFlick` 的注释专门记过这个坑）。
-//    所以：歪头/身体倾用 `{add}`（保住秋千的摆动）、眯眼用 `{to}`（本来就是要接管眼睑）。
+//    所以：歪头/身体倾用 `{add}`（保住秋千的摆动）、闭眼用 `{to}`（本来就是要接管眼睑）。
 export const HEAD_PAT = {
   // 缓动包络：慢慢歪过去 → 停住 → 慢慢回正。三段加起来就是总时长。
   // ⚠️ 起、回两段都用 **easeInOutCubic（两头慢）**，不用 easeOutCubic：
@@ -401,10 +421,14 @@ export const HEAD_PAT = {
   fallMs: 620, // 回正
   totalMs: 420 + 700 + 620, // 1740
   params: {
-    ParamEyeLSmile: { to: 1 }, // 眼型笑（配合下面两项；单独开几乎看不出，留着无害）
+    // ⚠️ `ParamEyeLSmile/RSmile` **不是摆设**：实测单独开（睁着眼）几乎没位移，
+    //    但**眼睛闭上之后**它们决定闭眼那条弧线 —— Smile=1 相对 Smile=0 有 110.9 画布像素
+    //    的差别（`Part16 右眼`）。所以这两个要留着，摸头的"舒服"味道靠它。
+    ParamEyeLSmile: { to: 1 },
     ParamEyeRSmile: { to: 1 },
-    ParamEyeLOpen: { to: 0.25 }, // 向 1/4 眼睑混合 → 眯眼
-    ParamEyeROpen: { to: 0.25 },
+    // 闭到底（不是"眯"）：0 = 模型声明的最小值，也是眨眼用的同一个值，见 EYE_CLOSED_OPEN
+    ParamEyeLOpen: { to: EYE_CLOSED_OPEN },
+    ParamEyeROpen: { to: EYE_CLOSED_OPEN },
     // 幅度：-8° 实机"太小"，实测 -16° 才明显；再加一点身体倾，像"靠过来"
     ParamAngleZ: { add: -16 },
     ParamBodyAngleZ: { add: -7 },
@@ -421,6 +445,23 @@ export function easeOutCubic(x) {
 export function easeInOutCubic(x) {
   const t = Math.min(Math.max(x, 0), 1)
   return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2
+}
+
+/**
+ * 眨眼过程中眼睛的开合（`1` = 睁，`EYE_CLOSED_OPEN` = 闭到底）—— 纯函数，可自测。
+ *
+ * 抽出来是为了让**两处写同一对参数的代码共用同一个"闭"的定义**：
+ * 眨眼（`live2d.js` 的 `applyBlink`）与摸头反应（`HEAD_PAT`）。
+ * 2026-10-11 的 bug 正是这两处各写各的数字导致的（摸头 0.25 / 眨眼 0 → 眼睛没闭严）。
+ *
+ * @param {number} p 眨眼进度 0..1（0=刚闭眼、**0.5=闭到底**、1=睁回去）
+ * @param {number} [closed] 闭到底的值（默认 `EYE_CLOSED_OPEN`）
+ * @returns {number} 该写进 `ParamEyeLOpen/ROpen` 的值
+ */
+export function blinkOpenness(p, closed = EYE_CLOSED_OPEN) {
+  const t = Math.min(Math.max(p, 0), 1)
+  const shape = t < 0.5 ? 1 - t * 2 : (t - 0.5) * 2 // 0 = 闭到底
+  return closed + (1 - closed) * shape
 }
 
 /**

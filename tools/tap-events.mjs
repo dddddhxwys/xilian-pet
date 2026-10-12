@@ -2,7 +2,8 @@
  * 桌宠事件探针 —— 连上 Host 插件的 SSE，把收到的帧打印出来。
  *
  * 用途：不开 Electron 窗口也能验证插件的数据源是否正常
- *      （hello / snapshot / notices / state / stream / notice 各帧）。
+ *      （hello / snapshot / state / stream / activity / control 各帧）。
+ *      ⚠️ notice / notices 两类帧已随「通知条」整体删除（2026-10-11）。
  *
  * 用法：
  *   node tools/tap-events.mjs          # 连 5 秒

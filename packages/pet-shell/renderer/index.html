@@ -36,16 +36,11 @@
       </div>
 
       <!--
-        A7 主动提醒（审批积压 / 久坐 / 花销）。
-        与气泡的区别：气泡是"它现在在干什么"的流水，会自动消失；
-        通知是"要你注意/要你动手"，urgent 的一直留着直到你点它。
-        点击 → 把 DSH 窗口唤到前台（见 main.js 的 pet:focus-dsh）。
+        曾经这里有个 #notice 通知条（A7 主动提醒：审批积压 / 久坐 / 花销，
+        点击把 DSH 唤到前台）：按用户要求**整体删除**（2026-10-11："取消这个通知条功能"）。
+        连带删除：插件侧的提醒引擎 reminders.js、notice 帧、`pet:focus-dsh`。
+        理由（当时复核到的）：它其实只显示那三类提醒，任何主动弹窗都不再需要。
       -->
-      <div id="notice" hidden>
-        <span id="noticeDot"></span>
-        <span id="noticeText"></span>
-        <span id="noticeHint">点击回到 DSH</span>
-      </div>
 
       <!--
         审批**不在这里**画：她头顶只有约 87px 留白，审批卡（工具名 + 命令 + 两个按钮）

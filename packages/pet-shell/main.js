@@ -11,7 +11,6 @@
  */
 
 import { app, BrowserWindow, globalShortcut, ipcMain, protocol, screen } from 'electron'
-import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import http from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'node:fs'
@@ -227,115 +226,14 @@ const log = (...args) => {
   }
 }
 
-/**
- * 把 A7「单击跳转」的结果写进 `.state/focus-log.txt`。
- *
- * 为什么落文件而不是只打控制台：agent 读不到桌宠的控制台，
- * "点了没反应"就只能靠用户手动抄日志。写文件后我自己 tail 一下就知道卡在哪一步。
- */
-function appendFocusLog(line) {
-  try {
-    appendFileSync(join(STATE_DIR, 'focus-log.txt'), `${new Date().toISOString()} ${line}\n`)
-  } catch {
-    /* 写不进去就算了，绝不能因此影响跳转本身 */
-  }
-}
-
-/**
- * A7「单击跳转」：把 DSH 窗口唤到前台。
- *
- * 为什么走 PowerShell：DSH 是**另一个进程**的 Electron 应用，桌宠无法直接操作它的窗口。
- *
- * ⚠️ 必须用 `-EncodedCommand`，**不能用 `-Command`**：
- *    命令行传多行脚本时，参数传递会把 here-string 里的 `"` 吃掉，
- *    实测直接变成一堆 PowerShell 解析错误（`Unrecognized token in source text`）。
- *    base64(UTF-16LE) 完全免疫引号/换行问题。
- *
- * ⚠️ 也不能只靠 `Process.MainWindowHandle`：实测本机它一直是 **0**，不可靠。
- *
- * 实现要点（都是被实机问题逼出来的）：
- *  1. **EnumWindows 枚举顶层窗口**，挑「属于 DSH 进程 **或** 标题像 DSH」里**面积最大**的那个
- *     —— Electron 会有多个窗口，随便挑一个可能就是不可见的辅助窗，点了"没反应"。
- *  2. **绕过 Windows 前台锁**：`SetForegroundWindow` 在调用方不是前台进程时会**返回 true
- *     但只让任务栏闪一下**（实测就是这个症状）。所以先 `AllowSetForegroundWindow(-1)`，
- *     再 `AttachThreadInput` 把自己的输入线程挂到当前前台线程上，然后才 SetForegroundWindow。
- *  3. **结果写进 `.state/focus-log.txt`** —— agent 读不到桌宠的控制台，
- *     写文件才能让我事后自己定位（这行日志就是为此存在）。
- *
- * @returns {Promise<{ok: boolean, detail: string}>} 供渲染端决定是否收掉通知
- */
-function focusDshWindow() {
-  const script = [
-    "$ErrorActionPreference='SilentlyContinue'",
-    "$names=@('DeepSeek Harness','DeepSeekHarness','deepseek-harness','dsh')",
-    'Add-Type @"',
-    'using System;',
-    'using System.Text;',
-    'using System.Runtime.InteropServices;',
-    'public class WinActivate {',
-    '  public delegate bool EnumProc(IntPtr h, IntPtr l);',
-    '  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }',
-    '  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);',
-    '  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);',
-    '  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);',
-    '  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);',
-    '  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);',
-    '  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);',
-    '  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();',
-    '  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool f);',
-    '  [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int pid);',
-    '  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);',
-    '  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);',
-    '  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();',
-    '}',
-    '"@',
-    "$pids=@(Get-Process | Where-Object { $names -contains $_.ProcessName } | Select-Object -ExpandProperty Id)",
-    '$global:best=[IntPtr]::Zero; $global:bestArea=0; $global:bestTitle=""; $global:visible=0; $global:titled=0',
-    '$cb=[WinActivate+EnumProc]{ param($h,$l)',
-    '  if(-not [WinActivate]::IsWindowVisible($h)){ return $true }',
-    '  $global:visible=$global:visible+1',
-    '  $p=0; [void][WinActivate]::GetWindowThreadProcessId($h,[ref]$p)',
-    '  $sb=[System.Text.StringBuilder]::new(512); [void][WinActivate]::GetWindowTextW($h,$sb,512); $t=$sb.ToString()',
-    '  if($t.Length -gt 0){ $global:titled=$global:titled+1 }',
-    "  if(($pids -contains $p) -or ($t -match 'Harness|DSH|DeepSeek')){",
-    '    $r=[WinActivate+RECT]::new(); [void][WinActivate]::GetWindowRect($h,[ref]$r)',
-    '    $area=[math]::Abs(($r.R-$r.L)*($r.B-$r.T))',
-    '    if($area -gt $global:bestArea){ $global:bestArea=$area; $global:best=$h; $global:bestTitle=$t }',
-    '  }',
-    '  return $true }',
-    '[void][WinActivate]::EnumWindows($cb,[IntPtr]::Zero)',
-    "if($global:best -eq [IntPtr]::Zero){ Write-Output ('ok=False detail=no-window pids=' + $pids.Count + ' visible=' + $global:visible + ' titled=' + $global:titled); exit }",
-    '$h=$global:best',
-    '[void][WinActivate]::AllowSetForegroundWindow(-1)',
-    '[void][WinActivate]::ShowWindow($h,9)',
-    '[void][WinActivate]::BringWindowToTop($h)',
-    '$fg=[WinActivate]::GetForegroundWindow()',
-    '$fgT=0; [void][WinActivate]::GetWindowThreadProcessId($fg,[ref]$fgT)',
-    '$cur=[WinActivate]::GetCurrentThreadId()',
-    '$att=[WinActivate]::AttachThreadInput($cur,$fgT,$true)',
-    '$ok=[WinActivate]::SetForegroundWindow($h)',
-    '[void][WinActivate]::AttachThreadInput($cur,$fgT,$false)',
-    '$now=[WinActivate]::GetForegroundWindow()',
-    "Write-Output ('ok=' + $ok + ' hwnd=' + $h + ' area=' + $global:bestArea + ' attach=' + $att + ' isForeground=' + ($now -eq $h) + ' title=' + $global:bestTitle)",
-  ].join('\n')
-  // UTF-16LE + base64 —— PowerShell 的 -EncodedCommand 约定
-  const encoded = Buffer.from(script, 'utf16le').toString('base64')
-  return new Promise((resolve) => {
-    execFile(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-      { windowsHide: true, timeout: 10_000 },
-      (error, stdout, stderr) => {
-        const out = String(stdout ?? '').trim()
-        const ok = /ok=True/.test(out)
-        const detail = out !== '' ? out : String(error?.message ?? stderr ?? 'no-output').trim()
-        log(`[focus-dsh] ${ok ? '已唤到前台' : '失败'}：${detail}`)
-        appendFocusLog(`${ok ? 'OK  ' : 'FAIL'} ${detail}`)
-        resolve({ ok, detail })
-      },
-    )
-  })
-}
+// ── A7「单击跳转」已**整体删除**（2026-10-11，用户："取消这个通知条功能"）────────────
+// 删掉的东西：通知条 UI（`#notice`）· 主动提醒引擎（`reminders.js`）· 这一整套
+// `focusDshWindow()`（EnumWindows + Add-Type + PowerShell 子进程）· IPC `pet:focus-dsh`
+// · `.state/focus-log.txt`。一条不留，免得留下"点了没反应"的死路径。
+// 为什么连"跳回 DSH"一起删：它**唯一的入口就是通知条本身**（点了才触发），没有别的消费者。
+// 想把它加回来很容易 —— 挪到右键操作面板当一条菜单项即可（约 20 行）；
+// 根因分析（`Add-Type` 因 TEMP 失效而静默失败被误报成 `no-window`）与修法留在
+// `docs/接手状态报告-2026-10-11.md` §4，能力本身是好的。
 
 function loadWindowState() {
   try {
@@ -1023,8 +921,6 @@ app.whenReady().then(async () => {
     win.setPosition(x + dx, y + dy)
   })
   ipcMain.handle('pet:control', (_event, action, payload) => postControl(action, payload))
-  // A7：点击桌宠上的通知 → 把 DSH 窗口唤到前台
-  ipcMain.handle('pet:focus-dsh', () => focusDshWindow())
 
   /**
    * 操作面板（独立小窗）：右键她 / 双击她都弹这个。

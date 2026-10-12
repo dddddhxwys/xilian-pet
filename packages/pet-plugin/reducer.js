@@ -432,12 +432,12 @@ function sessionOf(state, sessionId, now) {
   )
 }
 
-function commit(state, session, sessionId, now, extraFrames = []) {
+function commit(state, session, sessionId, now) {
   // 打"最近活跃"点 —— primarySessionId() 靠它挑派活目标
   const stamped = { ...session, lastActivityAt: now }
   const next = { ...state, sessions: { ...state.sessions, [sessionId]: stamped } }
   const evaluated = evaluate(next, now)
-  const frames = [...extraFrames, ...evaluated.frames]
+  const frames = [...evaluated.frames]
   if (frames.length === 0) {
     frames.push({
       type: 'state',
@@ -461,18 +461,11 @@ export function reduceTurnEnd(state, ev, now = 0) {
   session.state = mapped.state
   session.since = now
 
-  const extraFrames = []
-  if (mapped.state === 'error') {
-    extraFrames.push({
-      type: 'notice',
-      notice: 'error',
-      sessionId: ev.sessionId,
-      message: String(ev.data?.reason?.error?.message ?? 'turn ended with error'),
-    })
-  } else if (mapped.state === 'done') {
-    extraFrames.push({ type: 'notice', notice: 'turn-completed', sessionId: ev.sessionId })
-  }
-  return commit(state, session, ev.sessionId, now, extraFrames)
+  // ⚠️ 这里原来还会推两个 `notice` 帧（`error` / `turn-completed`）给通知条显示。
+  //    通知条与主动提醒已按用户要求**整体删除**（2026-10-11："取消这个通知条功能"），
+  //    这两个帧**从来没有真正显示过**（渲染端要求 `text` 非空，它们没有），所以一并删掉。
+  //    出错/完成本来就由状态（error / done 的表情动作）与气泡的 activity 摘要表达。
+  return commit(state, session, ev.sessionId, now)
 }
 
 /**
@@ -502,8 +495,6 @@ export function reducePetEvent(state, ev, now = 0) {
   const session = { ...prev }
   if (ev.title !== undefined) session.title = ev.title
 
-  const extraFrames = []
-
   // token 用量：四桶 + 按 (turn, step) 增量替换（口径与宿主一致，见文件上方注释）
   // ⚠️ 一旦该会话已切到宿主的**权威**数据源（durable，重启不丢）就不要再自己累加，
   //    否则两边混着算、数字会飘。自算只作兜底。
@@ -524,32 +515,19 @@ export function reducePetEvent(state, ev, now = 0) {
     }
   }
 
-  // 审批计数：A7 主动提醒的原料，也是 "+N 背板" 的来源之一
+  // 审批计数：给 `/state` 与提醒引擎用的原料（"+N 背板"与"未读"都已按用户要求删除）。
+  // ⚠️ 这里原来还会推 `approval` / `approval-decided` 两个 `notice` 帧给通知条 ——
+  //    通知条已整体删除（2026-10-11），计数保留，帧不再推。
   if (ev.kind === 'approval/asked') {
     session.pendingApprovals = (prev.pendingApprovals ?? 0) + 1
-    extraFrames.push({
-      type: 'notice',
-      notice: 'approval',
-      sessionId: ev.sessionId,
-      toolName: typeof ev.data?.toolName === 'string' ? ev.data.toolName : undefined,
-      reason: typeof ev.data?.reason === 'string' ? ev.data.reason : undefined,
-      pending: session.pendingApprovals,
-    })
   } else if (ev.kind === 'approval/decided') {
     session.pendingApprovals = Math.max(0, (prev.pendingApprovals ?? 0) - 1)
-    extraFrames.push({
-      type: 'notice',
-      notice: 'approval-decided',
-      sessionId: ev.sessionId,
-      outcome: typeof ev.data?.outcome === 'string' ? ev.data.outcome : undefined,
-      pending: session.pendingApprovals,
-    })
   }
 
   if (target !== prev.state) session.since = now
   session.state = target
 
-  return commit(state, session, ev.sessionId, now, extraFrames)
+  return commit(state, session, ev.sessionId, now)
 }
 
 /**
@@ -588,9 +566,9 @@ export function reduceAgentStatus(state, { sessionId, status }, now = 0) {
 export function reduceAgentError(state, { sessionId, message }, now = 0) {
   const prev = sessionOf(state, sessionId, now)
   const session = { ...prev, state: 'error', since: now, lastError: message }
-  return commit(state, session, sessionId, now, [
-    { type: 'notice', notice: 'error', sessionId, message },
-  ])
+  // 原来这里还推一个 `notice: 'error'` 帧给通知条；通知条已删除（2026-10-11），
+  // 出错的信息仍留在状态的 `lastError`（`/state` 可见）+ 出错表情里。
+  return commit(state, session, sessionId, now)
 }
 
 /**

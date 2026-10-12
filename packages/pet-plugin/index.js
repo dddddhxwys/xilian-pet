@@ -22,7 +22,6 @@ import { pathToFileURL } from 'node:url'
 import {
   activityLabel,
   createPetState,
-  hasActivity,
   normalizeAgentError,
   normalizeAgentStatus,
   normalizeSessionEvent,
@@ -37,15 +36,12 @@ import {
   setSessionTitle,
   setTokenTotals,
   snapshot,
-  spendBySession,
 } from './reducer.js'
-import {
-  createReminderState,
-  decideReminders,
-  isQuiet,
-  mergeReminderConfig,
-  parseQuietHours,
-} from './reminders.js'
+// ⚠️ `./reminders.js`（A7 主动提醒引擎：审批积压 / 久坐 / 花销）已按用户要求**整体删除**
+//    （2026-10-11："取消这个通知条功能"）→ 连带删掉 notice 帧、pendingNotices、
+//    `GET /debug/reminders`、`POST /debug/notice` 与提醒配置块。**不要重新 import 它。**
+// `hasActivity` / `spendBySession` 仍由 reducer 导出（提醒引擎是它们唯一的消费者），
+// 这里不再用，故不再 import。
 
 export const name = 'xilian-pet'
 
@@ -81,12 +77,12 @@ const PROTOCOL_VERSION = 1
 const HEARTBEAT_MS = 15_000
 
 /**
- * 代码修订号 —— **每次改本文件 / reducer.js / reminders.js 都要 +1**。
+ * 代码修订号 —— **每次改本文件 / reducer.js 都要 +1**。
  * 目的：`/health` 会带上它，于是"改动到底有没有被加载"一眼可判：
  *   重启后 code 变大 = 新代码生效；code 没变 = 改的代码没被加载。
  * （注：`hmr.root` 实测无效，源码热重载不可用，只能靠重启。）
  */
-const CODE_REVISION = 27
+const CODE_REVISION = 28
 
 /**
  * 与 `@deepseek-ai/dsh-util-values` 的 `deepFreeze` 等价：递归冻结 + WeakSet 防循环。
@@ -264,11 +260,8 @@ export function apply(ctx, config = {}) {
   /** 上一次推给气泡的摘要（按会话去重，避免同一步骤刷屏） */
   const lastActivity = new Map()
 
-  // A7 主动提醒
-  const reminderConfig = mergeReminderConfig(config.reminders)
-  let reminderState = createReminderState()
-  /** 迟到的提醒：窗口没连时发出的提醒不能丢，等它连上补发 */
-  const pendingNotices = []
+  // A7 主动提醒（reminderConfig / reminderState / pendingNotices）已随通知条**整体删除**
+  //（2026-10-11，用户："取消这个通知条功能"）—— 这里刻意什么都不留。
 
   let state = createPetState({ minHoldMs })
   const connections = new Set()
@@ -803,7 +796,8 @@ export function apply(ctx, config = {}) {
           bubbleMode,
           approvalViaPet,
           approvalTimeoutMs,
-          remindersEnabled: reminderConfig.enabled,
+          // ⚠️ `remindersEnabled` 已随主动提醒整体删除（2026-10-11）。
+          //    字段是**只增不改**的协议回声，但那个功能不存在了，留着只会误导 —— 故删。
         },
       }),
     `xilian-pet: GET ${pathPrefix}/health`,
@@ -898,10 +892,7 @@ export function apply(ctx, config = {}) {
       syncTitles() // 标题同理（面板第一次打开就走这条）
       // 待决审批也一起补发：桌宠可能是审批发生之后才连上的
       res.write(sseData({ type: 'snapshot', ...snapshot(state), approvals: pendingApprovalFrames() }))
-      // 补发迟到的提醒（窗口没连时发出的那些），最多 5 条
-      if (pendingNotices.length > 0) {
-        res.write(sseData({ type: 'notices', notices: pendingNotices.slice(-5) }))
-      }
+      // （"补发迟到的提醒"那段随通知条一起删掉了，2026-10-11）
       connections.add(res)
       res.on('close', () => connections.delete(res))
     },
@@ -1175,52 +1166,13 @@ export function apply(ctx, config = {}) {
     `xilian-pet: POST ${pathPrefix}/focus`,
   )
 
-  // ── A7：主动提醒的定时评估 ────────────────────────────────────────
-  // 久坐这类提醒不依赖任何事件到达，必须有定时器才能触发。
-  // 30 秒一次：足够及时，又不会让纯函数引擎的调用成为负担。
-  const REMINDER_TICK_MS = 30_000
-  disposers.push(
-    ctx.effect(() => {
-      const timer = setInterval(() => {
-        try {
-          syncAuthoritativeTokens() // "花销"提醒要用到 token 数，先刷权威值
-          const result = decideReminders({
-            state: reminderState,
-            now: Date.now(),
-            pendingApprovals: pendingApprovalCount(state),
-            hasActivity: hasActivity(state),
-            spendBySession: spendBySession(state),
-            config: reminderConfig,
-          })
-          reminderState = result.state
-          for (const frame of result.fires) {
-            pendingNotices.push(frame)
-            if (pendingNotices.length > 20) pendingNotices.shift()
-            publish(frame)
-          }
-        } catch (error) {
-          warn(`提醒引擎失败：${error?.message ?? error}`)
-        }
-      }, REMINDER_TICK_MS)
-      if (typeof timer.unref === 'function') timer.unref()
-      return () => clearInterval(timer)
-    }, 'xilian-pet: reminders'),
-  )
-
-  // 诊断端点：一眼看出提醒引擎的配置、免打扰判定与已发记录
-  register(
-    'GET',
-    `${pathPrefix}/debug/reminders`,
-    (req, res) =>
-      sendJson(res, 200, {
-        config: reminderConfig,
-        quietNow: isQuiet(Date.now(), parseQuietHours(reminderConfig.quietHours)),
-        tickMs: REMINDER_TICK_MS,
-        pendingNotices: pendingNotices.length,
-        state: reminderState,
-      }),
-    `xilian-pet: GET ${pathPrefix}/debug/reminders`,
-  )
+  // ── A7：主动提醒的定时评估 + 诊断端点 已**整体删除**（2026-10-11）───────────
+  // 用户："取消这个通知条功能"。删掉的是：`REMINDER_TICK_MS` 的 30 秒定时器、
+  // `decideReminders()` 调用、`GET /debug/reminders`、`POST /debug/notice`、
+  // 以及 `pendingNotices` 队列与"重连补发最近 5 条"。
+  // 提醒策略引擎本体（`reminders.js`）也从仓库删除 —— 不留死代码；
+  // 想恢复的话，git 历史里有完整实现，且 `reducer.js` 仍导出它需要的两个纯函数
+  // （`hasActivity` / `spendBySession`）。
 
   /**
    * 诊断端点：**派活链路到底卡在哪一环**。
@@ -1311,34 +1263,8 @@ export function apply(ctx, config = {}) {
     `xilian-pet: GET ${pathPrefix}/debug/agents`,
   )
 
-  /**
-   * 调试端点：**手动放一条通知**。
-   *
-   * 为什么需要：A7 的显示侧（冒泡 + 单击跳转）只有"审批积压"这类事件才会触发，
-   * 想真等一次几乎不可控 —— 那就等于没法验证。这里给个开关，随手就能看效果。
-   * body（都可省）：`{ text?, urgent?, notice? }`
-   */
-  register(
-    'POST',
-    `${pathPrefix}/debug/notice`,
-    async (req, res) => {
-      const body = await readJsonBody(req)
-      const frame = {
-        type: 'notice',
-        notice: typeof body.notice === 'string' && body.notice !== '' ? body.notice : 'debug',
-        text:
-          typeof body.text === 'string' && body.text !== '' ? body.text : '有 2 个操作在等你审批',
-        urgent: body.urgent !== false,
-        at: Date.now(),
-      }
-      // 与真实提醒走同一条路：入队（供重连补发）+ 立即推送
-      pendingNotices.push(frame)
-      if (pendingNotices.length > 20) pendingNotices.shift()
-      publish(frame)
-      return sendJson(res, 200, { ok: true, frame, subscribers: connections.size })
-    },
-    `xilian-pet: POST ${pathPrefix}/debug/notice`,
-  )
+  // 曾经的 `POST /debug/notice`（手动放一条通知，用来验 A7 显示侧）已随通知条
+  // **整体删除**（2026-10-11）—— 显示侧已经不存在了，这个端点没有意义。
 
   // 心跳也放进 ctx.effect —— 官方契约要求资源都经由 ctx.effect/ctx.on 注册，
   // 这样即使宿主不采用 apply 的返回值，插件销毁时它依然会被清理。

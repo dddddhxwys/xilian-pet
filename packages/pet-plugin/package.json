@@ -18,7 +18,6 @@
   "files": [
     "index.js",
     "reducer.js",
-    "reminders.js",
     "cordis.patch.yml",
     "icon.webp",
     "locale/*.json"

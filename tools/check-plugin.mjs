@@ -72,6 +72,7 @@ import {
 import { writeZipToBuffer } from './lib/zip-writer.mjs'
 import {
   BASE_MOTION,
+  EYE_CLOSED_OPEN,
   FLICK_PRESETS,
   HEAD_PAT,
   INTRO_MOTION,
@@ -80,6 +81,7 @@ import {
   createSwingCombo,
   decideOnMotionFinish,
   describeFlick,
+  blinkOpenness,
   easeInOutCubic,
   easeOutCubic,
   fadeProps,
@@ -116,13 +118,9 @@ import {
   snapshot,
   spendBySession,
 } from '../packages/pet-plugin/reducer.js'
-import {
-  DEFAULT_REMINDERS,
-  decideReminders,
-  isQuiet,
-  mergeReminderConfig,
-  parseQuietHours,
-} from '../packages/pet-plugin/reminders.js'
+// ⚠️ `../packages/pet-plugin/reminders.js` 已按用户要求**整体删除**（2026-10-11：
+//    "取消这个通知条功能"）→ 连同它的 24 项断言一起删掉。**不要重新 import 它。**
+//    取而代之的是下面「[13] 通知条已整体移除」那一组**防回归**断言。
 
 let passed = 0
 let failed = 0
@@ -314,17 +312,16 @@ check('agent/status 非法值被忽略', () => {
   assert.equal(r.frames.length, 0)
 })
 
-// ── 审批：A7 主动提醒的原料 ──────────────────────────────────────
-check('approval/asked 计数 +1 并产生 notice 帧', () => {
+// ── 审批：计数是 `/state` 的原料（A7 提醒帧已随通知条整体删除）──────
+check('approval/asked 计数 +1，且**不再产生 notice 帧**', () => {
   const r = reducePetEvent(
     createPetState(),
     { kind: 'approval/asked', sessionId: 's1', data: { toolName: 'bash', reason: '危险命令' } },
     0,
   )
   assert.equal(pendingApprovalCount(r.state), 1)
-  const notice = r.frames.find((f) => f.type === 'notice')
-  assert.equal(notice?.toolName, 'bash')
-  assert.equal(notice?.pending, 1)
+  // 2026-10-11：通知条整体删除（用户："取消这个通知条功能"）→ 审批帧也不该再推 notice
+  assert.equal(r.frames.filter((f) => f.type === 'notice').length, 0, '不该再有 notice 帧')
   assert.equal(aggregate(r.state), 'approval')
 })
 
@@ -337,10 +334,12 @@ check('approval/decided 计数 -1 且不会变负', () => {
 })
 
 // ── agent/error ─────────────────────────────────────────────────
-check('agent/error → 出错档 + notice 帧', () => {
+check('agent/error → 出错档，且**不再产生 notice 帧**', () => {
   const r = reduceAgentError(createPetState(), { sessionId: 's1', message: 'boom' }, 0)
   assert.equal(aggregate(r.state), 'error')
-  assert.equal(r.frames.find((f) => f.type === 'notice')?.notice, 'error')
+  assert.equal(r.frames.filter((f) => f.type === 'notice').length, 0, '不该再有 notice 帧')
+  // 出错信息仍然看得见 —— 它在会话状态里（/state 的 lastError）
+  assert.equal(r.state.sessions.s1.lastError, 'boom')
 })
 
 // ── turn/end 按 reason 分流 ─────────────────────────────────────
@@ -403,146 +402,7 @@ check('归一化 agent/status 与 agent/error', () => {
 })
 
 // ─────────────────────────────────────────────────────────────
-console.log('\n[1b] 提醒策略引擎（A7，纯函数）')
-
-const at = (iso) => new Date(iso).getTime()
-
-check('免打扰时段：同日区间', () => {
-  const q = parseQuietHours(['09:00', '12:00'])
-  assert.equal(isQuiet(at('2026-09-30T10:00:00'), q), true)
-  assert.equal(isQuiet(at('2026-09-30T13:00:00'), q), false)
-})
-
-check('免打扰时段：跨午夜', () => {
-  const q = parseQuietHours(['22:30', '08:00'])
-  assert.equal(isQuiet(at('2026-09-30T23:00:00'), q), true)
-  assert.equal(isQuiet(at('2026-09-30T03:00:00'), q), true)
-  assert.equal(isQuiet(at('2026-09-30T12:00:00'), q), false)
-})
-
-check('免打扰解析：非法输入返回 null', () => {
-  assert.equal(parseQuietHours(['25:00', '08:00']), null)
-  assert.equal(parseQuietHours(['08:00', '08:00']), null)
-  assert.equal(parseQuietHours('22:30'), null)
-  assert.equal(parseQuietHours([]), null)
-})
-
-check('mergeReminderConfig 逐条合并，不整体替换', () => {
-  const merged = mergeReminderConfig({ sedentary: { afterMs: 123 } })
-  assert.equal(merged.sedentary.afterMs, 123)
-  assert.equal(merged.sedentary.probability, DEFAULT_REMINDERS.sedentary.probability, '未指定字段应保留默认')
-  assert.equal(merged.enabled, true)
-})
-
-check('审批积压是 urgent：可穿透免打扰时段', () => {
-  const config = mergeReminderConfig({ quietHours: ['22:30', '08:00'] })
-  const r = decideReminders({ now: at('2026-09-30T23:00:00'), pendingApprovals: 2, config })
-  assert.equal(r.quiet, true)
-  assert.equal(r.fires.length, 1)
-  assert.equal(r.fires[0].notice, 'approval-backlog')
-  assert.equal(r.fires[0].urgent, true)
-})
-
-check('审批积压：同一批不重复，归零后重置', () => {
-  const config = mergeReminderConfig({ approvalBacklog: { repeatAfterMs: 100_000 } })
-  const t0 = at('2026-09-30T10:00:00')
-  let r = decideReminders({ now: t0, pendingApprovals: 1, config })
-  assert.equal(r.fires.length, 1)
-  r = decideReminders({ state: r.state, now: t0 + 1000, pendingApprovals: 1, config })
-  assert.equal(r.fires.length, 0, '同一批积压不该重复提醒')
-  r = decideReminders({ state: r.state, now: t0 + 2000, pendingApprovals: 0, config })
-  r = decideReminders({ state: r.state, now: t0 + 3000, pendingApprovals: 1, config })
-  assert.equal(r.fires.length, 1, '清零后再积压应重新提醒')
-})
-
-check('低优先提醒守免打扰：夜里不发久坐', () => {
-  const config = mergeReminderConfig({
-    quietHours: ['22:30', '08:00'],
-    sedentary: { afterMs: 1000, probability: 1 },
-  })
-  const night = at('2026-09-30T23:00:00')
-  const st = decideReminders({ now: night - 10_000, hasActivity: true, config }).state
-  const r = decideReminders({ state: st, now: night, hasActivity: true, config })
-  assert.equal(r.quiet, true)
-  assert.ok(!r.fires.some((f) => f.notice === 'sedentary'), '免打扰时段的低优先提醒应被压住')
-})
-
-check('久坐：概率门与冷却都生效', () => {
-  const config = mergeReminderConfig({
-    sedentary: { afterMs: 1000, probability: 0.5, cooldownMs: 10_000, idleResetMs: 60_000 },
-  })
-  const t0 = 1_000_000
-  let r = decideReminders({ now: t0, hasActivity: true, config })
-  r = decideReminders({ state: r.state, now: t0 + 2000, hasActivity: true, config, random: () => 0.9 })
-  assert.ok(!r.fires.some((f) => f.notice === 'sedentary'), '概率门应拦住（0.9 > 0.5）')
-  r = decideReminders({ state: r.state, now: t0 + 3000, hasActivity: true, config, random: () => 0.1 })
-  assert.ok(r.fires.some((f) => f.notice === 'sedentary'), '概率通过应发出')
-  const again = decideReminders({ state: r.state, now: t0 + 4000, hasActivity: true, config, random: () => 0.1 })
-  assert.ok(!again.fires.some((f) => f.notice === 'sedentary'), '冷却期内不应重复')
-})
-
-check('久坐：空闲超过 idleResetMs 会重置工作段', () => {
-  const config = mergeReminderConfig({ sedentary: { afterMs: 1000, probability: 1, idleResetMs: 5000 } })
-  const t0 = 2_000_000
-  let st = decideReminders({ now: t0, hasActivity: true, config }).state
-  assert.notEqual(st.workStartedAt, undefined)
-  st = decideReminders({ state: st, now: t0 + 10_000, hasActivity: false, config }).state
-  assert.equal(st.workStartedAt, undefined, '空闲超时后工作段应重置')
-})
-
-check('花销：基线制 —— 历史账不提醒，只对本次启动后的新增提醒', () => {
-  // 这条治的是"切换成耐久总数后，DSH 一重启就炸一条 2.47 亿的提醒"（实测踩到）
-  const config = mergeReminderConfig({ spend: { everyTokens: 1000 } })
-  const t0 = 3_000_000
-  const big = 247_040_500
-
-  // 第一次看到：只记基线，绝不因为"历史累计很大"而提醒
-  let r = decideReminders({ now: t0, spendBySession: { s1: big }, config })
-  assert.equal(r.fires.length, 0, '历史累计不该提醒')
-  assert.equal(r.state.spendBaseline.s1, big, '应把当时的值记成基线')
-
-  // 新增未达阈值 → 不提醒
-  r = decideReminders({ state: r.state, now: t0 + 1, spendBySession: { s1: big + 999 }, config })
-  assert.equal(r.fires.length, 0, '新增未达阈值不应提醒')
-
-  // 新增跨过阈值 → 提醒，且文案说的是"这段新增"而不是历史总账
-  r = decideReminders({ state: r.state, now: t0 + 2, spendBySession: { s1: big + 1000 }, config })
-  assert.equal(r.fires[0]?.notice, 'spend')
-  assert.match(r.fires[0].text, /又用了约 1k/, '文案应只说本次新增')
-
-  const again = decideReminders({ state: r.state, now: t0 + 3, spendBySession: { s1: big + 1000 }, config })
-  assert.equal(again.fires.length, 0, '同一额度不应重复提醒')
-
-  const more = decideReminders({ state: r.state, now: t0 + 4, spendBySession: { s1: big + 2000 }, config })
-  assert.equal(more.fires.length, 1, '再跨一个阈值应再提醒')
-})
-
-check('花销提醒默认关闭 【用户："把这个弹窗去掉"】', () => {
-  // 截图里那条"这段时间又用了约 376k tokens" = 花销提醒。
-  // 用户要求去掉 → 默认 `everyTokens: 0`（关掉的只是默认开关，机制还在，显式配就能开回来）。
-  const config = mergeReminderConfig({})
-  assert.equal(config.spend.everyTokens, 0, '默认必须是 0（关闭）')
-
-  // 就算 token 暴涨，默认配置也一条都不该发
-  const big = 10_000_000
-  let r = decideReminders({ now: 0, spendBySession: { s1: big }, config })
-  r = decideReminders({ state: r.state, now: 1000, spendBySession: { s1: big + 5_000_000 }, config })
-  r = decideReminders({ state: r.state, now: 2000, spendBySession: { s1: big + 50_000_000 }, config })
-  assert.equal(
-    r.fires.filter((f) => f.notice === 'spend').length,
-    0,
-    '默认配置下不该再弹花销提醒',
-  )
-
-  // 机制保留：显式配置仍能开回来（上一条测试覆盖了行为）
-  assert.equal(mergeReminderConfig({ spend: { everyTokens: 500_000 } }).spend.everyTokens, 500_000)
-})
-
-check('reminders.enabled=false 时一条都不发', () => {
-  const config = mergeReminderConfig({ enabled: false })
-  const r = decideReminders({ now: 4_000_000, pendingApprovals: 5, hasActivity: true, config, random: () => 0 })
-  assert.equal(r.fires.length, 0)
-})
+console.log('\n[1b] 纯函数：会话聚合 / 用量口径 / 活动摘要 / 会话标题')
 
 check('primarySessionId 取最近活跃的会话（而不是优先级更高的旧 done）', () => {
   // 为什么这条重要：按状态优先级挑会挑到 done（优先级 3 > running 1），
@@ -964,8 +824,12 @@ check('负向对照：mock 确实会因缺 inject 而抛错（证明上面两条
   )
 })
 
-check('apply 注册了 12 条 exact 路由 【未读移除后由 13 减为 12】', () => {
-  assert.equal(routes.size, 12, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
+check('apply 注册了 10 条 exact 路由 【通知条移除后由 12 减为 10】', () => {
+  assert.equal(routes.size, 10, `实际 ${routes.size}：${[...routes.keys()].join(', ')}`)
+  // 被删掉的两条：GET /debug/reminders、POST /debug/notice（都只服务于通知条）
+  for (const gone of ['/xilian-pet/debug/reminders', '/xilian-pet/debug/notice']) {
+    assert.ok(!routes.has(gone), `${gone} 必须已随通知条一起删除`)
+  }
 })
 
 check('审批探针：不开启就完全不上链路（与"由桌宠同意"那个开关无关）', () => {
@@ -1113,16 +977,17 @@ await checkAsync('GET /health 回显**生效后**的配置（改 profile config 
     true,
     '不配 approval.viaPet 时是 **true**（2026-10-06 opt-out；原来是 opt-in，害得手写安装的用户审批静默走 GUI）',
   )
-  assert.equal(body.config.remindersEnabled, true)
+  // ⚠️ `remindersEnabled` 已随通知条整体删除（2026-10-11）—— 这里断言它**不再出现**，
+  //    免得下次有人"顺手加回来"却又没有任何消费者。
+  assert.equal('remindersEnabled' in body.config, false, '通知条已删，回声里不该再有 remindersEnabled')
 })
 
-await checkAsync('配置回声的**正向对照**：显式打开 viaPet / 关掉提醒必须如实反映', async () => {
+await checkAsync('配置回声的**正向对照**：显式打开 viaPet 必须如实反映', async () => {
   // 没有这条，"回声永远报默认值"也能让上面那条绿 —— 那回声就是假的（自测骗自己）。
   const m = createMockCtx({ agents: () => undefined })
   const teardown = apply(m.ctx, {
     pathPrefix: '/xilian-pet',
     approval: { viaPet: true, timeoutMs: 12_345 },
-    reminders: { enabled: false },
   })
   const srv = http.createServer((req, res) => {
     const route = m.routes.get(new URL(req.url, 'http://127.0.0.1').pathname)
@@ -1138,7 +1003,6 @@ await checkAsync('配置回声的**正向对照**：显式打开 viaPet / 关掉
     const body = await (await fetch(`http://127.0.0.1:${srv.address().port}/xilian-pet/health`)).json()
     assert.equal(body.config.approvalViaPet, true, 'viaPet=true 必须回声成 true')
     assert.equal(body.config.approvalTimeoutMs, 12_345, 'timeoutMs 也要如实回声')
-    assert.equal(body.config.remindersEnabled, false, 'reminders.enabled=false 必须回声成 false')
     // 回声必须**与行为一致**：开了 viaPet 就必须真的挂上审批应答者，不能只改数字
     assert.equal(
       m.listeners.get('approval/request')?.length ?? 0,
@@ -1565,38 +1429,21 @@ await checkAsync('GET /debug/agents → 只读诊断，不派活（下次不用�
   }
 })
 
-await checkAsync('POST /debug/notice → 推 notice 帧（A7 显示侧的手动验证入口）', async () => {
-  const sse = await openSse(`${base}/xilian-pet/events`)
-  await sse.readUntil((b) => b.includes('"snapshot"'), 3000)
-  const res = await fetch(`${base}/xilian-pet/debug/notice`, {
+await checkAsync('POST /debug/notice 与 GET /debug/reminders 已随通知条移除（都必须 404）', async () => {
+  // 与上面那条"未读"的写法同一个道理：**路由必须真的不存在**，
+  // 不能留"接口在、没人用"的半吊子状态（以后容易被误用）。
+  const a = await fetch(`${base}/xilian-pet/debug/notice`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text: '有 3 个操作在等你审批', urgent: true }),
+    body: JSON.stringify({ text: 'x' }),
   })
-  assert.equal(res.status, 200)
-  const body = await res.json()
-  assert.equal(body.ok, true)
-  assert.equal(body.frame.type, 'notice')
-  assert.equal(body.frame.urgent, true)
-  assert.equal(body.frame.notice, 'debug', '没给 notice 类型时应落到默认值')
-  const text = await sse.readUntil((b) => b.includes('"type":"notice"'), 3000)
-  sse.close()
-  assert.match(text, /有 3 个操作在等你审批/, 'notice 帧要真的推到 SSE 上')
-
-  // 省参数时的默认值：urgent 默认 true，文案有兜底
-  const dflt = await (await fetch(`${base}/xilian-pet/debug/notice`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({}),
-  })).json()
-  assert.equal(dflt.frame.urgent, true)
-  assert.match(dflt.frame.text, /审批/)
-  const soft = await (await fetch(`${base}/xilian-pet/debug/notice`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ urgent: false }),
-  })).json()
-  assert.equal(soft.frame.urgent, false, 'urgent:false 要能透传（低优先通知会自动消失）')
+  assert.equal(a.status, 404, 'POST /debug/notice 应该已经没有注册了')
+  const b = await fetch(`${base}/xilian-pet/debug/reminders`)
+  assert.equal(b.status, 404, 'GET /debug/reminders 应该已经没有注册了')
+  // 提醒帧不该再从任何通道冒出来
+  const c = await (await fetch(`${base}/xilian-pet/state`)).json()
+  assert.equal('pendingNotices' in c, false, '/state 不该再返回 pendingNotices')
+  assert.equal('remindersEnabled' in (await (await fetch(`${base}/xilian-pet/health`)).json()).config, false)
 })
 
 await checkAsync('POST /read 已随未读功能移除（返回 404，不再有这层副作用）', async () => {
@@ -2443,7 +2290,13 @@ check('摸头顶反应：缓动包络 + 混合/叠加语义 + 幅度 【用户 2
   const atStart = resolvePokeParams(HEAD_PAT, 0, read)
   assert.deepEqual(atStart, {}, 't=0 时**什么都不写** —— 这是"有过渡"的关键（不能瞬间贴上去）')
   const atPeak = resolvePokeParams(HEAD_PAT, HEAD_PAT.riseMs + 10, read)
-  assert.ok(Math.abs(atPeak.ParamEyeLOpen - 0.25) < 1e-6, '峰值：眼睑混合到 0.25')
+  // ⚠️ 2026-10-11 用户实测："那个闭眼动作眼睛没有完全闭上" —— 原来这里断言的是 0.25（只闭 75%）。
+  //    现在锁的是**闭到底**：模型声明的最小值，也是眨眼用的同一个值（EYE_CLOSED_OPEN）。
+  assert.ok(
+    Math.abs(atPeak.ParamEyeLOpen - EYE_CLOSED_OPEN) < 1e-6,
+    `峰值：眼睑要闭到底（${EYE_CLOSED_OPEN}），实际 ${atPeak.ParamEyeLOpen}`,
+  )
+  assert.ok(Math.abs(atPeak.ParamEyeROpen - EYE_CLOSED_OPEN) < 1e-6, '峰值：右眼同样要闭到底')
   assert.ok(Math.abs(atPeak.ParamAngleZ - (6 - 16)) < 1e-6, '峰值：ParamAngleZ = 当前 + (-16)')
   assert.ok(Math.abs(atPeak.ParamBodyAngleZ - (2 - 7)) < 1e-6, '峰值：ParamBodyAngleZ = 当前 + (-7)')
   const atMid = resolvePokeParams(HEAD_PAT, (HEAD_PAT.riseMs + HEAD_PAT.holdMs + HEAD_PAT.totalMs) / 2, read)
@@ -2458,16 +2311,31 @@ check('摸头顶反应：缓动包络 + 混合/叠加语义 + 幅度 【用户 2
     assert.ok(HEAD_PAT.params[id] && 'add' in HEAD_PAT.params[id], `${id} 必须用 {add}（动作每帧在写它）`)
     assert.equal('to' in HEAD_PAT.params[id], false, `${id} 不能用 {to} 覆盖`)
   }
-  // 眼睑则是**覆盖式混合**（眯眼本来就要接管眼睑）
+  // 眼睑则是**覆盖式混合**（闭眼本来就要接管眼睑）
   for (const id of ['ParamEyeLOpen', 'ParamEyeROpen']) {
     assert.ok('to' in HEAD_PAT.params[id], `${id} 应该是 {to} 混合`)
+    // ⚠️ 必须是"闭到底"那个共享常量，**不许再写一个裸数字**：
+    //    2026-10-11 的 bug 就是这里写 0.25、眨眼写 0，两处各说各话（用户："没有完全闭上"）
+    assert.equal(
+      HEAD_PAT.params[id].to,
+      EYE_CLOSED_OPEN,
+      `${id} 的目标值必须取自 EYE_CLOSED_OPEN（与眨眼共用同一个"闭到底"的定义）`,
+    )
   }
+  assert.equal(EYE_CLOSED_OPEN, 0, '闭到底 = 0（模型声明的 ParamEyeLOpen 最小值）')
 
   // ⑥ 接线：pet.js 走 patHead()；live2d.js 每帧在 applyBlink() **之后**应用
   const pet = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
   const live2d = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
   assert.match(pet, /head: \(\) => live2d\?\.patHead\(\)/, 'pet.js 头顶走 patHead()')
   assert.match(live2d, /export function patHead\(\)/, 'live2d.js 要导出 patHead()')
+  // 眨眼的开合曲线必须走**共享的纯函数**（否则又会各写一个"闭"的数字 —— 这次的根因）
+  assert.match(live2d, /openness = blinkOpenness\(p\)/, 'applyBlink 必须调用 blinkOpenness()')
+  assert.equal(
+    /openness = p < 0\.5/.test(live2d),
+    false,
+    'applyBlink 里不许再内联一份开合公式（会与摸头各说各话）',
+  )
   const blinkIdx = live2d.indexOf('applyBlink(performance.now())')
   const pokeIdx = live2d.indexOf('applyPokeParams()')
   assert.ok(blinkIdx >= 0 && pokeIdx >= 0, 'applyBlink / applyPokeParams 都要在 applyState 里')
@@ -2475,6 +2343,35 @@ check('摸头顶反应：缓动包络 + 混合/叠加语义 + 幅度 【用户 2
   // 到点后必须**停止写入**（让动作自然接管），而不是"贴一个新值回去"
   assert.match(live2d, /elapsed > pokeCfg\.totalMs/, 'live2d.js 要按 elapsed 判断结束')
   assert.equal(/pokeParamsTimer/.test(live2d), false, '不应该再用 setTimeout 硬撤（那样没有回落段）')
+})
+
+check('眨眼与摸头共用同一个"闭到底"的定义 【2026-10-11 用户："点头顶时眼睛没有完全闭上"】', () => {
+  // 行为断言：眨眼进度到一半（p=0.5）时必须**真的闭到底**，而不是"闭一半"。
+  // 这条与摸头那条是同一个定义 —— 当时就是两处各写各的数字（摸头 0.25 / 眨眼 0）才出的 bug。
+  assert.equal(blinkOpenness(0.5), EYE_CLOSED_OPEN, '眨眼到一半必须闭到底')
+  assert.equal(blinkOpenness(0), 1, '刚开始 = 全睁')
+  assert.equal(blinkOpenness(1), 1, '结束 = 全睁')
+  assert.equal(blinkOpenness(0.25), (1 + EYE_CLOSED_OPEN) / 2, 'p=0.25 应正好走一半行程')
+  let prev = blinkOpenness(0)
+  for (let p = 0; p <= 0.5 + 1e-9; p += 0.05) {
+    const v = blinkOpenness(p)
+    assert.ok(v <= prev + 1e-9, `前半段应单调变闭（p=${p.toFixed(2)}）`)
+    prev = v
+  }
+  for (let p = 0.5; p <= 1 + 1e-9; p += 0.05) {
+    const v = blinkOpenness(p)
+    assert.ok(v >= prev - 1e-9, `后半段应单调变睁（p=${p.toFixed(2)}）`)
+    prev = v
+  }
+  // 进度算歪了也不能写出界值
+  assert.equal(blinkOpenness(-1), 1, '进度 < 0 要夹住')
+  assert.equal(blinkOpenness(2), 1, '进度 > 1 要夹住')
+  // 🔴 关键一致性：摸头最终写到的值 == 眨眼"闭到底"的值（这就是这次的 bug）
+  assert.equal(
+    HEAD_PAT.params.ParamEyeLOpen.to,
+    blinkOpenness(0.5),
+    '摸头闭眼必须与眨眼"闭到底"取同一个值（否则又会一个闭严一个没闭严）',
+  )
 })
 
 check('渲染端模块守卫：renderer/ 里的相对 import 必须落在 renderer/ 内且文件存在', () => {
@@ -3483,7 +3380,7 @@ check('patch 改写 ↔ 移除：往返回到原文（这是"可安全切换"的
 })
 
 // ─────────────────────────────────────────────────────────────
-console.log('\n[9] 挂载行：指向哪里、以及"官方安装留下的行"不能动')
+console.log('\n[8] 挂载行：指向哪里、以及"官方安装留下的行"不能动')
 
 check('读挂载行：能读出我们那一行指向哪；没有就返回 null', () => {
   const entry = 'C:\\p\\xilian-pet\\packages\\pet-plugin\\index.js'
@@ -3568,7 +3465,7 @@ check('查找器：**无条件**解析 DSH 安装目录与它自己的 CLI', () 
 })
 
 // ─────────────────────────────────────────────────────────────
-console.log('\n[5] 官方 bundle 元数据（插件卡片 / install_bundle 契约）')
+console.log('\n[9] 官方 bundle 元数据（插件卡片 / install_bundle 契约）')
 
 const pkgDir = new URL('../packages/pet-plugin/', import.meta.url)
 const pkgJson = JSON.parse(readFileSync(new URL('package.json', pkgDir), 'utf8'))
@@ -3685,7 +3582,7 @@ check('bundle 补丁：insert 行的 name 必须等于包名（否则官方装�
 })
 
 // ─────────────────────────────────────────────────────────────
-console.log('\n[6] 发行元数据：版本 / 命名 / 校验和')
+console.log('\n[10] 发行元数据：版本 / 命名 / 校验和')
 
 check('版本号：根是唯一来源，插件与外壳必须与它一致', () => {
   // 为什么要有这条：插件卡片显示的是**插件自己**的版本，发行包名用的是**根**的版本。
@@ -3762,7 +3659,7 @@ check('形态说明：三档都要讲清带不带 Electron / 模型', () => {
 })
 
 // ─────────────────────────────────────────────────────────────
-console.log('\n[7] 授权：LICENSE 与第三方素材的边界')
+console.log('\n[11] 授权：LICENSE 与第三方素材的边界')
 
 check('LICENSE 必须是**纯** MIT（不加任何附加段落）—— 附加说明一律进 NOTICE.md', () => {
   // 为什么必须有这条：NOTICE/README 三处写着「本项目的 MIT 授权范围」，
@@ -3857,7 +3754,7 @@ check('发行包必需清单：LICENSE 与 NOTICE.md 必须在内（合规不能
 })
 
 // ─────────────────────────────────────────────────────────────
-console.log('\n[8] 更新检查：版本比较 / 清单 / 失败与安静的边界')
+console.log('\n[12] 更新检查：版本比较 / 清单 / 失败与安静的边界')
 
 check('版本比较：语义正确（不是字符串比较）', () => {
   // ⚠️ 这两条正是"拿字符串比"会错的经典例：字符串下 "0.1.10" < "0.1.9"
@@ -4251,6 +4148,62 @@ check('仓库里的 versions.json 合法，且**不会宣传一个不存在的�
 
 check('发行清单不进发行包（用户手里那份的 latest 是打包那一刻的，只会造成困惑）', () => {
   assert.equal(shouldInclude('versions.json', { withModel: true }), false)
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[13] 通知条已整体移除（用户 2026-10-11："取消这个通知条功能"）')
+
+check('提醒引擎本体已删除，且不再被打包 / 不再被 import', () => {
+  // 与"未读功能"同样的做法：**整块删干净**，不是留个开关关掉。
+  // ⚠️ 断言前先去掉注释：删除说明本身会提到 `reminders.js` / `decideReminders`，
+  //    不去掉就会把自己写的"这里删掉了 X"当成 X 还在（第一次跑就撞上了）。
+  const stripComments = (src) =>
+    src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
+  const dir = new URL('../packages/pet-plugin/', import.meta.url)
+  assert.equal(existsSync(new URL('reminders.js', dir)), false, 'reminders.js 必须已删除')
+  const pkg = JSON.parse(readFileSync(new URL('package.json', dir), 'utf8'))
+  assert.ok(!pkg.files.includes('reminders.js'), 'bundle 的 files 里不该再列 reminders.js')
+  const indexSrc = stripComments(readFileSync(new URL('index.js', dir), 'utf8'))
+  assert.ok(!/from '\.\/reminders\.js'/.test(indexSrc), 'index.js 绝不能再 import reminders.js')
+  assert.ok(!/decideReminders/.test(indexSrc), '提醒引擎的调用点必须删干净')
+  const patch = readFileSync(new URL('cordis.patch.yml', dir), 'utf8')
+  assert.ok(!/^\s*reminders:/m.test(patch), '包内挂载层的 config 里不该再有 reminders: 块')
+})
+
+check('插件不再产生任何 notice 帧（行为断言：三类事件都不再推）', () => {
+  // 覆盖所有原本会推 notice 的路径：审批、agent 级错误、turn/end 的 error/done
+  const cases = [
+    ['approval/asked', { kind: 'approval/asked', sessionId: 's1', data: { toolName: 'bash' } }],
+    ['approval/decided', { kind: 'approval/decided', sessionId: 's1', data: { outcome: 'allowed-once' } }],
+    ['turn/end error', { kind: 'turn/end', sessionId: 's1', data: { reason: { kind: 'error' } } }],
+    ['turn/end completed', { kind: 'turn/end', sessionId: 's1', data: { reason: { kind: 'completed' } } }],
+  ]
+  for (const [label, ev] of cases) {
+    const r = reducePetEvent(createPetState(), ev, 0)
+    assert.equal(
+      r.frames.filter((f) => f.type === 'notice').length,
+      0,
+      `${label} 不该再产生 notice 帧`,
+    )
+  }
+  const err = reduceAgentError(createPetState(), { sessionId: 's1', message: 'boom' }, 0)
+  assert.equal(err.frames.filter((f) => f.type === 'notice').length, 0, 'agent/error 不该再产生 notice 帧')
+})
+
+check('外壳也删干净了：通知条 UI / 显示函数 / 点击唤回 DSH 一个都不留', () => {
+  const stripComments = (src) =>
+    src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
+  const shell = new URL('../packages/pet-shell/', import.meta.url)
+  const html = readFileSync(new URL('renderer/index.html', shell), 'utf8')
+  assert.ok(!/id="notice"/.test(html), 'index.html 里不该再有 #notice')
+  const js = stripComments(readFileSync(new URL('renderer/pet.js', shell), 'utf8'))
+  assert.ok(!/showNotice|hideNotice|noticeTimer/.test(js), 'pet.js 里不该再有通知条逻辑')
+  const css = readFileSync(new URL('renderer/pet.css', shell), 'utf8')
+  assert.ok(!/#notice/.test(css.replace(/\/\*[\s\S]*?\*\//g, '')), 'pet.css 里不该再有 #notice 样式')
+  const mainSrc = stripComments(readFileSync(new URL('main.js', shell), 'utf8'))
+  assert.ok(!/focusDshWindow|pet:focus-dsh/.test(mainSrc), 'main.js 不该再有跳转实现')
+  const preload = stripComments(readFileSync(new URL('preload.cjs', shell), 'utf8'))
+  assert.ok(!/focusDsh/.test(preload), 'preload 不该再暴露 focusDsh')
 })
 
 console.log(`\n${'─'.repeat(56)}`)

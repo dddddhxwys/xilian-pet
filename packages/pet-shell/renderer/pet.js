@@ -22,8 +22,8 @@ const bubble = document.getElementById('bubble')
 const bubbleText = document.getElementById('bubbleText')
 // 原底部输入条（#composer）已**整个删除** —— 它压着裙摆和脚（实测重叠 28px），
 // 派活/打断现在都在独立操作面板里（见 main.js 的 openMenuWindow）。
-const notice = document.getElementById('notice')
-const noticeText = document.getElementById('noticeText')
+// 曾经这里有 #notice（通知条）与 #noticeText：按用户要求**整体删除**
+//（2026-10-11："取消这个通知条功能"）→ 连带删掉提醒引擎、notice 帧、点击唤回 DSH。
 // ⚠️ 曾经的 `#status`（右下角 SSE 连接小绿点）已按用户要求**挪进操作面板**
 //（2026-10-05："把那个表示插件在线的小绿点整合到菜单里面去"）→ 见 menu.html 的「插件」一行
 // 审批不在本窗口里画 —— 她头顶只有 ~87px 留白，放不下审批卡（必然遮住她）。
@@ -48,7 +48,6 @@ let dragRenewTimer = null
 let dragX = 0
 let dragY = 0
 let bubbleTimer = null
-let noticeTimer = null
 let latestSessionId = undefined
 // 用量视图：插件在状态帧里带（见 reducer 的 primaryTokens），右键时交给菜单小窗显示
 let tokensView = null
@@ -90,14 +89,10 @@ function maskSource() {
  */
 function visibleUiRects() {
   const rects = []
-  // ⚠️ 只收**能接住点击**的控件。气泡是 pointer-events:none 的被动展示，
-  // 把它算进来会在它覆盖的区域形成一个"点了没反应、也不穿透"的死区。
-  for (const el of [notice]) {
-    if (el.hidden) continue
-    const r = el.getBoundingClientRect()
-    if (r.width <= 0 || r.height <= 0) continue
-    rects.push({ x: r.left, y: r.top, w: r.width, h: r.height })
-  }
+  // 通知条（#notice）已整体删除（2026-10-11），现在**没有任何**能接住点击的 HTML 控件：
+  // 气泡是 pointer-events:none 的被动展示，把它算进来会在它覆盖的区域形成一个
+  // "点了没反应、也不穿透"的死区。所以这里刻意返回空数组 —— **保留函数**是因为
+  // 主进程的命中协议要收这个字段（将来再加可点控件时，往这里 push 就行）。
   return rects
 }
 
@@ -231,7 +226,7 @@ function insideRect(el, clientX, clientY) {
 /** 只有「落在不透明像素上」或「悬停在 UI 控件上」时才接管鼠标，其余保持穿透 */
 function shouldBeInteractive(clientX, clientY) {
   if (overOpaquePixel(clientX, clientY)) return true
-  return insideRect(bubble, clientX, clientY) || insideRect(notice, clientX, clientY)
+  return insideRect(bubble, clientX, clientY)
 }
 
 /**
@@ -328,11 +323,12 @@ window.addEventListener('mousedown', (event) => {
 const ZONE_EFFECTS = {
   // 脸 → 墨镜。给 2 秒：戴上去要看得清，但也不能一直戴着（那是"状态"不是"反应"）
   face: () => live2d?.pokeExpression('sunglasses', 2000),
-  // 头顶（**只有** 头饰 / 头发 / 背饰）→ **"舒服得眯起眼 + 轻轻歪头"**（用户 2026-10-05 选的 ⑤）
+  // 头顶（**只有** 头饰 / 头发 / 背饰）→ **"舒服得闭上眼 + 轻轻歪头"**（用户 2026-10-05 选的 ⑤）
   // ⚠️ 这里**刻意不用现成表情**：`surprise` 实测几乎看不出来（只把瞳孔高光换成星星），
   //    语义上也错（"被摸头"是亲昵，不是吓一跳）；`happy` 则被 `done`（干完活）占着会撞脸。
-  //    改成临时参数覆盖（`ParamEyeLOpen/ROpen` 压到 0.25 + `ParamAngleZ` 叠加 -8°），
+  //    改成临时参数覆盖（眼睑 `{to}` 到 `EYE_CLOSED_OPEN` = 闭到底、`ParamAngleZ` 叠加 -16°），
   //    参数表在 `motion-policy.js` 的 `HEAD_PAT`，有自测 ✓
+  //    ⚠️ 2026-10-11 修过一次：原来是 `to: 0.25`（只闭 75%），用户实测"眼睛没有完全闭上"。
   head: () => live2d?.patHead(),
   // 秋千 → 弹一下（用户："像被手指弹了似的"）
   swing: () => live2d?.flick('light'),
@@ -471,42 +467,13 @@ function showBubble(text) {
   }, 6000)
 }
 
-// ── A7 主动提醒 ─────────────────────────────────────────────────────
-/**
- * 显示一条主动提醒（审批积压 / 久坐 / 花销）。
- *
- * 与气泡的区别：气泡是"它现在在干什么"的流水，固定 6 秒消失；
- * 通知是"要你注意 / 要你动手"：
- *  · `urgent`（审批积压）**不自动消失** —— 它就是要你去处理，点了才收
- *  · 低优先（久坐 / 花销）8 秒后自己收，免得长期霸占桌面
- */
-function showNotice({ text, urgent, notice: kind } = {}) {
-  if (typeof text !== 'string' || text.trim() === '') return
-  noticeText.textContent = text
-  notice.dataset.urgent = urgent ? '1' : '0'
-  notice.dataset.kind = kind ?? ''
-  notice.hidden = false
-  document.body.classList.add('has-notice')
-  // 量出通知实际高度，交给 CSS 把气泡让开（1 行 / 2 行都能对上，不写死偏移）
-  document.body.style.setProperty('--notice-h', `${notice.offsetHeight}px`)
-  clearTimeout(noticeTimer)
-  if (!urgent) noticeTimer = setTimeout(hideNotice, 8000)
-  api.log(`通知：${text}${urgent ? '（urgent）' : ''}`)
-}
-
-function hideNotice() {
-  clearTimeout(noticeTimer)
-  notice.hidden = true
-  document.body.classList.remove('has-notice')
-  document.body.style.removeProperty('--notice-h')
-}
-
-// 点击通知 → 把 DSH 窗口唤到前台（"单击跳转"）。失败就留着，好让你再点一次。
-notice.addEventListener('click', async () => {
-  const result = await api.focusDsh()
-  api.log(`focus-dsh → ${JSON.stringify(result)}`)
-  if (result?.ok !== false) hideNotice()
-})
+// ── A7 主动提醒（通知条）已**整体删除** ─────────────────────────────
+// 2026-10-11 用户："取消这个通知条功能"。删掉的是这一整块 `showNotice()` / `hideNotice()`
+// 与"点击通知 → 把 DSH 唤到前台"的监听器。
+// 说明：它当时其实只显示审批积压 / 久坐 / 花销三类提醒（`reducer.js` 里那几个
+// `notice: 'approval' / 'error' / 'turn-completed'` 帧因为不带 `text`，早就在
+// `showNotice()` 第一行被丢弃了），所以删掉它**没有丢任何别的可见信息**：
+// 审批有自己的小窗、出错会切成出错表情 + 气泡里写"出错了"。
 
 // ── 与主进程的帧通道 ────────────────────────────────────────────────
 // ⚠️ 插件（SSE）连接状态的小绿点**已从本窗口移除**（用户 2026-10-05：
@@ -547,15 +514,6 @@ api.onFrame((frame) => {
       // 老的逐字流：插件默认已不再推（bubbleMode: 'activity'），保留分支以防切回
       if (frame.sessionId !== undefined) latestSessionId = frame.sessionId
       showBubble(frame.text)
-      break
-    case 'notice':
-      showNotice(frame)
-      break
-    case 'notices':
-      // 窗口没连时发出的提醒，连上后补发最近 5 条 —— 只显示最新的一条，别堆一屏
-      if (Array.isArray(frame.notices) && frame.notices.length > 0) {
-        showNotice(frame.notices[frame.notices.length - 1])
-      }
       break
     case 'control':
       api.log(`control ${frame.action} ok=${frame.ok}`)

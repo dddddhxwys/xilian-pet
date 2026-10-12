@@ -58,6 +58,7 @@ import {
   HEAD_PAT,
   INTRO_MOTION,
   STATE_MAP,
+  blinkOpenness,
   decideOnMotionFinish,
   describeFlick,
   fadeProps,
@@ -146,8 +147,11 @@ function applyBlink(now) {
     if (p >= 1) {
       blinkStartAt = 0
     } else {
-      // 0→0.5 闭，0.5→1 睁
-      openness = p < 0.5 ? 1 - p * 2 : (p - 0.5) * 2
+      // 0→0.5 闭，0.5→1 睁。⚠️ 开合曲线**抽在 motion-policy.js 的 blinkOpenness()** ——
+      //    它和摸头反应（HEAD_PAT）共用同一个"闭到底"的定义（EYE_CLOSED_OPEN）。
+      //    2026-10-11 用户报"点头顶时眼睛没有完全闭上"，根因就是两处各写各的数字
+      //    （摸头写 0.25、眨眼写 0）—— 现在钉成一份，别再各写一个数字 ✗
+      openness = blinkOpenness(p)
     }
   }
   setParams({ ParamEyeLOpen: openness, ParamEyeROpen: openness })
@@ -776,7 +780,7 @@ function applyState() {
   // 眨眼也在这里输出 —— 位置在动作之后，才能压过被动作冻结的眼睛参数
   applyBlink(performance.now())
   // ⚠️ **最后一步**：分区互动的临时参数覆盖（摸头顶）。
-  //    必须排在 `applyBlink()` 之后 —— 否则眨眼接管会把我们压到 0.25 的眼睑又顶回去 ✗
+  //    必须排在 `applyBlink()` 之后 —— 否则眨眼接管会把我们压下去的眼睑又顶回来 ✗
   applyPokeParams()
 }
 
@@ -829,7 +833,7 @@ export function pokeParams(cfg) {
   return true
 }
 
-/** 摸头顶 → "舒服得眯起眼 + 轻轻歪头"（含缓动，参数表在 `motion-policy.js` 的 `HEAD_PAT`） */
+/** 摸头顶 → "舒服得闭上眼 + 轻轻歪头"（含缓动，参数表在 `motion-policy.js` 的 `HEAD_PAT`） */
 export function patHead() {
   return pokeParams(HEAD_PAT)
 }
@@ -1615,7 +1619,7 @@ window.xilianLive2D = {
   blink,
   /** 部件级命中测试：返回 { zone, partId, partName, drawable } 或 null（左键分区互动用） */
   hitPart,
-  /** 摸头顶的专属反应："舒服得眯起眼 + 轻轻歪头"，含缓动（参数表在 motion-policy.js 的 HEAD_PAT） */
+  /** 摸头顶的专属反应："舒服得闭上眼 + 轻轻歪头"，含缓动（参数表在 motion-policy.js 的 HEAD_PAT） */
   patHead,
   /** 开始一次分区反应：按 cfg 的缓动包络在 totalMs 内走完（{to}=混合，{add}=叠加） */
   pokeParams,

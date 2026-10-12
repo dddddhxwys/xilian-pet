@@ -6,7 +6,7 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('xilianPet', {
-  /** 订阅 Host 插件推送的帧（state / stream / snapshot / hello / notice / control） */
+  /** 订阅 Host 插件推送的帧（state / stream / snapshot / hello / activity / control） */
   onFrame: (callback) => ipcRenderer.on('pet:frame', (_event, frame) => callback(frame)),
   /** 连接状态变化 */
   onLink: (callback) => ipcRenderer.on('pet:link', (_event, link) => callback(link)),
@@ -46,8 +46,7 @@ contextBridge.exposeInMainWorld('xilianPet', {
   moveBy: (dx, dy) => ipcRenderer.send('pet:move-by', Math.round(dx), Math.round(dy)),
   /** 反向操控：prompt / interrupt / focus */
   control: (action, payload) => ipcRenderer.invoke('pet:control', action, payload),
-  /** A7：把 DSH 窗口唤到前台（点击通知时用） */
-  focusDsh: () => ipcRenderer.invoke('pet:focus-dsh'),
+  // 曾经的 focusDsh()（点击通知条 → 把 DSH 唤到前台）已随通知条一起删除（2026-10-11）。
   /**
    * 操作面板：请主进程在桌宠**旁边**弹出独立小窗（含会话切换 + 多行输入 + 派活/打断 + 用量）。
    * 为什么不在本窗口里画：她本体占满 260×300，画在里面必然遮住她 ——
