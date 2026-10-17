@@ -1,0 +1,64 @@
+/*
+ * 桌宠 UI 的**设计 token**（阶段 3 换皮），面板 / 设置窗 / 气泡共用一套。
+ *
+ * 来源：用户选定的「珍珠白 + 她的粉」（参考 Cyrene-Agent 的 pearl-white 主题，
+ * 但把强调色降饱和到 #E889A6 —— 贴桌面的一小块，太艳会抢注意力）。
+ *
+ * 为什么要有这一层：
+ *  - 换主题/改色只动这里，不用在三个 CSS 里各改一遍；
+ *  - "价值感"靠的是**粉调阴影 + 极淡边框 + 三个层次的白**，这些都集中在 token 里；
+ *  - 以后做暗色主题 = 复制一份覆盖变量的文件（本次不做，只留位）。
+ */
+
+:root {
+  /* ── 表面（珍珠白分三层：极淡粉灰底 / 卡片白 / 悬浮白）── */
+  --xl-page: #f4eff2;
+  --xl-card: #fffdfe;
+  --xl-white: #ffffff;
+  --xl-soft: #fff6f9;
+  --xl-hover: #fff1f6;
+
+  /* ── 强调色（她的粉）+ 次强调（淡紫）+ 点缀（星光金）── */
+  --xl-accent: #e889a6;
+  --xl-accent-strong: #de7c9c;
+  --xl-accent-soft: #f2a3bc;
+  --xl-accent-bg: #fde4ec;
+  --xl-violet: #a98bd8;
+  --xl-gold: #d9b45e;
+
+  /* ── 文字四档 ── */
+  --xl-text: #2e2a33;
+  --xl-text-strong: #3a3242;
+  --xl-text-2: #6e6779;
+  --xl-text-3: #9a93a6;
+  --xl-text-4: #c0b8c8;
+
+  /* ── 线 / 阴影（阴影带粉，这是"贵气感"的来源）── */
+  --xl-line: rgba(46, 42, 51, 0.06);
+  --xl-line-2: rgba(46, 42, 51, 0.09);
+  --xl-accent-line: rgba(232, 137, 166, 0.32);
+  /* 卡片阴影：**刻意做得极轻**（2026-10-12 用户反馈"卡片下面有明显分割带"）。
+   重投影会在白卡片下沿压出一条暗带，和壁纸形成硬过渡；珍珠白风格只需要
+   一条几乎看不见的细影 + 1px 边框来和背景分开。范围 8px ≪ 窗口留白 32px。 */
+--xl-shadow-card: 0 2px 6px rgba(46, 42, 51, 0.08), inset 0 1px 0 #fff;
+  --xl-shadow-btn: 0 5px 12px rgba(232, 137, 166, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  --xl-shadow-soft: 0 1px 4px rgba(46, 42, 51, 0.06);
+
+  /* ── 圆角 / 字号 ── */
+  --xl-radius-card: 16px;
+  --xl-radius-row: 10px;
+  --xl-radius-btn: 10px;
+  --xl-radius-pill: 999px;
+  --xl-fs-title: 14px;
+  --xl-fs-body: 13px;
+  --xl-fs-small: 11px;
+  --xl-fs-label: 10.5px;
+
+  /* ── 渐变 ── */
+  --xl-grad-card: linear-gradient(180deg, #ffffff 0%, #fffbfc 55%, #fff6f9 100%);
+  --xl-grad-accent: linear-gradient(135deg, #f2a3bc, #e889a6 55%, #de7c9c);
+  --xl-grad-target: linear-gradient(120deg, #fff1f6, #fcf5ff);
+
+  /* 星点暗纹（--xl-stars）已按用户要求删除（2026-10-12）：
+     它会在右上角露出一颗像"黑点"的小圆点。 */
+}

@@ -10,23 +10,62 @@
  *     而不是 Electron 默认的 userData（在 AppData，会被拒）
  */
 
-import { app, BrowserWindow, globalShortcut, ipcMain, protocol, screen } from 'electron'
+import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, protocol, screen } from 'electron'
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import http from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'node:fs'
 import { contentBand, draggingExpired, hitTest } from './hit-test.js'
 import { createSseLink } from './sse-link.js'
+import { defaultSettings, normalizeSettings, serializeSettings } from './settings.js'
+import { TRAY_TOOLTIP, TOGGLE_SHORTCUT, buildTrayMenuTemplate, trayActionFor } from './tray-model.js'
+import { centerInWorkArea } from './window-placement.js'
 import { readFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
+/**
+ * 应用版本：⚠️ **不能用 `app.getVersion()`** —— 启动器是 `electron.exe <main.js>`（脚本路径）启动的，
+ * 没有 app 的 package.json 上下文，`app.getVersion()` 返回的是 **Electron 自己的版本**
+ * （实测设置窗显示 v44.5.1）。所以直接读 shell 的 package.json（发行时由打包脚本写版本号）。
+ */
+const APP_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(join(here, 'package.json'), 'utf8')).version ?? '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+})()
+
+/**
+ * 托盘图标：Windows 用**多尺寸 .ico**（16/24/32/48）。
+ * 单张 32×32 PNG 在部分 Windows 11 机器上不会出现在通知区域（实测 `tray.getBounds()` 全 0），
+ * 换成 .ico 是官方推荐做法；非 Windows 仍用 PNG。
+ */
+const TRAY_ICON_FILE = process.platform === 'win32' ? 'tray.ico' : 'tray.png'
+
 const DSH_URL = process.env.PET_DSH_URL ?? 'http://127.0.0.1:19387'
 const ROUTE_PREFIX = (process.env.PET_ROUTE_PREFIX ?? '/xilian-pet').replace(/\/+$/, '')
 const STATE_DIR = process.env.PET_STATE_DIR ?? join(here, '.state')
 const WIDTH = Number(process.env.PET_WIDTH ?? 260)
 const HEIGHT = Number(process.env.PET_HEIGHT ?? 300)
+
+// ── 设置 + 托盘（阶段 2：设置的读写已接上，但**还没影响任何行为**）──
+/** 设置窗尺寸（阶段 2 只有「关于」，先给紧凑高度；阶段 4 接外观/行为后会加高） */
+const SETTINGS_WIDTH = 376
+const SETTINGS_HEIGHT = 208
+/** 设置小窗：关闭即销毁（下次重开重新读设置） */
+let settingsWin = null
+/** 托盘：整个进程一个 */
+let tray = null
+/**
+ * 当前设置（启动时从 .state/settings.json 读；字段与校验见 settings.js）。
+ * ⚠️ 这个名字**不能再被局部变量遮住**（踩过：whenReady 里的 `const settings = findModelSettings()`
+ *    把赋值变成 "Assignment to constant variable"，托盘与 IPC 全没注册）。
+ */
+let settings = defaultSettings()
 
 // ── Live2D 模型目录 ─────────────────────────────────────────────────
 // 默认在仓库内的 assets/live2d/Cyrene（2026-10-06 起模型已随仓库入库，经作者授权；见 NOTICE.md 第四节）。
@@ -640,11 +679,26 @@ const MENU_HEIGHT = 320
 /** 审批小窗尺寸：要放下工具名 + 多行命令 + 理由（两行）+ 两个按钮 + 提示行 */
 const APPROVAL_WIDTH = 340
 const APPROVAL_HEIGHT = 218
+/**
+ * 卡片外留给「粉调阴影」的边距 —— **窗口 = 卡片 + 2×这个值**。
+ *
+ * ⚠️ 为什么必须有（2026-10-12 用户实机报"圆角外面有半透明直角"）：
+ *   窗口尺寸 == 卡片尺寸时，卡片 `box-shadow` **向外扩散的部分会被窗口矩形裁掉**，
+ *   于是四个角外各留一块"被直线切断的阴影"= 视觉上的半透明直角。
+ *   窗口留出 padding，阴影才有地方自然淡出。
+ *
+ * ⚠️ 这个值必须和 `menu.css` / `settings.css` / `approval.css` 里的 `body { padding }` 一致。
+ */
+const CARD_SHADOW_PAD = 32
 /** 审批小窗（第三个窗口）：审批来了自动弹，点完就关 */
 let approvalWin = null
 let lastApprovalFrame = null
-/** 会话列表最多列几个（用户要求"最近 3~5 个"） */
-const MENU_SESSION_LIMIT = 5
+/**
+ * 会话列表最多列几个。
+ * ⚠️ 2026-10-12 用户要求 5 → **3**：面板窗口是固定 300×320，展开 5 行会把底部状态行
+ * 挤出窗口（估算 +119px）；3 行约 +90px 才装得下。要改大先算高度，别只看"多列几个更方便"。
+ */
+const MENU_SESSION_LIMIT = 3
 /** 菜单小窗：复用一个实例（hide 而不是 close，避免每次重载闪一下） */
 let menuWin = null
 /** 最近一次要显示的数据 —— menu:ready 补发用（首次打开时页面还没加载完） */
@@ -656,12 +710,21 @@ let menuDirty = false
 
 function createWindow() {
   const saved = loadWindowState()
+  // ⚠️ 尺寸**永远用常量**，不信任存档：早期存档可能记录了跨屏/DPI 漂移后的尺寸，
+  //    恢复它会让窗口比渲染端舞台（260×300）大一倍 → 面板/审批窗定位全错（2026-10-12 实机）。
+  //    位置 x/y 可以恢复，尺寸不行。
+  if (saved.width !== undefined && (saved.width !== WIDTH || saved.height !== HEIGHT)) {
+    log(`忽略存档里的窗口尺寸 ${saved.width}×${saved.height}（应为 ${WIDTH}×${HEIGHT}）`)
+  }
   const win = new BrowserWindow({
-    width: saved.width ?? WIDTH,
-    height: saved.height ?? HEIGHT,
+    width: WIDTH,
+    height: HEIGHT,
     x: saved.x,
     y: saved.y,
     transparent: true,
+    // 透明底必须显式给：Windows 上默认的 backgroundColor 是白色，
+    // 圆角卡片外面会露出**白色方角 + 白边**（2026-10-12 用户实机报"下方圆角有问题"）。
+    backgroundColor: '#00000000',
     frame: false,
     resizable: false,
     hasShadow: false,
@@ -723,8 +786,36 @@ function createWindow() {
     maybeSnapshot(win)
   })
 
-  win.on('moved', () => saveWindowState(win))
+  /**
+   * 把桌宠窗口**锁回 260×300 DIP**。
+   *
+   * ⚠️ 为什么必须有（2026-10-12 用户实机报"面板错位"）：
+   * 跨屏拖动 / Windows 缩放比例变化时，Windows 会按物理像素重算窗口尺寸，而
+   * `resizable:false` 的透明窗 Electron 不会自动纠正 → `getBounds()` 报的 DIP 尺寸
+   * 可能变成 260×300 的 ~2 倍（实测 534×586）。渲染端舞台仍然是 260×300，
+   * 于是**面板按 getBounds() 锚定就会跑到离她很远的地方**（视觉上"错位"）。
+   *
+   * 只在尺寸确实不对时才 setBounds，避免 moved/resize 事件互相触发死循环。
+   */
+  function enforceWindowSize() {
+    if (win.isDestroyed()) return
+    const b = win.getBounds()
+    if (b.width === WIDTH && b.height === HEIGHT) return
+    log(`窗口尺寸漂移 ${b.width}×${b.height} → 纠正回 ${WIDTH}×${HEIGHT}（跨屏/DPI 变化，面板错位的根因）`)
+    win.setBounds({ x: b.x, y: b.y, width: WIDTH, height: HEIGHT })
+  }
+
+  win.on('moved', () => {
+    saveWindowState(win)
+    enforceWindowSize()
+  })
+  win.on('resize', enforceWindowSize)
   win.on('closed', () => saveWindowState(win))
+
+  // 显示器变化（插拔/改缩放）后也要纠正：DPI 变了窗口尺寸会漂
+  screen.on('display-metrics-changed', enforceWindowSize)
+  screen.on('display-added', enforceWindowSize)
+  screen.on('display-removed', enforceWindowSize)
 
   win.loadURL('pet://app/index.html')
   return win
@@ -734,6 +825,25 @@ app.whenReady().then(async () => {
   initLogFile() // 必须最先：之后所有 log 都会同时落盘到 .state/pet.log
   log(`DSH=${DSH_URL} prefix=${ROUTE_PREFIX} state=${statePath}`)
   log(`构建指纹 ${buildStamp()}（用来确认"到底重启到新代码没有"）`)
+
+  // ── 进程权限指纹（排查托盘不显示的第一判据）───────────────────────
+  // Windows 里 **Low 完整性**进程的托盘图标不会被 Explorer 接收（连 Electron 自带图标都不行），
+  // 而"从 DSH/低权限终端启动"会一路继承。所以把级别 + 沙箱状态写进日志，
+  // 以后再看"托盘不显示"就不用猜了。
+  try {
+    let level = 'unknown'
+    try {
+      const out = execFileSync('whoami', ['/groups'], { encoding: 'utf8' })
+      const m = out.match(/S-1-16-(\d+)/)
+      const map = { 4096: 'Low（低——托盘必然不显示）', 8192: 'Medium（正常）', 12288: 'High（管理员）', 16384: 'System' }
+      level = m ? `${map[m[1]] ?? m[1]} S-1-16-${m[1]}` : 'unknown'
+    } catch (error) {
+      level = `whoami 失败：${error?.message ?? error}`
+    }
+    log(`进程完整性级别：${level} · 沙箱：${app.commandLine.hasSwitch('no-sandbox') ? '已关闭(--no-sandbox)' : '开启(默认)'}`)
+  } catch (error) {
+    log(`进程权限指纹失败（不影响运行）：${error?.message ?? error}`)
+  }
 
   // ── 环境指纹 ──────────────────────────────────────────────────────
   // 为什么必须记：同一份代码"这台机器正常、那台机器只有一部分能拖"，
@@ -804,9 +914,13 @@ app.whenReady().then(async () => {
   })
 
   registerModelProtocol()
-  const settings = findModelSettings()
-  if (settings) {
-    log(`Live2D 模型：${join(MODEL_DIR, settings)}`)
+  // ⚠️ 这里必须叫 modelSettings（不能叫 settings）：模块级还有一个"用户设置"变量 `settings`，
+  //    同名的局部 const 会把它遮住 —— 实机踩过：`settings = defaultSettings()` 变成
+  //    "Assignment to constant variable"，整个 whenReady 后半段（托盘 + 全部 IPC）全没执行，
+  //    表现就是「托盘没图标 + 渲染端退回占位蓝熊 + 15s 构图超时」。
+  const modelSettings = findModelSettings()
+  if (modelSettings) {
+    log(`Live2D 模型：${join(MODEL_DIR, modelSettings)}`)
   } else {
     log(`Live2D 模型缺失（${MODEL_DIR} 下没有 *.model3.json）→ 渲染端会降级为占位形象`)
   }
@@ -824,6 +938,204 @@ app.whenReady().then(async () => {
 
   // 点击穿透的命中测试：主进程轮询光标 + 渲染端送来的 alpha 掩码
   startHitTestLoop(win)
+
+  // ── 设置持久化（阶段 2：只读写，**还不影响任何行为**）──────────────
+  // 阶段 1 的 settings.js 是纯函数；文件位置、读坏文件怎么办，都在这里收口。
+  const settingsPath = join(STATE_DIR, 'settings.json')
+  try {
+    settings = normalizeSettings(JSON.parse(readFileSync(settingsPath, 'utf8')))
+    log(
+      `设置已加载：scale=${settings.appearance.scale} opacity=${settings.appearance.opacity} ` +
+        `mirror=${settings.appearance.mirror} autoFace=${settings.appearance.autoFace}`,
+    )
+  } catch {
+    settings = defaultSettings()
+    log('设置文件不存在或不可读 → 用默认值（首次运行正常）')
+  }
+  function persistSettings() {
+    try {
+      writeFileSync(settingsPath, serializeSettings(settings), 'utf8')
+    } catch (error) {
+      log(`设置写盘失败：${error?.message ?? error}`)
+    }
+  }
+  function settingsPayload() {
+    return { appVersion: APP_VERSION, settings }
+  }
+
+  // ── 托盘（阶段 2）─────────────────────────────────────────────────
+  // 菜单项本身是纯数据（tray-model.js，可单测），这里只做 Electron 适配。
+  function trayTemplate() {
+    return buildTrayMenuTemplate({ visible: !win.isDestroyed() && win.isVisible() }).map((item) =>
+      item.type === 'separator'
+        ? { type: 'separator' }
+        : { label: item.label, accelerator: item.accelerator, click: () => runTrayAction(item.id) },
+    )
+  }
+  function refreshTrayMenu() {
+    if (!tray) return
+    tray.setContextMenu(Menu.buildFromTemplate(trayTemplate()))
+  }
+  /** 显示 / 隐藏她。⚠️ 显示用 showInactive：不要抢走用户正在打的字 */
+  function togglePetVisibility() {
+    if (win.isDestroyed()) return
+    if (win.isVisible()) {
+      win.hide()
+      closeMenuWindow()
+      log('托盘：隐藏她')
+    } else {
+      win.showInactive()
+      log('托盘：显示她')
+    }
+    refreshTrayMenu()
+  }
+  /** 把她挪回光标所在屏幕的工作区中央（拔屏/拖到屏幕外后的救命入口） */
+  function recenterPet() {
+    if (win.isDestroyed()) return
+    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+    const [w, h] = win.getSize()
+    const { x, y } = centerInWorkArea(display.workArea, w, h)
+    win.setPosition(x, y)
+    if (!win.isVisible()) win.showInactive()
+    refreshTrayMenu()
+    log(`托盘：已把她挪到 ${display.workArea.x},${display.workArea.y} 这一屏的中央`)
+  }
+  function runTrayAction(id) {
+    const action = trayActionFor(id)
+    if (action === 'toggle') return togglePetVisibility()
+    if (action === 'settings') return openSettingsWindow()
+    if (action === 'recenter') return recenterPet()
+    if (action === 'quit') return app.quit()
+    return undefined
+  }
+  function createTray() {
+    try {
+      // 图标是**自绘**的羽毛+星（packages/pet-shell/tray.ico / tray.png），不碰来源不明的社区图
+      const iconPath = join(here, TRAY_ICON_FILE)
+      const icon = nativeImage.createFromPath(iconPath)
+      tray = new Tray(icon)
+      tray.setToolTip(TRAY_TOOLTIP)
+      refreshTrayMenu()
+      tray.on('click', togglePetVisibility) // Windows：左键直接显示/隐藏
+      const size = icon.getSize()
+      log(`托盘已创建（icon=${TRAY_ICON_FILE} ${size.width}×${size.height} empty=${icon.isEmpty()}）`)
+      // Windows 上"创建成功"≠"显示出来了"：getBounds() 全 0 说明图标没进通知区域。
+      // 常见原因：Windows 11 把它收进了溢出的 ^ 里，或「任务栏设置 → 其他系统托盘图标」里被关掉了。
+      setTimeout(() => {
+        if (!tray || tray.isDestroyed()) return
+        const b = tray.getBounds()
+        log(
+          b.width > 0
+            ? `托盘图标已显示（${b.x},${b.y} ${b.width}×${b.height}）`
+            : // ⚠️ 位置为空**不等于**没创建：被收进 Windows 11 的 ^ 溢出区时，
+              // Shell_NotifyIconGetRect 也会返回空。真正的判据是"^ 里能不能看到"。
+              '托盘图标位置为空（可能只是被收进 ^ 溢出区：展开任务栏的 ^ 看看有没有羽毛；有就拖到任务栏固定；若 ^ 里也没有，才说明 Windows 没接受它）',
+        )
+      }, 1500)
+    } catch (error) {
+      // 托盘挂了不影响桌宠本体：只记日志
+      log(`托盘创建失败（不影响桌宠）：${error?.message ?? error}`)
+    }
+  }
+
+  // ── 设置窗（阶段 2）──────────────────────────────────────────────
+  function ensureSettingsWindow() {
+    if (settingsWin && !settingsWin.isDestroyed()) return settingsWin
+    settingsWin = new BrowserWindow({
+      // 窗口比卡片大一圈，留给卡片阴影自然淡出（见 CARD_SHADOW_PAD 的说明）
+      width: SETTINGS_WIDTH + CARD_SHADOW_PAD * 2,
+      height: SETTINGS_HEIGHT + CARD_SHADOW_PAD * 2,
+      transparent: true,
+      // 显式透明底（默认白底会让圆角外露出白角/白边；见 createWindow 的说明）
+      backgroundColor: '#00000000',
+      frame: false,
+      resizable: false,
+      hasShadow: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      show: false,
+      fullscreenable: false,
+      webPreferences: {
+        preload: join(here, 'settings-preload.cjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    })
+    settingsWin.setAlwaysOnTop(true, 'screen-saver')
+    settingsWin.setMenuBarVisibility?.(false)
+    settingsWin.loadFile(join(here, 'renderer', 'settings.html'))
+    settingsWin.once('ready-to-show', () => {
+      const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+      const { x, y } = centerInWorkArea(
+        display.workArea,
+        SETTINGS_WIDTH + CARD_SHADOW_PAD * 2,
+        SETTINGS_HEIGHT + CARD_SHADOW_PAD * 2,
+      )
+      settingsWin.setPosition(x, y)
+    })
+    settingsWin.on('blur', () => closeSettingsWindow())
+    settingsWin.on('closed', () => {
+      settingsWin = null
+    })
+    settingsWin.webContents.on('console-message', (_event, ...rest) => {
+      if (rest.length === 1 && rest[0] !== null && typeof rest[0] === 'object' && 'message' in rest[0]) {
+        log(`[settings:${rest[0].level}] ${rest[0].message}`)
+      } else {
+        const [level, message] = rest
+        log(`[settings:${level}] ${message}`)
+      }
+    })
+    settingsWin.webContents.on('preload-error', (_event, path, error) => {
+      log(`[settings-preload-error] ${path}: ${error?.message ?? error}`)
+    })
+    return settingsWin
+  }
+  function openSettingsWindow() {
+    const target = ensureSettingsWindow()
+    if (target.isDestroyed()) return
+    if (target.isVisible()) {
+      target.focus()
+      return
+    }
+    // 复用窗口时再显式刷一次透明底，防止隐藏/再显示后丢透明（圆角会露出白角）
+    try {
+      target.setBackgroundColor('#00000000')
+    } catch {}
+    target.show()
+    log('设置窗已打开')
+  }
+  function closeSettingsWindow() {
+    if (settingsWin && !settingsWin.isDestroyed()) settingsWin.close()
+  }
+
+  // ── IPC：设置读写 + 面板里的 ⚙ 入口 ──────────────────────────────
+  ipcMain.handle('settings:get', () => settingsPayload())
+  ipcMain.handle('settings:patch', (_event, partial) => {
+    // 深合并：只给 appearance.scale 时不能把同组其他项冲回默认
+    const src = partial !== null && typeof partial === 'object' ? partial : {}
+    settings = normalizeSettings({
+      ...settings,
+      appearance: { ...settings.appearance, ...(src.appearance ?? {}) },
+      behavior: { ...settings.behavior, ...(src.behavior ?? {}) },
+    })
+    persistSettings()
+    return settingsPayload()
+  })
+  ipcMain.handle('settings:reset', () => {
+    settings = defaultSettings()
+    persistSettings()
+    log('设置已恢复默认')
+    return settingsPayload()
+  })
+  ipcMain.on('settings:close', () => closeSettingsWindow())
+  ipcMain.on('pet:open-settings', () => {
+    closeMenuWindow()
+    openSettingsWindow()
+  })
+
+  win.on('show', refreshTrayMenu)
+  win.on('hide', refreshTrayMenu)
+  createTray()
   ipcMain.on('pet:mask', (_event, mask) => {
     // 只做基本校验，避免坏数据让轮询崩掉
     if (mask && mask.width > 0 && mask.height > 0 && mask.data?.length === mask.width * mask.height) {
@@ -1063,7 +1375,14 @@ app.whenReady().then(async () => {
     )
 
     const w = ensureMenuWindow()
-    w.setBounds({ x: Math.round(x), y, width: MENU_WIDTH, height: MENU_HEIGHT })
+    // 复用窗口：每次弹出前刷一次透明底，防止隐藏/再显示后丢透明（圆角露出白角）
+    try {
+      w.setBackgroundColor('#00000000')
+    } catch {}
+    // 窗口比卡片大 CARD_SHADOW_PAD：卡片要落在 (x,y)，窗口就整体左上偏移
+    const winW = MENU_WIDTH + CARD_SHADOW_PAD * 2
+    const winH = MENU_HEIGHT + CARD_SHADOW_PAD * 2
+    w.setBounds({ x: Math.round(x) - CARD_SHADOW_PAD, y: y - CARD_SHADOW_PAD, width: winW, height: winH })
     // 先发数据再 show，避免"先闪一个空面板再填上数字/列表"。
     // 但**首次**打开时页面可能还没加载完 → 那次会丢，靠 menu:ready 补发（见 menu-preload.cjs）。
     lastMenuData = {
@@ -1079,6 +1398,18 @@ app.whenReady().then(async () => {
     w.webContents.send('menu:data', lastMenuData)
     w.show()
     w.focus() // 要焦点才能打字、靠 blur 自动收起（Esc 也才好用）
+    // 菜单窗同样防 DPI 漂移：跨屏时系统会按物理像素重算窗口，DIP 尺寸一变
+    // 卡片就会被裁或者四周留透明边（和桌宠窗口 534×586 那个坑同源）。
+    setTimeout(() => {
+      if (w.isDestroyed()) return
+      const b = w.getBounds()
+      const expectW = winW
+      const expectH = winH
+      if (b.width !== expectW || b.height !== expectH) {
+        log(`菜单窗尺寸漂移 ${b.width}×${b.height} → 纠正回 ${expectW}×${expectH}`)
+        w.setBounds({ x: b.x, y: b.y, width: expectW, height: expectH })
+      }
+    }, 150)
     log(
       `操作面板：桌宠(${pet.x},${pet.y} ${pet.width}×${pet.height}) → 面板(${Math.round(x)},${y})；` +
         `会话 ${sessions.length} 个，目标 ${selectedSessionId ?? '（无）'}；` +
@@ -1115,11 +1446,26 @@ app.whenReady().then(async () => {
     )
 
     const w = ensureApprovalWindow()
-    w.setBounds({ x: Math.round(x), y, width: APPROVAL_WIDTH, height: APPROVAL_HEIGHT })
+    // 复用窗口：刷透明底（同菜单窗，防止圆角露白）
+    try {
+      w.setBackgroundColor('#00000000')
+    } catch {}
+    const awWinW = APPROVAL_WIDTH + CARD_SHADOW_PAD * 2
+    const awWinH = APPROVAL_HEIGHT + CARD_SHADOW_PAD * 2
+    w.setBounds({ x: Math.round(x) - CARD_SHADOW_PAD, y: y - CARD_SHADOW_PAD, width: awWinW, height: awWinH })
     lastApprovalFrame = frame
     w.webContents.send('approval:data', frame)
     // showInactive：审批只需要"看得见、点得到"，不该把你正在打字的窗口的焦点抢走
     w.showInactive()
+    // 同样的 DPI 漂移守卫（跨屏后 DIP 尺寸会被系统重算，卡片会被裁）
+    setTimeout(() => {
+      if (w.isDestroyed()) return
+      const b = w.getBounds()
+      if (b.width !== awWinW || b.height !== awWinH) {
+        log(`审批窗尺寸漂移 ${b.width}×${b.height} → 纠正回 ${awWinW}×${awWinH}`)
+        w.setBounds({ x: b.x, y: b.y, width: awWinW, height: awWinH })
+      }
+    }, 150)
     log(`审批小窗：桌宠(${pet.x},${pet.y}) → 审批(${Math.round(x)},${y})；${frame?.toolName ?? '?'}`)
     return w
   }
@@ -1131,9 +1477,12 @@ app.whenReady().then(async () => {
   function ensureApprovalWindow() {
     if (approvalWin !== null && !approvalWin.isDestroyed()) return approvalWin
     approvalWin = new BrowserWindow({
-      width: APPROVAL_WIDTH,
-      height: APPROVAL_HEIGHT,
+      // 窗口比卡片大一圈，留给卡片阴影自然淡出（见 CARD_SHADOW_PAD 的说明）
+      width: APPROVAL_WIDTH + CARD_SHADOW_PAD * 2,
+      height: APPROVAL_HEIGHT + CARD_SHADOW_PAD * 2,
       transparent: true,
+      // 显式透明底（默认白底会让圆角外露出白角/白边；见 createWindow 的说明）
+      backgroundColor: '#00000000',
       frame: false,
       resizable: false,
       hasShadow: false,
@@ -1172,9 +1521,12 @@ app.whenReady().then(async () => {
   function ensureMenuWindow() {
     if (menuWin !== null && !menuWin.isDestroyed()) return menuWin
     menuWin = new BrowserWindow({
-      width: MENU_WIDTH,
-      height: MENU_HEIGHT,
+      // 窗口比卡片大一圈，留给卡片阴影自然淡出（见 CARD_SHADOW_PAD 的说明）
+      width: MENU_WIDTH + CARD_SHADOW_PAD * 2,
+      height: MENU_HEIGHT + CARD_SHADOW_PAD * 2,
       transparent: true,
+      // 显式透明底（默认白底会让圆角外露出白角/白边；见 createWindow 的说明）
+      backgroundColor: '#00000000',
       frame: false,
       resizable: false,
       hasShadow: false,
@@ -1310,15 +1662,27 @@ app.whenReady().then(async () => {
   })
   ipcMain.on('pet:quit', () => app.quit())
 
-  // 点击穿透下窗口收不到键盘，用全局快捷键退出
-  globalShortcut.register('CommandOrControl+Shift+Q', () => {
+  // 点击穿透下窗口收不到键盘，用全局快捷键
+  // · Q 退出（原有）
+  // · H 显示/隐藏（阶段 2 新增；托盘菜单里也是这个键）
+  if (!globalShortcut.register(TOGGLE_SHORTCUT, () => {
+    log('快捷键：显示/隐藏')
+    togglePetVisibility()
+  })) {
+    log(`⚠️ ${TOGGLE_SHORTCUT} 注册失败（可能被其他程序占用），托盘里仍可显示/隐藏`)
+  }
+  if (!globalShortcut.register('CommandOrControl+Shift+Q', () => {
     log('快捷键退出')
     app.quit()
-  })
+  })) {
+    log('⚠️ Ctrl+Shift+Q 注册失败（可能被其他程序占用），托盘里仍可退出')
+  }
 })
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
+  tray?.destroy()
+  tray = null
   sseLink?.close()
 })
 

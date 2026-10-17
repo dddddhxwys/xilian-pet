@@ -12,21 +12,33 @@
       所以：底部那条输入条整个删掉，操作全搬到这里。
 
       内容：
-        · 派活目标 —— 最近 3~5 个会话，点一行切换（**只切换"派活发给谁"，不是切 DSH 界面**：
-          宿主没有 focus/switch session 的 API，sessionController 里 0 命中）
+        · 头部 —— 项目图标 + 昔涟 + ⚙（面板里**只放这一个设置入口**，用户要求）
+        · 派活目标 —— 最近 3 个会话，点一行切换（**只切换"派活发给谁"，不是切 DSH 界面**）
         · 多行输入（Enter 发送 / Shift+Enter 换行）
         · 派活 / 打断
-        · tokens 用量 / 缓存命中
-        · 插件（SSE）连接状态
+        · 一行状态：本次 tokens · 缓存命中 · 插件（SSE）连接状态
 
-      CSP：只有本地文件，不加载 PixiJS/Live2D，所以不需要 eval 相关放行。
+      阶段 3 换皮：珍珠白 + 星星暗纹 + 字号三档（token 见 tokens.css）。
+      CSP：只有本地文件，不加载 PixiJS/Live2D，所以不需要 eval 相关放行；
+           头像来自 packages/pet-plugin/icon.webp（file: 放行）。
     -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' file:"
+    />
     <title>昔涟 · 菜单</title>
+    <link rel="stylesheet" href="tokens.css" />
     <link rel="stylesheet" href="menu.css" />
   </head>
   <body>
     <div id="menu">
+      <!-- 头部：头像 + 名字 + ⚙（设置项不铺进面板，只放这一个按钮） -->
+      <div class="hd">
+        <img class="avatar" src="../../../packages/pet-plugin/icon.webp" alt="" />
+        <b>昔涟</b>
+        <button type="button" id="settingsBtn" class="gear" title="设置" aria-label="打开设置">⚙</button>
+      </div>
+
       <div class="section-label">派活目标</div>
       <!-- 折叠态：只显示当前目标 + 箭头；点它才展开列表（用户要求折叠起来） -->
       <button type="button" id="target" class="target" aria-expanded="false">
@@ -45,16 +57,13 @@
       </div>
 
       <div class="sep"></div>
-      <div class="stat"><span>本次会话</span><b id="tokens">—</b></div>
-      <div class="stat"><span>缓存命中</span><b id="cache">—</b></div>
-
-      <!--
-        插件（SSE）连接状态 —— 从桌宠身上**挪过来的**
-        （用户 2026-10-05："把那个表示插件在线的小绿点整合到菜单里面去"）。
-        为什么该放这里：桌宠窗口 260×300 全被她占着，那个点只能压在她身上；
-        面板本来就是"看状态、下命令"的地方，放这儿更合理，也不挡她 ✓
-      -->
-      <div class="stat"><span>插件</span><b id="linkState" data-link="down">未连接</b></div>
+      <!-- 三行压成一行（阶段 3）：本次 tokens · 缓存命中 · 插件连接状态。
+           保留原 ID（#tokens / #cache / #linkState），menu.js 不用改。 -->
+      <div class="status">
+        <span class="k">本次</span><b id="tokens">—</b>
+        <span class="k">缓存</span><b id="cache">—</b>
+        <b id="linkState" data-link="down">未连接</b>
+      </div>
 
       <div id="hint" class="hint" hidden></div>
     </div>

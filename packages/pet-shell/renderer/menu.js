@@ -161,8 +161,19 @@ if (api === undefined) {
     showHint(result?.status === 200 ? '已打断' : `打断失败（${result?.status ?? '?'}）`, result?.status === 200 ? 'ok' : 'error')
   })
 
+  // 右上角 ⚙ → 打开独立的设置窗（设置项不铺进面板）
+  document.getElementById('settingsBtn').addEventListener('click', () => api.openSettings())
+
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') api.close()
+  })
+
+  // 窗口比卡片大一圈（留给阴影淡出），那一圈是**透明的但可点**：
+  // 点在那里既不会触发 blur 也不会点到卡片 → 看起来"点了没反应"。
+  // 所以把卡片外的点击当作"点外面"→ 关面板（和失焦收起同一个语义）。
+  document.addEventListener('mousedown', (event) => {
+    const card = document.getElementById('menu')
+    if (card && !card.contains(event.target)) api.close()
   })
 
   // 主进程执行完动作后回报结果（成功/失败都走这里，界面只管显示）

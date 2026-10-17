@@ -16,6 +16,11 @@ body {
   user-select: none;
 }
 
+/* 窗口比卡片大一圈，给卡片阴影留出淡出空间（值同 main.js 的 CARD_SHADOW_PAD） */
+body {
+  padding: 32px;
+}
+
 #card {
   display: flex;
   flex-direction: column;
@@ -25,7 +30,9 @@ body {
   border-radius: 14px;
   background: rgba(46, 28, 30, 0.97);
   border: 1px solid rgba(255, 150, 120, 0.7);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
+  /* 阴影范围（offset+blur=26px）必须小于窗口留白（main.js 的 CARD_SHADOW_PAD=32），
+     否则会被窗口矩形裁出直线边（面板就踩过这个坑，见接手报告 4.13）。 */
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.45);
   color: #fff;
   animation: cardIn 120ms ease-out;
 }

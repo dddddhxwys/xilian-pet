@@ -1,0 +1,175 @@
+/* 设置小窗（阶段 2 结构 + 阶段 3 换皮）。
+   窗口尺寸由 main.js 的 SETTINGS_WIDTH/SETTINGS_HEIGHT 定死（resizable:false），
+   这里 100% 铺满、不设自身尺寸，免得两边对不上（和 menu.css 同一个约定）。
+
+   颜色/圆角/阴影全部走 tokens.css —— 面板、设置窗、气泡共用一套。 */
+
+@import "tokens.css";
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+}
+
+/* 窗口比卡片大一圈，给卡片阴影留出淡出空间（值同 main.js 的 CARD_SHADOW_PAD） */
+body {
+  padding: 32px;
+}
+
+#settings {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: 12px;
+  border-radius: var(--xl-radius-card);
+  background: var(--xl-grad-card);
+  border: 1px solid var(--xl-line);
+  color: var(--xl-text);
+  user-select: none;
+  overflow: hidden;
+  animation: settingsIn 110ms ease-out;
+}
+
+/* 卡面装饰点（星点暗纹）已按用户要求删除（2026-10-12），原因同 menu.css。 */
+
+@keyframes settingsIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+#avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  object-fit: cover;
+  object-position: center;
+  background: var(--xl-white);
+  border: 1px solid var(--xl-line);
+  box-shadow: 0 2px 7px rgba(232, 137, 166, 0.3);
+}
+
+header b {
+  font-size: var(--xl-fs-title);
+  letter-spacing: 0.4px;
+}
+
+.icon {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border: 1px solid var(--xl-line);
+  border-radius: 7px;
+  background: var(--xl-white);
+  color: var(--xl-text-3);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--xl-shadow-soft);
+}
+
+.icon:hover {
+  color: var(--xl-accent);
+  border-color: var(--xl-accent-line);
+}
+
+.sec {
+  position: relative;
+  flex: none;
+  padding: 12px 2px 6px;
+  font-size: var(--xl-fs-label);
+  letter-spacing: 1.4px;
+  color: var(--xl-text-3);
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex: none;
+  padding: 9px 10px;
+  border-radius: var(--xl-radius-row);
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid var(--xl-line);
+  font-size: var(--xl-fs-body);
+}
+
+.row b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--xl-text-strong);
+}
+
+.note {
+  position: relative;
+  flex: 1;
+  padding: 10px 2px;
+  font-size: var(--xl-fs-small);
+  line-height: 1.6;
+  color: var(--xl-text-2);
+}
+
+footer {
+  position: relative;
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+button.ghost,
+button.primary {
+  height: 30px;
+  border-radius: var(--xl-radius-btn);
+  border: 0;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+button.ghost {
+  flex: 1;
+  color: var(--xl-text-2);
+  background: var(--xl-white);
+  border: 1px solid var(--xl-line-2);
+}
+
+button.primary {
+  flex: 1;
+  color: #fff;
+  font-weight: 700;
+  background: var(--xl-grad-accent);
+  box-shadow: 0 4px 10px rgba(232, 137, 166, 0.38);
+}
+
+button.ghost:hover {
+  border-color: var(--xl-accent-line);
+  color: var(--xl-accent);
+}

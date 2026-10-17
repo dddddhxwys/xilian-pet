@@ -1,5 +1,9 @@
 /* 昔涟桌宠 · 渲染端样式
-   窗口是透明无边框的，所以 body 必须完全透明，且不能有滚动条。 */
+   窗口是透明无边框的，所以 body 必须完全透明，且不能有滚动条。
+
+   阶段 3：气泡改用共享设计 token（tokens.css，珍珠白 + 她的粉）。
+   ⚠️ @import 必须放在所有规则之前（CSS 规范要求），否则会被浏览器忽略。 */
+@import "tokens.css";
 
 * {
   box-sizing: border-box;
@@ -90,7 +94,7 @@ body {
 
 /* （未读 +N 汇总背板 #badge 已随"未读功能去除"一并删除，2026-10-05） */
 
-/* 气泡 */
+/* 气泡：和面板/设置窗同一套语言（珍珠白卡片、粉调阴影、圆角 14） */
 #bubble {
   position: absolute;
   top: 4px;
@@ -98,12 +102,13 @@ body {
   transform: translateX(-50%);
   max-width: 232px;
   padding: 8px 11px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.96);
-  color: #1d2b45;
+  border-radius: 14px;
+  background: var(--xl-card);
+  border: 1px solid var(--xl-line);
+  color: var(--xl-text);
   font-size: 12.5px;
   line-height: 1.45;
-  box-shadow: 0 4px 14px rgba(20, 40, 70, 0.25);
+  box-shadow: var(--xl-shadow-card);
   word-break: break-word;
   pointer-events: none;
 }
@@ -115,7 +120,7 @@ body {
   left: 50%;
   margin-left: -6px;
   border: 6px solid transparent;
-  border-top-color: rgba(255, 255, 255, 0.96);
+  border-top-color: var(--xl-card);
   border-bottom: 0;
 }
 

@@ -31,6 +31,19 @@ import {
   rawToLocal,
 } from '../packages/pet-shell/hit-test.js'
 import { createSseLink } from '../packages/pet-shell/sse-link.js'
+import { TRAY_TOOLTIP, TOGGLE_SHORTCUT, QUIT_SHORTCUT, buildTrayMenuTemplate, trayActionFor } from '../packages/pet-shell/tray-model.js'
+import { centerInWorkArea, clampIntoWorkArea } from '../packages/pet-shell/window-placement.js'
+import {
+  DEFAULT_SETTINGS,
+  OPACITY_MAX,
+  OPACITY_MIN,
+  SCALE_MAX,
+  SCALE_MIN,
+  SETTINGS_VERSION,
+  defaultSettings,
+  normalizeSettings,
+  serializeSettings,
+} from '../packages/pet-shell/settings.js'
 import { addPluginRow, looksLikePluginEntryPath, looksLikeProfilePatch, pluginRowSnippet, readPluginRowPath, removePluginRow } from './lib/patch-edit.mjs'
 import {
   assetApiUrl,
@@ -4204,6 +4217,236 @@ check('外壳也删干净了：通知条 UI / 显示函数 / 点击唤回 DSH �
   assert.ok(!/focusDshWindow|pet:focus-dsh/.test(mainSrc), 'main.js 不该再有跳转实现')
   const preload = stripComments(readFileSync(new URL('preload.cjs', shell), 'utf8'))
   assert.ok(!/focusDsh/.test(preload), 'preload 不该再暴露 focusDsh')
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[14] 设置：默认值 / 夹紧 / 非法值回退（纯函数，不碰 fs）')
+
+check('默认设置：三组字段齐全，范围常量符合用户确认值', () => {
+  const d = defaultSettings()
+  assert.equal(d.version, SETTINGS_VERSION)
+  assert.deepEqual(Object.keys(d.appearance), ['scale', 'opacity', 'mirror', 'autoFace'])
+  assert.deepEqual(Object.keys(d.behavior), ['clickInteraction', 'bubble', 'approvalViaPet'])
+  assert.equal(d.appearance.scale, 1, '大小默认 1.0')
+  assert.equal(d.appearance.opacity, 1, '不透明度默认 100%')
+  assert.equal(d.appearance.mirror, false, '镜像默认关')
+  assert.equal(d.appearance.autoFace, true, '自动朝向默认开')
+  assert.equal(d.behavior.clickInteraction, true)
+  assert.equal(d.behavior.bubble, true)
+  assert.equal(d.behavior.approvalViaPet, true)
+  // 范围是用户 2026-10-12 确认的，锁住防漂
+  assert.equal(SCALE_MIN, 0.6)
+  assert.equal(SCALE_MAX, 1.6)
+  assert.equal(OPACITY_MIN, 0.3)
+  assert.equal(OPACITY_MAX, 1)
+})
+
+check('defaultSettings() 是深拷贝：改它不会污染 DEFAULT_SETTINGS', () => {
+  const a = defaultSettings()
+  a.appearance.scale = 1.5
+  a.behavior.bubble = false
+  assert.equal(DEFAULT_SETTINGS.appearance.scale, 1, 'DEFAULT_SETTINGS 不能被改')
+  assert.equal(DEFAULT_SETTINGS.behavior.bubble, true)
+  assert.equal(defaultSettings().appearance.scale, 1, '再取一份还是默认值')
+})
+
+check('坏输入一律回退默认，绝不抛错（手改坏的配置文件不能拖垮桌宠）', () => {
+  for (const bad of [null, undefined, [], 'x', 42, true, NaN, () => {}]) {
+    const s = normalizeSettings(bad)
+    assert.deepEqual(s, defaultSettings(), `坏输入 ${String(bad)} 应整个回退默认`)
+  }
+})
+
+check('部分输入：只覆盖给出的项，其余取默认', () => {
+  const s = normalizeSettings({ appearance: { scale: 1.25 } })
+  assert.equal(s.appearance.scale, 1.25, '合法值要保留')
+  assert.equal(s.appearance.opacity, 1, '没给的项取默认')
+  assert.equal(s.appearance.mirror, false)
+  assert.equal(s.behavior.clickInteraction, true, '连组都没给的也要默认')
+})
+
+check('数值越界被夹紧（不报错、直接夹）', () => {
+  assert.equal(normalizeSettings({ appearance: { scale: 0.1 } }).appearance.scale, SCALE_MIN)
+  assert.equal(normalizeSettings({ appearance: { scale: 9 } }).appearance.scale, SCALE_MAX)
+  assert.equal(normalizeSettings({ appearance: { opacity: 0 } }).appearance.opacity, OPACITY_MIN)
+  assert.equal(normalizeSettings({ appearance: { opacity: 2 } }).appearance.opacity, OPACITY_MAX)
+})
+
+check('类型不对回退默认：字符串"1.5" / 1 / "true" 都不算合法数字或布尔', () => {
+  assert.equal(normalizeSettings({ appearance: { scale: '1.5' } }).appearance.scale, 1, '字符串数字不能当数字')
+  assert.equal(normalizeSettings({ appearance: { opacity: '0.5' } }).appearance.opacity, 1)
+  assert.equal(normalizeSettings({ appearance: { mirror: 'true' } }).appearance.mirror, false, '字符串不能当布尔')
+  assert.equal(normalizeSettings({ appearance: { mirror: 1 } }).appearance.mirror, false)
+  assert.equal(normalizeSettings({ behavior: { clickInteraction: 0 } }).behavior.clickInteraction, true)
+  assert.equal(normalizeSettings({ appearance: { scale: NaN } }).appearance.scale, 1, 'NaN 要回退')
+  assert.equal(normalizeSettings({ appearance: { scale: Infinity } }).appearance.scale, 1, 'Infinity 要回退')
+})
+
+check('未知字段被丢弃（旧版本残留键不能滚雪球 / 不能把别人配置写回去）', () => {
+  const s = normalizeSettings({ foo: 1, appearance: { bar: 2, scale: 1.2 }, behavior: { baz: 3 } })
+  const json = JSON.stringify(s)
+  assert.ok(!json.includes('foo') && !json.includes('bar') && !json.includes('baz'), '未知键必须消失')
+  assert.equal(s.appearance.scale, 1.2, '已知键照常生效')
+})
+
+check('规范化幂等：normalize(normalize(x)) 与 normalize(x) 深等', () => {
+  const once = normalizeSettings({ appearance: { scale: 0.77, mirror: true }, behavior: { bubble: false } })
+  assert.deepEqual(normalizeSettings(once), once)
+})
+
+check('序列化：键序固定 + 2 空格缩进 + 末尾换行（diff 友好）', () => {
+  const text = serializeSettings({ appearance: { scale: 1.3 } })
+  assert.ok(text.endsWith('\n'), '必须以换行结尾')
+  assert.ok(text.includes('\n  "appearance"'), '2 空格缩进')
+  assert.ok(text.indexOf('"version"') < text.indexOf('"appearance"'), 'version 在最前')
+  assert.ok(text.indexOf('"appearance"') < text.indexOf('"behavior"'), 'appearance 在 behavior 前')
+  // 同一对象序列化两次必须完全一致（键序不稳的话这里会红）
+  assert.equal(serializeSettings({ appearance: { scale: 1.3 } }), text)
+})
+
+check('序列化 → 解析 → 规范化：往返一致（写盘再用不会走样）', () => {
+  const input = { appearance: { scale: 1.4, opacity: 0.5, mirror: true, autoFace: false }, behavior: { bubble: false } }
+  const back = normalizeSettings(JSON.parse(serializeSettings(input)))
+  assert.deepEqual(back, normalizeSettings(input))
+  assert.equal(back.appearance.scale, 1.4)
+  assert.equal(back.appearance.opacity, 0.5)
+  assert.equal(back.appearance.mirror, true)
+  assert.equal(back.appearance.autoFace, false)
+  assert.equal(back.behavior.bubble, false)
+  assert.equal(back.behavior.approvalViaPet, true, '没给的仍是默认')
+})
+
+check('序列化对坏输入也安全：写盘永远写出合法 JSON', () => {
+  const text = serializeSettings(null)
+  const parsed = JSON.parse(text)
+  assert.deepEqual(normalizeSettings(parsed), defaultSettings())
+  assert.ok(!text.includes('NaN'), '不能把 NaN 写进文件')
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[15] 托盘菜单模型 / 窗口摆放（纯函数；Electron API 在 Node 里跑不了，所以抽出来测）')
+
+check('托盘菜单：她可见时给「隐藏她」、藏起来时给「显示她」', () => {
+  const visible = buildTrayMenuTemplate({ visible: true })
+  const hidden = buildTrayMenuTemplate({ visible: false })
+  assert.equal(visible[0].id, 'toggle')
+  assert.equal(visible[0].label, '隐藏她')
+  assert.equal(hidden[0].label, '显示她')
+  assert.equal(visible[0].accelerator, TOGGLE_SHORTCUT, '快捷键要跟着显示出来')
+})
+
+check('托盘菜单：顺序 / 设置项 / 退出快捷键 / tooltip', () => {
+  const items = buildTrayMenuTemplate({ visible: true })
+  assert.deepEqual(
+    items.map((item) => item.id ?? item.type),
+    ['toggle', 'settings', 'recenter', 'separator', 'quit'],
+  )
+  assert.equal(items.find((item) => item.id === 'settings').label, '设置…')
+  assert.equal(items.find((item) => item.id === 'recenter').label, '回到她身边')
+  assert.equal(items.find((item) => item.id === 'quit').label, '退出')
+  assert.equal(items.find((item) => item.id === 'quit').accelerator, QUIT_SHORTCUT)
+  assert.ok(TRAY_TOOLTIP.includes('昔涟'))
+})
+
+check('托盘动作：未知 id 返回 null（不认识的菜单项绝不瞎执行）', () => {
+  for (const id of ['toggle', 'settings', 'recenter', 'quit']) assert.equal(trayActionFor(id), id)
+  assert.equal(trayActionFor('nope'), null)
+  assert.equal(trayActionFor(undefined), null)
+})
+
+check('窗口居中：普通工作区（1920×1080 里放 260×300）', () => {
+  assert.deepEqual(centerInWorkArea({ x: 0, y: 0, width: 1920, height: 1080 }, 260, 300), { x: 830, y: 390 })
+})
+
+check('窗口居中：负坐标工作区（副屏挂在左边）', () => {
+  assert.deepEqual(centerInWorkArea({ x: -1920, y: 0, width: 1920, height: 1080 }, 260, 300), { x: -1090, y: 390 })
+})
+
+check('窗口居中：窗口比工作区还大时贴左上，不产生越界坐标', () => {
+  assert.deepEqual(centerInWorkArea({ x: 0, y: 0, width: 200, height: 100 }, 400, 300), { x: 0, y: 0 })
+})
+
+check('夹进工作区：在里面的不动、越界的拉回来（阶段 4 改大小要用）', () => {
+  const workArea = { x: 0, y: 0, width: 1920, height: 1080 }
+  assert.deepEqual(clampIntoWorkArea(workArea, { x: 100, y: 200, width: 260, height: 300 }), { x: 100, y: 200 })
+  assert.deepEqual(clampIntoWorkArea(workArea, { x: 1800, y: 900, width: 260, height: 300 }), { x: 1660, y: 780 })
+  assert.deepEqual(clampIntoWorkArea(workArea, { x: -500, y: -200, width: 260, height: 300 }), { x: 0, y: 0 })
+})
+
+// 这条是**源码护栏**，不是行为断言 —— 它守的是一个真实事故：
+// whenReady 里原本有 `const settings = findModelSettings()`（局部，遮住模块级 `let settings`），
+// 结果 `settings = defaultSettings()` 运行时抛 "Assignment to constant variable"，
+// 整个 whenReady 后半段（托盘创建 + 全部 IPC 注册）被跳过 → 托盘没图标、渲染端退回占位蓝熊。
+// 表现极具迷惑性（看着像两个无关的 bug），所以必须用测试钉住。
+check('main.js 的模块级 settings 必须是 let，且不能被局部 const 同名遮蔽', () => {
+  const src = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '')
+  assert.ok(/^let settings = defaultSettings\(\)$/m.test(src), '模块级 settings 必须用 let 声明')
+  assert.ok(!/^\s+const settings\s*=/m.test(src), '不能再有局部 const settings（会遮住模块级变量，导致赋值抛错）')
+})
+
+// 同类的源码护栏：设置窗的版本号踩过这个坑 ——
+// 启动器是 `electron.exe <main.js>`（脚本模式），`app.getVersion()` 返回的是 **Electron 版本**，
+// 设置窗里显示成了 v44.5.1。必须读 shell 的 package.json（APP_VERSION）。
+check('main.js 不能用 app.getVersion()（脚本模式下返回的是 Electron 版本）', () => {
+  const src = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '')
+  assert.ok(!/app\.getVersion\(\)/.test(src), '改用 APP_VERSION（读 packages/pet-shell/package.json）')
+  assert.ok(/^const APP_VERSION = /m.test(src), 'APP_VERSION 必须存在')
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[16] 阶段 3 换皮：共享 token / 面板结构 / 样式接线（静态护栏）')
+
+check('tokens.css 存在且定义了关键设计变量', () => {
+  const tokens = readFileSync(new URL('../packages/pet-shell/renderer/tokens.css', import.meta.url), 'utf8')
+  for (const name of ['--xl-accent', '--xl-card', '--xl-line', '--xl-radius-card', '--xl-grad-card']) {
+    assert.ok(new RegExp(`${name}\\s*:`).test(tokens), `tokens.css 要定义 ${name}`)
+  }
+  // 强调色必须是用户确认的珍珠粉（防止有人随手改成更艳的值）
+  assert.ok(/#e889a6/i.test(tokens), '强调色应是 #E889A6（珍珠粉）')
+})
+
+check('星点暗纹已删除（用户要求，右上角会露出像黑点的小圆点）', () => {
+  const dir = new URL('../packages/pet-shell/renderer/', import.meta.url)
+  const tokens = readFileSync(new URL('tokens.css', dir), 'utf8')
+  const menu = readFileSync(new URL('menu.css', dir), 'utf8')
+  const settings = readFileSync(new URL('settings.css', dir), 'utf8')
+  assert.ok(!/--xl-stars\s*:/.test(tokens), 'tokens.css 不应再定义 --xl-stars')
+  assert.ok(!/var\(--xl-stars\)/.test(menu), 'menu.css 不应再引用星点层')
+  assert.ok(!/var\(--xl-stars\)/.test(settings), 'settings.css 不应再引用星点层')
+  // 也防止有人用别的名字再加回来一层装饰点
+  assert.ok(!/#menu::before\s*\{[^}]*radial-gradient/s.test(menu), 'menu.css 不应再有装饰性 ::before 网点层')
+  assert.ok(!/#settings::before\s*\{[^}]*radial-gradient/s.test(settings), 'settings.css 不应再有装饰性 ::before 网点层')
+})
+
+check('menu.html：引用了 token、有头像与 ⚙、CSP 放行本地图片、关键 ID 都在', () => {
+  const html = readFileSync(new URL('../packages/pet-shell/renderer/menu.html', import.meta.url), 'utf8')
+  assert.ok(/href="tokens\.css"/.test(html), '必须引用 tokens.css')
+  assert.ok(/class="avatar"/.test(html) && /pet-plugin\/icon\.webp/.test(html), '头部要有项目图标头像')
+  assert.ok(/id="settingsBtn"/.test(html), '⚙ 设置入口不能丢')
+  assert.ok(/img-src 'self' file:/.test(html), "CSP 要放行 file: 图片（头像）")
+  for (const id of ['target', 'sessions', 'input', 'send', 'interrupt', 'tokens', 'cache', 'linkState']) {
+    assert.ok(new RegExp(`id="${id}"`).test(html), `menu.html 缺 id="${id}"（menu.js 依赖它）`)
+  }
+})
+
+check('三个 CSS 都走 token、气泡换成珍珠白、菜单输入框保留 flex 吸收高度差', () => {
+  const renderer = new URL('../packages/pet-shell/renderer/', import.meta.url)
+  const menu = readFileSync(new URL('menu.css', renderer), 'utf8')
+  const settings = readFileSync(new URL('settings.css', renderer), 'utf8')
+  const pet = readFileSync(new URL('pet.css', renderer), 'utf8')
+  assert.ok(/var\(--xl-accent\)/.test(menu), 'menu.css 要用 token')
+  assert.ok(/var\(--xl-grad-card\)/.test(settings), 'settings.css 要用 token')
+  assert.ok(/^@import "tokens\.css";/m.test(settings), 'settings.css 要在最前面 import tokens（@import 必须在规则之前）')
+  assert.ok(/^@import "tokens\.css";/m.test(pet), 'pet.css 要在最前面 import tokens')
+  // 气泡必须和面板同一套语言（卡片色 + 粉调阴影）
+  assert.ok(/#bubble\s*\{[^}]*var\(--xl-card\)/s.test(pet), '气泡背景要用 --xl-card')
+  assert.ok(/#bubble\s*\{[^}]*var\(--xl-shadow-card\)/s.test(pet), '气泡阴影要用 --xl-shadow-card')
+  // 固定 300×320 里靠 #input 吸收折叠/展开的差
+  assert.ok(/#input\s*\{[^}]*flex:\s*1/s.test(menu), '#input 必须是 flex 吸收高度差')
 })
 
 console.log(`\n${'─'.repeat(56)}`)

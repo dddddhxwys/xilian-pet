@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      设置小窗（阶段 2：结构）。
+      入口两个：托盘「设置…」+ 面板右上角 ⚙。
+      阶段 2 只放「关于（版本）/ 恢复默认」；外观（大小/不透明度/镜像）与行为开关在阶段 4 接进来。
+      CSP：只用本地文件、无 eval；头像来自 packages/pet-plugin/icon.webp（file: 放行）。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' file:"
+    />
+    <title>昔涟 · 设置</title>
+    <link rel="stylesheet" href="settings.css" />
+  </head>
+  <body>
+    <div id="settings">
+      <header>
+        <img id="avatar" src="../../../packages/pet-plugin/icon.webp" alt="" />
+        <b>昔涟 · 设置</b>
+        <button type="button" id="close" class="icon" title="关闭（Esc）">✕</button>
+      </header>
+
+      <div class="sec">关于</div>
+      <div class="row">
+        <span>版本</span>
+        <b id="version">—</b>
+      </div>
+
+      <div class="note" id="note">外观（大小 / 不透明度 / 镜像）与行为开关会在下一步接入这里。</div>
+
+      <footer>
+        <button type="button" id="reset" class="ghost">恢复默认</button>
+        <button type="button" id="done" class="primary">完成</button>
+      </footer>
+    </div>
+    <script src="settings.js"></script>
+  </body>
+</html>

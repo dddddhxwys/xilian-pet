@@ -35,4 +35,7 @@ contextBridge.exposeInMainWorld('xilianMenu', {
 
   /** 主动收起（Esc） */
   close: () => ipcRenderer.send('menu:close'),
+
+  /** 打开设置窗（面板右上角 ⚙）。设置项在独立窗里，不铺进面板。 */
+  openSettings: () => ipcRenderer.send('pet:open-settings'),
 })

@@ -1,6 +1,11 @@
 /* 独立菜单小窗 = 桌宠的操作面板。
    窗口尺寸由 main.js 的 MENU_WIDTH/MENU_HEIGHT 定死（resizable:false），
-   所以这里 100% 铺满、不设自身尺寸，免得两边对不上。 */
+   所以这里 100% 铺满、不设自身尺寸，免得两边对不上。
+
+   阶段 3 换皮：珍珠白 + 星星暗纹 + 字号三档（token 全在 tokens.css）。
+   高度预算（固定 320）：padding 16 + 头部 24 + 标签 20 + 目标 30 + 列表(展开 76)
+     + 两条分隔线 13 + 输入框(flex, min 40) + 按钮 36 + 状态 20 ≈ 279
+   —— 折叠/展开的差由 #input 的 flex 吸收；实测两态都不溢出（见报告 §5.2）。 */
 
 * {
   margin: 0;
@@ -17,25 +22,36 @@ body {
   font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
 }
 
+/* 窗口比卡片大一圈，给卡片阴影留出淡出空间
+   （值必须和 main.js 的 CARD_SHADOW_PAD 一致，否则圆角外会被窗口裁出"半透明直角"）。 */
+body {
+  padding: 32px;
+}
+
 #menu {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: 100%;
   height: 100%;
-  padding: 8px;
-  border-radius: 14px;
-  background: rgba(38, 32, 52, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
-  color: #fff;
+  padding: 8px 10px;
+  border-radius: var(--xl-radius-card);
+  background: var(--xl-grad-card);
+  border: 1px solid var(--xl-line);
+  box-shadow: var(--xl-shadow-card);
+  color: var(--xl-text);
   user-select: none;
+  overflow: hidden;
   animation: menuIn 110ms ease-out;
 }
+
+/* 卡面装饰点（星点暗纹）已按用户要求删除（2026-10-12）：
+   原来这里是一层 `--xl-stars` 的淡星点，但在右上角会露出一颗像"黑点"的小圆点。 */
 
 @keyframes menuIn {
   from {
     opacity: 0;
-    transform: scale(0.96);
+    transform: scale(0.97);
   }
   to {
     opacity: 1;
@@ -43,36 +59,99 @@ body {
   }
 }
 
-.section-label {
-  padding: 0 4px 5px;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.55);
+/* ── 头部：头像 + 名字 + ⚙ ────────────────────────────────────── */
+.hd {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  height: 24px;
 }
 
-/* ── 会话选择（可折叠）───────────────────────────────────────────
+.avatar {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border-radius: 7px;
+  object-fit: cover;
+  object-position: center;
+  background: var(--xl-white);
+  border: 1px solid var(--xl-line);
+  box-shadow: 0 2px 6px rgba(232, 137, 166, 0.28);
+}
+
+.hd b {
+  font-size: var(--xl-fs-title);
+  letter-spacing: 0.4px;
+  color: var(--xl-text);
+}
+
+/* 右上角 ⚙（面板里只放这一个设置入口） */
+.gear {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border: 1px solid var(--xl-line);
+  border-radius: 7px;
+  background: var(--xl-white);
+  color: var(--xl-text-2);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--xl-shadow-soft);
+}
+.gear:hover {
+  color: var(--xl-accent);
+  border-color: var(--xl-accent-line);
+}
+
+.section-label {
+  position: relative;
+  flex: none;
+  padding: 6px 2px 4px;
+  font-size: var(--xl-fs-label);
+  letter-spacing: 1.4px;
+  color: var(--xl-text-3);
+}
+
+/* ── 会话选择（可折叠）─────────────────────────────────────────
    折叠态只占一行：当前目标 + 箭头；点开才出列表（用户要求折叠起来）。 */
 .target {
+  position: relative;
+  flex: none;
   display: flex;
   align-items: center;
   gap: 7px;
   width: 100%;
-  padding: 6px 7px;
-  border: 0;
-  border-radius: 8px;
-  background: rgba(120, 170, 255, 0.22);
-  color: inherit;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--xl-accent-line);
+  border-radius: var(--xl-radius-row);
+  background: var(--xl-grad-target);
+  color: var(--xl-text-strong);
   font: inherit;
-  font-size: 13.5px;
+  font-size: var(--xl-fs-body);
   text-align: left;
   cursor: pointer;
+  box-shadow: 0 1px 4px rgba(232, 137, 166, 0.12);
 }
 .target:hover {
-  background: rgba(120, 170, 255, 0.32);
+  border-color: var(--xl-accent);
+}
+.target .title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
 }
 .target .chevron {
   flex: none;
-  font-size: 11px;
-  opacity: 0.75;
+  font-size: 10px;
+  color: var(--xl-violet);
   transition: transform 120ms ease-out;
 }
 .target[aria-expanded="true"] .chevron {
@@ -80,11 +159,13 @@ body {
 }
 
 .sessions {
+  position: relative;
+  flex: none;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 116px;
-  margin-top: 3px;
+  max-height: 76px;
+  margin-top: 4px;
   overflow-y: auto;
 }
 
@@ -99,21 +180,32 @@ body {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 5px 7px;
-  border: 0;
-  border-radius: 8px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: var(--xl-radius-row);
   background: transparent;
-  color: inherit;
+  color: var(--xl-text-2);
   font: inherit;
-  font-size: 13.5px;
+  font-size: var(--xl-fs-body);
   text-align: left;
   cursor: pointer;
 }
 .session:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--xl-hover);
 }
 .session[aria-current="true"] {
-  background: rgba(120, 170, 255, 0.26);
+  background: var(--xl-soft);
+  border-color: var(--xl-accent-line);
+  color: var(--xl-text-strong);
+  box-shadow: 0 1px 4px rgba(232, 137, 166, 0.14);
+}
+.session .title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 状态点：颜色沿用桌宠窗口里的 halo 语义。
@@ -123,142 +215,136 @@ body {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #8c9bb5;
+  background: #b8b1c3;
 }
 [data-state="running"] .dot {
-  background: #4a90e2;
+  background: #5ba98b;
+  box-shadow: 0 0 0 3px rgba(91, 169, 139, 0.14);
 }
 [data-state="approval"] .dot {
-  background: #f0b429;
+  background: var(--xl-gold);
+  box-shadow: 0 0 0 3px rgba(217, 180, 94, 0.16);
 }
 [data-state="question"] .dot {
-  background: #b06ce2;
+  background: var(--xl-violet);
 }
 [data-state="done"] .dot {
-  background: #37c46a;
+  background: #5ba98b;
 }
 .session[data-state="error"] .dot {
-  background: #e2686a;
+  background: #c7566a;
 }
 
-.session .title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.session .unread {
-  flex: none;
-  padding: 0 6px;
-  border-radius: 9px;
-  background: rgba(255, 96, 96, 0.95);
-  font-size: 11px;
-  line-height: 17px;
-}
-
+/* 细分隔线：中间亮两头淡，不用硬边框 */
 .sep {
+  position: relative;
   flex: none;
   height: 1px;
-  margin: 7px 4px;
-  background: rgba(255, 255, 255, 0.16);
+  margin: 7px 0 6px;
+  background: linear-gradient(90deg, transparent, var(--xl-accent-line) 18%, rgba(169, 139, 216, 0.2) 82%, transparent);
 }
 
-/* ── 输入区 ─────────────────────────────────────────────────────── */
+/* ── 输入框：吸收折叠/展开的高度差 ───────────────────────────── */
 #input {
-  flex: 1;
-  min-height: 54px;
-  padding: 6px 8px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.07);
-  color: #fff;
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 40px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--xl-line-2);
+  border-radius: var(--xl-radius-row);
+  background: var(--xl-white);
+  color: var(--xl-text);
   font: inherit;
-  font-size: 13.5px;
-  line-height: 1.4;
+  font-size: var(--xl-fs-body);
+  line-height: 1.45;
   resize: none;
   outline: none;
   user-select: text;
+  box-shadow: inset 0 1px 3px rgba(46, 42, 51, 0.04);
 }
 #input::placeholder {
-  color: rgba(255, 255, 255, 0.38);
+  color: var(--xl-text-3);
 }
 #input:focus {
-  border-color: rgba(120, 170, 255, 0.85);
+  border-color: var(--xl-accent);
+  box-shadow: inset 0 1px 3px rgba(46, 42, 51, 0.04), 0 0 0 3px rgba(232, 137, 166, 0.16);
 }
 
 .actions {
+  position: relative;
+  flex: none;
   display: flex;
   gap: 6px;
-  margin-top: 7px;
+  margin-top: 6px;
 }
 
 .item {
-  border: 0;
-  border-radius: 9px;
-  padding: 7px 10px;
-  color: #fff;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--xl-line-2);
+  border-radius: var(--xl-radius-btn);
+  background: var(--xl-white);
+  color: var(--xl-text-2);
   font: inherit;
-  font-size: 14px;
+  font-size: 12.5px;
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.12);
 }
 .item:hover {
-  background: rgba(255, 255, 255, 0.2);
+  border-color: var(--xl-accent-line);
+  color: var(--xl-accent);
 }
 .item.primary {
   flex: 2;
-  background: #4a90e2;
+  border: 0;
+  color: #fff;
+  font-weight: 700;
+  background: var(--xl-grad-accent);
+  box-shadow: var(--xl-shadow-btn);
 }
 .item.primary:hover {
-  background: #5a9bea;
+  color: #fff;
+  filter: brightness(1.03);
 }
 .item.danger {
   flex: 1;
-  background: rgba(226, 104, 106, 0.85);
+  color: #c7566a;
+  border-color: rgba(199, 86, 106, 0.3);
 }
 .item.danger:hover {
-  background: rgba(226, 104, 106, 1);
+  color: #c7566a;
+  border-color: rgba(199, 86, 106, 0.55);
 }
 
-/* ── 用量 ───────────────────────────────────────────────────────── */
-.stat {
+/* ── 一行状态：本次 tokens · 缓存 · 插件连接 ───────────────────── */
+.status {
+  position: relative;
+  flex: none;
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 10px;
-  padding: 2px 4px;
-  font-size: 12.5px;
-  color: rgba(255, 255, 255, 0.7);
+  align-items: center;
+  gap: 5px;
+  padding: 4px 2px 0;
+  font-size: var(--xl-fs-small);
+  color: var(--xl-text-3);
 }
-.stat b {
-  color: #fff;
+.status .k {
+  color: var(--xl-text-4);
+}
+.status b {
+  color: var(--xl-text-strong);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-
-/* 一行反馈（"已派活" / "派活失败(503)"），成功后自动淡出 */
-.hint {
-  padding: 4px 4px 0;
-  font-size: 12px;
-  color: #8fd6a8;
+.status b + .k {
+  margin-left: 5px;
 }
-.hint[data-kind="error"] {
-  color: #ffb3b3;
-}
-
-/*
-  插件（SSE）在线小点 —— 从桌宠身上挪过来的
-  （用户 2026-10-05："把那个表示插件在线的小绿点整合到菜单里面去"）。
-  仍用 `data-link="up|down"` 表达状态，语义和原来桌宠上那个点保持一致 ✓
-*/
 #linkState {
+  margin-left: auto;
   font-weight: 600;
-  color: #ff9a9a;
+  color: #c7566a;
 }
 #linkState[data-link="up"] {
-  color: #7ee0a0;
+  color: #3f7f5c;
 }
 #linkState::before {
   content: "";
@@ -268,6 +354,19 @@ body {
   margin-right: 6px;
   border-radius: 50%;
   background: currentColor;
-  vertical-align: middle;
-  box-shadow: 0 0 6px currentColor;
+}
+#linkState[data-link="up"]::before {
+  box-shadow: 0 0 0 3px rgba(91, 169, 139, 0.14);
+}
+
+/* 一行反馈（"已派活" / "派活失败(503)"），成功后自动淡出 */
+.hint {
+  position: relative;
+  flex: none;
+  padding: 3px 2px 0;
+  font-size: var(--xl-fs-small);
+  color: #3f7f5c;
+}
+.hint[data-kind="error"] {
+  color: #c7566a;
 }

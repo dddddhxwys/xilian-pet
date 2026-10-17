@@ -89,10 +89,16 @@ if (process.env.PET_FORCE_NO_SANDBOX === '1') {
   relaxFlags.push('--no-sandbox')
   console.log('[launch] PET_FORCE_NO_SANDBOX=1，直接使用放宽参数')
 } else {
-  // stdio: 'ignore' 是刻意的 —— 受限沙箱下管道 stdio 会 EPERM，而我们只需要退出码
-  const probe = spawnSync(electronPath, ['--version'], { env, stdio: 'ignore', timeout: 20_000 })
+  // ⚠️ 探测命令**必须带 `--user-data-dir`**（2026-10-12 踩）：
+  //    不带它时 Electron 在部分机器上会因 userData 不可写直接崩（0xC0000005 / 0x80000003），
+  //    探针就会把"环境问题"误判成"Chromium 沙箱不能用"，于是**每次都白白加上 `--no-sandbox`** ——
+  //    窗口和渲染照常，但托盘图标等 syshell 交互会受影响（用户实机：托盘一直不显示）。
+  //    stdio: 'ignore' 是刻意的 —— 受限沙箱下管道 stdio 会 EPERM，我们只需要退出码。
+  const probeDir = join(rootDir, 'packages', 'pet-shell', '.state', 'probe-user-data')
+  mkdirSync(probeDir, { recursive: true })
+  const probe = spawnSync(electronPath, ['--version', `--user-data-dir=${probeDir}`], { env, stdio: 'ignore', timeout: 20_000 })
   if (probe.status === 0) {
-    console.log('[launch] Chromium 沙箱探测通过，使用默认沙箱设置')
+    console.log('[launch] Chromium 沙箱探测通过（带 user-data-dir），使用默认沙箱设置')
   } else {
     relaxFlags.push('--no-sandbox')
     console.log(`[launch] Chromium 沙箱探测失败（exit=${probe.status}）→ 自动追加 ${relaxFlags.join(' ')}`)
