@@ -103,7 +103,9 @@ body {
    ⚠️ 不要加 scaleX(-1)：这张图存在的意义就是"字形不镜像"。 */
 #questionMark {
   position: absolute;
-  left: 15.69%;
+  /* 2026-10-12 用户："问号离昔涟太远" → 从左侧 15.69% 往她那边挪近（中心 21% → 32%）。
+     位置仍是"镜像后模型问号该在的地方"再向她的头部靠拢；她头中心约在 50%。 */
+  left: 26.8%;
   top: 45.33%;
   z-index: 2;
   width: 10.46%;
@@ -111,22 +113,23 @@ body {
   background: url(assets/question-mark.png) center / contain no-repeat;
   pointer-events: none;
   user-select: none;
-  /* 角度：-10° 逆时针 → 问号的"尾巴"朝右下方（= 朝着她）。
-     模型原图放在她右上角时，尾巴本来就是朝她的；镜像到左上角后要靠这个角度补回来。
-     （用户 2026-10-12："问号的角度不对，尾部应该微微朝向昔涟"）
-     再叠一层很慢的摇摆（3.6s 两度），像浮在那儿 —— 用户要求"问号应该慢慢摇动" */
-  transform: rotate(-10deg);
-  transform-origin: 50% 60%;
-  animation: qmarkSway 3.6s ease-in-out infinite;
+  /* 角度：-8° 逆时针 → 问号的"尾巴"朝右下方（= 朝着她）。
+     镜像后她在问号右侧，负角才让尾巴朝她（用户 2026-10-12 反馈）。
+     摇摆：+4° ⇄ -20°（**跨过直立方向**、幅度 24°），周期 4s ——
+     用户："应该左右摇晃一次，而不是只向左摇一次"，且"摇晃幅度太小"。
+     摆到 +4° 那侧时尾巴稍微离开她一点（摆动过程允许），静止基准仍朝她。 */
+  transform: rotate(-8deg);
+  transform-origin: 50% 62%;
+  animation: qmarkSway 4s ease-in-out infinite;
 }
 
 @keyframes qmarkSway {
   0%,
   100% {
-    transform: rotate(-6deg) translateY(0);
+    transform: rotate(4deg) translateY(0);
   }
   50% {
-    transform: rotate(-14deg) translateY(-3%);
+    transform: rotate(-20deg) translateY(-5%);
   }
 }
 

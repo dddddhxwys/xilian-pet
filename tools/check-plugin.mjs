@@ -4793,16 +4793,20 @@ check('问号镜像适配接线：setExpression 走纯函数 + DOM 问号用模�
   assert.ok(/setMirror[\s\S]{0,600}setExpression\(mapped\.expression/.test(live2d), 'setMirror 后要重放当前状态表情')
 })
 
-check('问号角度朝她 + 慢慢摇摆（用户 2026-10-12："尾部应该微微朝向昔涟"、"应该慢慢摇动"）', () => {
+check('问号：朝她 / 离她别太远 / 左右各摇一次且幅度够（用户 2026-10-12 三轮反馈）', () => {
   const css = readFileSync(new URL('../packages/pet-shell/renderer/pet.css', import.meta.url), 'utf8')
   const block = css.match(/#questionMark\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
   assert.ok(block.length > 0, '应能定位 #questionMark 规则')
-  // 角度必须是**负角**（逆时针）：镜像后她在问号右侧，负角才让"尾巴"朝她
+  // ① 基础角必须是负角（逆时针）：镜像后她在问号右侧，负角才让"尾巴"朝她
   const base = block.match(/transform:\s*rotate\((-?[\d.]+)deg\)/)
   assert.ok(base, '#questionMark 必须有基础旋转角')
   assert.ok(Number(base[1]) < 0, `基础角度必须为负（朝她），实际 ${base[1]}deg`)
-  assert.ok(Number(base[1]) <= -6, `角度太小看不出来，至少 -6°，实际 ${base[1]}deg`)
-  // 摇摆动画：keyframes 存在、被引用、角度在负区间摆动、周期足够慢（>=2s）
+  // ② 位置：不能离她太远（她头中心约 50%，问号中心应在 25%~45%）
+  const left = Number(block.match(/left:\s*([\d.]+)%/)?.[1])
+  const width = Number(block.match(/width:\s*([\d.]+)%/)?.[1])
+  const centerPct = left + width / 2
+  assert.ok(centerPct >= 25 && centerPct <= 45, `问号中心 x 应在 25%~45%（离她别太远），实际 ${centerPct.toFixed(1)}%`)
+  // ③ 摇摆：周期够慢、幅度够大，而且**跨到直立方向两侧**（左右各摇一次，不是只向一边）
   assert.ok(/@keyframes qmarkSway/.test(css), '必须有 qmarkSway 摇摆动画')
   assert.ok(/animation:\s*qmarkSway\s+([\d.]+)s/.test(block), '#questionMark 必须引用 qmarkSway 动画')
   const period = Number(block.match(/animation:\s*qmarkSway\s+([\d.]+)s/)?.[1])
@@ -4810,8 +4814,9 @@ check('问号角度朝她 + 慢慢摇摆（用户 2026-10-12："尾部应该微�
   const swayBlock = css.match(/@keyframes qmarkSway\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
   const angles = [...swayBlock.matchAll(/rotate\((-?[\d.]+)deg\)/g)].map((m) => Number(m[1]))
   assert.ok(angles.length >= 2, 'keyframes 里至少要有两个关键角度')
-  assert.ok(angles.every((a) => a < 0), `摇摆过程也必须保持在"朝她"一侧（全负角），实际 ${angles.join(',')}`)
-  assert.ok(Math.max(...angles) - Math.min(...angles) >= 3, `摆动幅度至少 3°，实际 ${Math.max(...angles) - Math.min(...angles)}°`)
+  const amplitude = Math.max(...angles) - Math.min(...angles)
+  assert.ok(amplitude >= 12, `摆动幅度至少 12°（用户说原来太小），实际 ${amplitude}°`)
+  assert.ok(Math.max(...angles) >= 0, `摆动必须跨过直立方向（左右各摇），实际 ${angles.join(',')}`)
 })
 
 console.log(`\n${'─'.repeat(56)}`)
