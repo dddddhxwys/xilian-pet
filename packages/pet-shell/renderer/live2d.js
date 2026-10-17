@@ -70,6 +70,8 @@ import {
 // ⚠️ 必须是**同目录**的相对路径：`pet://app/` 只服务 renderer/ 目录，
 //    `../hit-test.js` 会被解析成 pet://app/hit-test.js → 404 → 整个模块加载失败 → 静默降级成占位图 ✗（实机踩过）
 import { PART_NAMES, PART_ZONES, pickPartAt, rawToLocal } from './hit-math.js'
+// 构图变换（含镜像）的纯函数：坐标算错是镜像最典型的 bug，单独抽出来用 Node 行为断言钉死
+import { fitTransform } from './mirror-math.js'
 
 /**
  * ⚠️ 这个模型同一时刻**只能有一个表情生效** ——
@@ -293,6 +295,15 @@ function measureAndFitContent() {
 let contentLocal = null
 
 /**
+ * 当前是否左右镜像（阶段 4）。
+ *
+ * 实现方式：**镜像渲染**（PIXI 的 scaleX 取负），而不是给画布加 CSS transform ——
+ * 这样画布位图本身就是镜像后的，`readAlpha()` 取到的命中掩码**自动也是镜像的**，
+ * 点击/拖拽与画面对应，不需要额外翻转映射（翻转映射正是这类功能最容易错的地方）。
+ */
+let mirrorMode = false
+
+/**
  * 按"所有采样帧包围盒的并集"重新构图。
  *
  * 为什么取并集：模型一直在动（荡秋千时翅膀会甩开），
@@ -383,22 +394,24 @@ function layoutFromContent() {
     state.log(`渲染器 resize 失败：${error.message}`)
   }
 
-  const availW = (cssW - FIT_MARGIN_PX * 2) * FIT_FILL
-  const availH = (cssH - FIT_MARGIN_PX * 2) * FIT_FILL
-  const s2 = Math.min(availW / contentLocal.w, availH / contentLocal.h)
-
-  model.scale.set(s2)
-  const dX = (cssW - contentLocal.w * s2) / 2 // 水平居中
+  // 构图变换（含镜像）算在纯函数里：坐标算错是镜像最典型的 bug，Node 里有行为断言
+  const fit = fitTransform(contentLocal, cssW, cssH, {
+    mirror: mirrorMode,
+    marginPx: FIT_MARGIN_PX,
+    fill: FIT_FILL,
+  })
+  const s2 = fit.scale
   const dY = cssH - FIT_MARGIN_PX - contentLocal.h * s2 // 贴底（像站在桌面上）
-  model.position.set(dX - contentLocal.x * s2, dY - contentLocal.y * s2)
+  model.scale.set(fit.scaleX, fit.scaleY)
+  model.position.set(fit.posX, fit.posY)
   // ⚠️ 记下"构图给出的基准位置/旋转" —— "被弹"的位移是**相对它**的偏移。
   //    之前是"弹的时候记一份当时的变换当基准"，结果：
   //    弹的过程中再点一次（或构图在此期间重跑）→ 基准被记成**偏移后**的位置
   //    → 弹完还原到错位置 → 越来越偏、最后跑出窗口（用户实测："显示不完全"）✗
   fitBase = { x: model.position.x, y: model.position.y, rotation: model.rotation }
 
-  // 参数指纹：内容尺寸 / 舞台 / 缩放。只有它变了才值得记一行
-  const layoutStamp = `${(contentLocal.w * s2).toFixed(0)}×${(contentLocal.h * s2).toFixed(0)}@${cssW}×${cssH}/${s2.toFixed(4)}`
+  // 参数指纹：内容尺寸 / 舞台 / 缩放 / 镜像。只有它变了才值得记一行
+  const layoutStamp = `${(contentLocal.w * s2).toFixed(0)}×${(contentLocal.h * s2).toFixed(0)}@${cssW}×${cssH}/${s2.toFixed(4)}${mirrorMode ? '/mirror' : ''}`
   if (layoutStamp === lastLayoutStamp) {
     suppressedLayouts++
   } else {
@@ -410,7 +423,7 @@ function layoutFromContent() {
     lastLayoutStamp = layoutStamp
     state.log(
       `构图：内容 ${(contentLocal.w * s2).toFixed(0)}×${(contentLocal.h * s2).toFixed(0)} CSS px / ` +
-        `舞台 ${cssW}×${cssH}，scale=${s2.toFixed(4)}，上方留白 ${dY.toFixed(0)}px`,
+        `舞台 ${cssW}×${cssH}，scale=${s2.toFixed(4)}，上方留白 ${dY.toFixed(0)}px${mirrorMode ? '，镜像' : ''}`,
     )
   }
 
@@ -435,6 +448,20 @@ function layoutFromContent() {
       }, 120)
     })
   }
+}
+
+/**
+ * 设置左右镜像（阶段 4）。
+ *
+ * 镜像 = **镜像渲染**（PIXI scaleX 取负），画布位图本身翻过来，
+ * 所以 `readAlpha()` 出来的命中掩码自动也是镜像的 —— 不需要额外翻转点击映射。
+ */
+export function setMirror(value) {
+  const next = value === true
+  if (next === mirrorMode) return
+  mirrorMode = next
+  state.log(`镜像：${next ? '开' : '关'}`)
+  layoutFromContent()
 }
 
 /** 直接写底层 Cubism 参数（模型内部参数 id） */

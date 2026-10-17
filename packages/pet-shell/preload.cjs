@@ -69,6 +69,11 @@ contextBridge.exposeInMainWorld('xilianPet', {
    * 为什么不用主进程 setOpacity：Windows 的透明窗口上它无效（实测像素无变化）。
    */
   onOpacity: (callback) => ipcRenderer.on('pet:opacity', (_event, value) => callback(Number(value))),
+  /**
+   * 左右镜像（true/false）：**镜像渲染**（PIXI scaleX 取负），
+   * 命中掩码跟着一起翻，所以点击不需要额外映射。
+   */
+  onMirror: (callback) => ipcRenderer.on('pet:mirror', (_event, value) => callback(value === true)),
   /** 请主进程立刻截一张自检截图（用于精确捕捉动作的关键帧） */
   snapshotNow: () => ipcRenderer.send('pet:snapshot-now'),
   /** 通知主进程：渲染端 handler 已注册完毕，可以补发最近状态了 */

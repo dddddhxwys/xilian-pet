@@ -166,6 +166,63 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--xl-text-2);
 }
 
+/* 自动朝向开着时，"左右翻转"这一行会显得灰 —— 让用户知道它被覆盖了 */
+.row.muted {
+  opacity: 0.6;
+}
+
+/* 开关（左右翻转 / 自动朝向）：珍珠白小胶囊，不用系统 checkbox 的蓝 */
+.switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 36px;
+  height: 20px;
+  margin-left: auto;
+  flex: none;
+  cursor: pointer;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch i {
+  position: relative;
+  display: block;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--xl-line);
+  border: 1px solid var(--xl-line-2);
+  transition: background 140ms ease-out;
+}
+
+.switch i::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--xl-white);
+  box-shadow: 0 1px 4px rgba(46, 42, 51, 0.18);
+  transition: transform 140ms ease-out;
+}
+
+.switch input:checked + i {
+  background: var(--xl-grad-accent);
+  border-color: var(--xl-accent);
+}
+
+.switch input:checked + i::after {
+  transform: translateX(16px);
+}
+
 footer {
   position: relative;
   display: flex;

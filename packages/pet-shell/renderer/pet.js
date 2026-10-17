@@ -771,6 +771,15 @@ async function startLive2D() {
     if (stageEl) stageEl.style.opacity = String(next)
   })
 
+  // 左右镜像：交给 live2d 镜像渲染（命中掩码会自动一起翻）
+  api.onMirror?.((value) => {
+    try {
+      live2d?.setMirror?.(value === true)
+    } catch (error) {
+      api.log(`镜像失败：${error.message}`)
+    }
+  })
+
   // 兜底：无论成功失败，8 秒内一定要放行窗口显示，
   // 免得构图回调因为任何意外没触发，窗口永远不出现。
   setTimeout(signalFitReady, 8000)

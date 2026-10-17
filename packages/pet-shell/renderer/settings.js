@@ -7,6 +7,8 @@ const scaleEl = document.getElementById('scale')
 const scaleValEl = document.getElementById('scaleVal')
 const opacityEl = document.getElementById('opacity')
 const opacityValEl = document.getElementById('opacityVal')
+const mirrorEl = document.getElementById('mirror')
+const autoFaceEl = document.getElementById('autoFace')
 const noteEl = document.getElementById('note')
 const noteDefault = noteEl.textContent
 
@@ -15,17 +17,21 @@ const fmtPercent = (value) => `${Math.round(Number(value) * 100)}%`
 
 /**
  * 把主进程返回的状态画出来。
- * ⚠️ 滑杆值**必须**用主进程规范化后的值回填（它会把越界值夹回范围内），
+ * ⚠️ 控件的值**必须**用主进程规范化后的值回填（它会把越界值夹回范围内），
  *    否则界面和真实设置会分叉。
  */
 function paint(state) {
   if (!state) return
   versionEl.textContent = `v${state.appVersion}`
-  const { scale = 1, opacity = 1 } = state.settings?.appearance ?? {}
+  const { scale = 1, opacity = 1, mirror = false, autoFace = true } = state.settings?.appearance ?? {}
   scaleEl.value = String(scale)
   scaleValEl.textContent = fmtScale(scale)
   opacityEl.value = String(opacity)
   opacityValEl.textContent = fmtPercent(opacity)
+  mirrorEl.checked = mirror === true
+  autoFaceEl.checked = autoFace === true
+  // 自动朝向开着时，手动翻转会被覆盖 —— 界面上说清楚，避免"点了没反应"
+  mirrorEl.closest('.row').classList.toggle('muted', autoFaceEl.checked)
 }
 
 /** 顶部提示条，1.6s 后恢复原文 */
@@ -62,6 +68,22 @@ function wireSlider(input, valueEl, format, field, onDone) {
 
 wireSlider(scaleEl, scaleValEl, fmtScale, 'scale')
 wireSlider(opacityEl, opacityValEl, fmtPercent, 'opacity', () => flashNote('不透明度已更新'))
+
+// ── 开关（左右翻转 / 自动朝向）──────────────────────────────────────
+/** 给一个 checkbox 接上"改动即写盘 + 回填" */
+function wireToggle(input, field, onDone) {
+  input.addEventListener('change', async () => {
+    try {
+      paint(await api.patch({ appearance: { [field]: input.checked } }))
+      onDone?.()
+    } catch (error) {
+      flashNote(`保存失败：${error?.message ?? error}`)
+    }
+  })
+}
+
+wireToggle(mirrorEl, 'mirror', () => flashNote(mirrorEl.checked ? '已左右翻转' : '已恢复朝向'))
+wireToggle(autoFaceEl, 'autoFace', () => flashNote(autoFaceEl.checked ? '自动朝向已开启' : '自动朝向已关闭（可用手动翻转）'))
 
 document.getElementById('reset').addEventListener('click', async () => {
   try {

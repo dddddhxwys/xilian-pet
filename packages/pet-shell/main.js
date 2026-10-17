@@ -62,8 +62,8 @@ const HEIGHT = Number(process.env.PET_HEIGHT ?? 300)
 // ── 设置 + 托盘（阶段 2：设置的读写已接上，但**还没影响任何行为**）──
 /** 设置窗尺寸（阶段 2 只有「关于」，先给紧凑高度；阶段 4 接外观/行为后会加高） */
 const SETTINGS_WIDTH = 376
-/** 阶段 4：多了「外观」一节（大小 / 不透明度）→ 卡片 208 → 252 → 300（实测不溢出，见接手报告） */
-const SETTINGS_HEIGHT = 300
+/** 阶段 4：外观一节（大小 / 不透明度 / 左右翻转 / 自动朝向）→ 卡片 208 → 252 → 300 → 384 */
+const SETTINGS_HEIGHT = 384
 /** 设置小窗：关闭即销毁（下次重开重新读设置） */
 let settingsWin = null
 /** 托盘：整个进程一个 */
@@ -82,6 +82,62 @@ let settings = defaultSettings()
  * 而窗口尺寸 = 基准 260×300 × 这个倍数。只在 applyScale()/设置变更时同步，别处只读。
  */
 let currentScale = 1
+
+// ── 左右镜像 / 自动朝向（阶段 4）────────────────────────────────────
+/**
+ * 「自动朝向」的**当前朝向**（不持久化，重启后从 false 重新跟随鼠标）。
+ * 手动「左右翻转」存的是 settings.appearance.mirror；两者关系见 effectiveMirrorState()。
+ */
+let autoMirrorState = false
+/** 自动朝向的防抖状态：{ value, since }；用户明确要求 300ms 防抖（鼠标快速划过时不来回翻） */
+let autoMirrorPending = null
+const MIRROR_DEBOUNCE_MS = 300
+
+/**
+ * 实际生效的镜像值：
+ *  - `autoFace` 打开 → 听自动朝向；
+ *  - 否则 → 用设置里的手动「左右翻转」。
+ * 这样两个开关不会互相打架（自动开着时手动翻转不生效，UI 里有提示）。
+ */
+function effectiveMirrorState() {
+  return settings.appearance.autoFace ? autoMirrorState : settings.appearance.mirror
+}
+
+/** 把当前镜像值发给渲染端（幂等；只在值变化时由调用方触发） */
+function sendMirror(win, reason) {
+  if (win.isDestroyed()) return
+  const value = effectiveMirrorState()
+  if (!win.webContents.isDestroyed()) win.webContents.send('pet:mirror', value)
+  log(`镜像：${value ? '开' : '关'}（${reason}）`)
+}
+
+/**
+ * 自动朝向：光标在她**左侧**就镜像（脸朝左），右侧就翻回来。
+ *
+ * 带 300ms 防抖：光标必须"稳定在另一侧"满 300ms 才真的翻，避免快速划过时抽筋。
+ * ⚠️ 方向约定（左→镜像开）是推断的，用户实机确认若感觉反了，把比较改成 `>` 即可（一行）。
+ */
+function maybeAutoFace(win, cursor) {
+  if (!settings.appearance.autoFace) {
+    autoMirrorPending = null
+    return
+  }
+  const b = win.getBounds()
+  const want = cursor.x < b.x + b.width / 2
+  if (want === autoMirrorState) {
+    autoMirrorPending = null
+    return
+  }
+  const now = Date.now()
+  if (autoMirrorPending === null || autoMirrorPending.value !== want) {
+    autoMirrorPending = { value: want, since: now }
+    return
+  }
+  if (now - autoMirrorPending.since < MIRROR_DEBOUNCE_MS) return
+  autoMirrorState = want
+  autoMirrorPending = null
+  sendMirror(win, '自动朝向')
+}
 
 // ── Live2D 模型目录 ─────────────────────────────────────────────────
 // 默认在仓库内的 assets/live2d/Cyrene（2026-10-06 起模型已随仓库入库，经作者授权；见 NOTICE.md 第四节）。
@@ -607,6 +663,8 @@ function startHitTestLoop(win) {
       return
     }
     const p = screen.getCursorScreenPoint()
+    // 自动朝向：每帧顺手判一次（内部有 300ms 防抖，不需要额外定时器）
+    maybeAutoFace(win, p)
     const b = win.getBounds()
     // ⚠️ 映射基准是**渲染端的坐标系**（maskStage），不是窗口的（b）。
     //    两者不一致时以渲染端为准 —— 掩码本来就是照着它的坐标系生成的。
@@ -1257,9 +1315,16 @@ app.whenReady().then(async () => {
       behavior: { ...settings.behavior, ...(src.behavior ?? {}) },
     })
     persistSettings()
-    // 大小 / 不透明度变了就立刻生效（阶段 4 逐项接通；镜像与开关在后续小步里接）
+    // 大小 / 不透明度 / 镜像变了就立刻生效（阶段 4 逐项接通；行为开关在后续小步里接）
     if (settings.appearance.scale !== before.appearance.scale) applyScale(settings.appearance.scale)
     if (settings.appearance.opacity !== before.appearance.opacity) applyOpacity(settings.appearance.opacity)
+    if (
+      settings.appearance.mirror !== before.appearance.mirror ||
+      settings.appearance.autoFace !== before.appearance.autoFace
+    ) {
+      autoMirrorPending = null // 开关变了就重新开始防抖，别沿用旧状态
+      sendMirror(win, settings.appearance.autoFace ? '自动朝向下由鼠标决定' : '手动翻转')
+    }
     return settingsPayload()
   })
   ipcMain.handle('settings:reset', () => {
@@ -1267,6 +1332,8 @@ app.whenReady().then(async () => {
     persistSettings()
     applyScale(settings.appearance.scale)
     applyOpacity(settings.appearance.opacity)
+    autoMirrorPending = null
+    sendMirror(win, '恢复默认')
     log('设置已恢复默认')
     return settingsPayload()
   })
@@ -1369,6 +1436,7 @@ app.whenReady().then(async () => {
     // （applyScale/applyOpacity 在 whenReady 里跑的时候，渲染端还没加载完，会丢）
     if (!win.isDestroyed()) {
       win.webContents.send('pet:opacity', settings.appearance.opacity)
+      win.webContents.send('pet:mirror', effectiveMirrorState())
       win.webContents.send('pet:relayout')
     }
   })

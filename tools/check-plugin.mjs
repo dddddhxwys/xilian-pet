@@ -30,6 +30,7 @@ import {
   pointInDrawableLocal,
   rawToLocal,
 } from '../packages/pet-shell/hit-test.js'
+import { fitTransform } from '../packages/pet-shell/renderer/mirror-math.js'
 import { createSseLink } from '../packages/pet-shell/sse-link.js'
 import { TRAY_TOOLTIP, TOGGLE_SHORTCUT, QUIT_SHORTCUT, buildTrayMenuTemplate, trayActionFor } from '../packages/pet-shell/tray-model.js'
 import {
@@ -4549,7 +4550,8 @@ check('改大小后必须让 Pixi 画布跟随舞台（autoDensity 会把画布�
   // 窗口缩到 156×180 后 stage/body/innerWidth 都变成 156，**只有 canvas 还是 262**，
   // 于是模型按 262 的世界排布、被窗口裁掉右下角。
   const src = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
-  const block = src.match(/function layoutFromContent\(\)[\s\S]*?\n {2}const availW/)
+  // 从 layoutFromContent 开头截到构图变换那一行（之后走纯函数 fitTransform，镜像也在这里接）
+  const block = src.match(/function layoutFromContent\(\)[\s\S]*?\n {2}const fit = fitTransform/)
   assert.ok(block, '应能定位 layoutFromContent 的开头')
   assert.ok(/getElementById\('stage'\)/.test(block[0]), '舞台尺寸必须读 #stage')
   assert.doesNotMatch(block[0], /canvas\.clientWidth\s*\|\|/, '不能再从 canvas.clientWidth 读舞台尺寸（会被 autoDensity 定死）')
@@ -4592,6 +4594,70 @@ check('不透明度必须走渲染端（windows 透明窗上 setOpacity 无效�
   const petJs = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
   assert.ok(/api\.onOpacity\?\.\(/.test(petJs), 'pet.js 必须订阅 pet:opacity')
   assert.ok(/style\.opacity\s*=\s*String\(next\)/.test(petJs), 'pet.js 必须把透明度写到 #stage.style.opacity')
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[18] 阶段 4 · 左右镜像（构图变换的纯函数 + 接线护栏）')
+
+check('镜像构图：非镜像时包围盒水平居中、贴底', () => {
+  const content = { x: -80, y: -50, w: 200, h: 100 }
+  const t = fitTransform(content, 300, 300, { marginPx: 6, fill: 0.94 })
+  // scale = min((300-12)*0.94/200, (300-12)*0.94/100) = 1.3536
+  assert.ok(Math.abs(t.scale - 1.3536) < 1e-3, `scale=${t.scale}`)
+  assert.equal(t.scaleX, t.scale, '非镜像 scaleX 必须为正')
+  // 包围盒左边界 = dX = 14.64，右边界 = dX + w*scale
+  const left = t.posX + content.x * t.scaleX
+  const right = t.posX + (content.x + content.w) * t.scaleX
+  assert.ok(Math.abs(left - 14.64) < 1e-2, `左边界 ${left}`)
+  assert.ok(Math.abs(right - (300 - 14.64)) < 1e-2, `右边界 ${right}`)
+  // 贴底：包围盒下边界 = cssH - margin
+  const bottom = t.posY + (content.y + content.h) * t.scaleY
+  assert.ok(Math.abs(bottom - (300 - 6)) < 1e-2, `下边界 ${bottom}`)
+})
+
+check('镜像构图：以包围盒为轴左右翻 —— 局部左侧的点显示在右侧，且不做左右位移', () => {
+  const content = { x: -80, y: -50, w: 200, h: 100 }
+  const plain = fitTransform(content, 300, 300, { marginPx: 6, fill: 0.94 })
+  const mirrored = fitTransform(content, 300, 300, { marginPx: 6, fill: 0.94, mirror: true })
+  // scaleX 取负、scaleY 不变
+  assert.equal(mirrored.scaleX, -mirrored.scale)
+  assert.equal(mirrored.scaleY, mirrored.scale)
+  // 关键：包围盒**占的位置不变**（左 14.64 / 右 285.36），只是内部左右互换。
+  // ⚠️ 镜像时 scaleX 是负的，左右两个角算出来的顺序会反过来 → 必须取 min/max
+  const screenX = (t, localX) => t.posX + localX * t.scaleX
+  const box = (t) => {
+    const xs = [screenX(t, content.x), screenX(t, content.x + content.w)]
+    return { left: Math.min(...xs), right: Math.max(...xs) }
+  }
+  const a = box(plain)
+  const b = box(mirrored)
+  assert.ok(Math.abs(a.left - b.left) < 1e-2 && Math.abs(a.right - b.right) < 1e-2, '镜像前后包围盒位置必须一致')
+  // 行为断言：内容左侧的点（local x = content.x）显示在**右边**，右侧的点显示在左边
+  assert.ok(screenX(mirrored, content.x) > screenX(mirrored, content.x + content.w), '镜像后左变右、右变左')
+  assert.ok(Math.abs(screenX(plain, content.x) - a.left) < 1e-2, '非镜像：左点仍在左')
+  // 垂直完全不受镜像影响（否则"站在桌面上"会跳）
+  assert.equal(plain.posY, mirrored.posY)
+  assert.equal(plain.scaleY, mirrored.scaleY)
+})
+
+check('镜像接线：主进程算朝向（300ms 防抖）+ 渲染端镜像渲染 + 掩码自动一致', () => {
+  const main = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+  assert.ok(/const MIRROR_DEBOUNCE_MS = 300/.test(main), '自动朝向必须 300ms 防抖（用户明确要求）')
+  assert.ok(/function effectiveMirrorState\(\)/.test(main), '必须有"手动/自动"合并逻辑')
+  assert.ok(/autoFace \? autoMirrorState : settings\.appearance\.mirror/.test(main), '自动开启时以自动朝向为准')
+  assert.ok(/function maybeAutoFace\(/.test(main) && /maybeAutoFace\(win, p\)/.test(main), '命中循环里要驱动自动朝向')
+  assert.ok(/send\('pet:mirror'/.test(main), '主进程要把镜像值发给渲染端')
+  const live2d = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
+  assert.ok(/export function setMirror\(/.test(live2d), 'live2d 必须导出 setMirror()')
+  assert.ok(/fitTransform\(contentLocal, cssW, cssH/.test(live2d), '构图必须走纯函数 fitTransform（可测）')
+  assert.ok(/model\.scale\.set\(fit\.scaleX, fit\.scaleY\)/.test(live2d), '镜像必须落在 scaleX 上（画布位图一起翻，掩码自动一致）')
+  const preload = readFileSync(new URL('../packages/pet-shell/preload.cjs', import.meta.url), 'utf8')
+  assert.ok(/onMirror:/.test(preload), 'preload 必须暴露 onMirror')
+  const petJs = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+  assert.ok(/api\.onMirror\?\.\(/.test(petJs), 'pet.js 必须订阅 pet:mirror')
+  const html = readFileSync(new URL('../packages/pet-shell/renderer/settings.html', import.meta.url), 'utf8')
+  assert.ok(/id="mirror"/.test(html), '设置窗必须有「左右翻转」开关')
+  assert.ok(/id="autoFace"/.test(html), '设置窗必须有「自动朝向」开关')
 })
 
 console.log(`\n${'─'.repeat(56)}`)
