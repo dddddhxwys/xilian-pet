@@ -522,6 +522,7 @@ function syncDomQuestionMark(restartFlash = false) {
   const flashing = Date.now() < questionFlashUntil
   const persistent = state.currentState === 'question'
   const want = mirrorMode && (flashing || persistent)
+  const justShown = want && el.hidden
   if (!want) {
     el.hidden = true
     el.classList.remove('flash', 'loop')
@@ -533,6 +534,12 @@ function syncDomQuestionMark(restartFlash = false) {
   el.classList.remove('flash', 'loop')
   if (changed || restartFlash) void el.offsetWidth // 强制 reflow，让动画从头开始
   el.classList.add(mode)
+  // 刚显示时清掉平滑状态：否则会从"上一次的位置"滑过去（看起来像甩了一下）
+  if (justShown) {
+    qmarkSmooth = null
+    qmarkFaceOffset = null
+    qmarkLastSize = { w: 0, h: 0 }
+  }
   updateQuestionMarkPosition()
 }
 
@@ -568,15 +575,30 @@ const QMARK_LOCAL_H = 32.8 / 0.07
  * 为什么不能用模型容器：她的呼吸 / 歪头 / 摆身都是**参数级变形**（ParamAngle 等），
  * 模型容器（model.position/scale）几乎不动，用容器算出来的位置等于钉死。
  * 所以每帧从 Cubism 读**脸部画层的顶点**（已含变形），算脸中心，再叠一个固定的局部偏移。
- * 只取稳定部件（脸/眉/眼/嘴），别把"闪耀/开心"这类会开关的特效层算进来，否则中心会跳。
+ *
+ * ⚠️ **只跟踪 `Part18 脸`（脸基座）**：早先还加了眉/眼/嘴，结果**眨眼和口型**会把平均中心
+ * 每帧拉一下（2026-10-12 用户："问号在播动画的时候一直在颤动"）—— 眼睛画层在眨眼时顶点会变，
+ * 平均中心就跟着抖。脸基座只随"头怎么动"变，不随表情抖。
  */
-const QMARK_TRACK_PARTS = new Set(['Part18', 'Part6', 'Part11', 'Part32'])
+const QMARK_TRACK_PARTS = new Set(['Part18'])
 /** 局部坐标里的「问号锚点 - 脸中心」；第一次定位时算出来，之后固定 */
 let qmarkFaceOffset = null
+/**
+ * 位置**平滑**：脸中心每帧有物理/采样的微抖（实测帧间最大 0.31px），直接写到 left/top 会"颤"。
+ * 指数平滑（每帧向目标靠近 18%）滤掉微抖，同时她动作很慢（~1px/s），跟得上。
+ */
+let qmarkSmooth = null
+const QMARK_SMOOTH = 0.18
+/** 上次写过的尺寸：避免每帧重写 width/height 导致图片被反复重采样（另一种"颤"） */
+let qmarkLastSize = { w: 0, h: 0 }
 
 /** 每 0.5 秒打印一次问号位置（PET_QMARK_TRACE=1）——排查"不跟着动 / 不摇"这类肉眼判断 */
 let qmarkTrace = false
 let qmarkTraceAt = 0
+/** 诊断用：一个日志窗口内"相邻帧之间位置的最大跳变"（颤抖/抖动的量化指标） */
+let qmarkTraceMaxDelta = 0
+let qmarkTracePrevX = null
+let qmarkTracePrevY = null
 
 /** 脸部当前中心（模型局部像素；已含变形） */
 function faceCenterLocal() {
@@ -618,13 +640,25 @@ function updateQuestionMarkPosition() {
     qmarkFaceOffset = { x: anchor.x - face.x, y: anchor.y - face.y }
   }
   const target = face && qmarkFaceOffset ? { x: face.x + qmarkFaceOffset.x, y: face.y + qmarkFaceOffset.y } : anchor
-  const point = model.toGlobal(target)
+  const raw = model.toGlobal(target)
+  // 平滑：滤掉帧间微抖（0.31px 那种），否则小图上看起来就是"一直在颤"
+  if (!qmarkSmooth) qmarkSmooth = { x: raw.x, y: raw.y }
+  else {
+    qmarkSmooth.x += (raw.x - qmarkSmooth.x) * QMARK_SMOOTH
+    qmarkSmooth.y += (raw.y - qmarkSmooth.y) * QMARK_SMOOTH
+  }
+  // 位置走合成层 translate3d（比每帧改 left/top 稳：不触发布局、也不重新采样）
+  el.style.transform = `translate3d(${qmarkSmooth.x.toFixed(2)}px, ${qmarkSmooth.y.toFixed(2)}px, 0) translate(-50%, -50%)`
+  // 尺寸只在模型缩放真的变了才写（每帧重写 width/height 会让图片反复重采样 → 颤）
   const sx = Math.abs(model.scale.x)
   const sy = Math.abs(model.scale.y)
-  el.style.left = `${point.x}px`
-  el.style.top = `${point.y}px`
-  el.style.width = `${QMARK_LOCAL_W * sx}px`
-  el.style.height = `${QMARK_LOCAL_H * sy}px`
+  const w = QMARK_LOCAL_W * sx
+  const h = QMARK_LOCAL_H * sy
+  if (Math.abs(w - qmarkLastSize.w) > 0.01 || Math.abs(h - qmarkLastSize.h) > 0.01) {
+    qmarkLastSize = { w, h }
+    el.style.width = `${w}px`
+    el.style.height = `${h}px`
+  }
   if (qmarkTrace && Date.now() - qmarkTraceAt > 500) {
     qmarkTraceAt = Date.now()
     const angle = (() => {
@@ -634,8 +668,22 @@ function updateQuestionMarkPosition() {
       return Math.round((Math.atan2(m.b, m.a) * 180) / Math.PI)
     })()
     state.log(
-      `问号 x=${point.x.toFixed(1)} y=${point.y.toFixed(1)} 角度=${angle}° 脸中心=(${face ? face.x.toFixed(0) : '-'},${face ? face.y.toFixed(0) : '-'})`,
+      `问号 x=${qmarkSmooth.x.toFixed(1)} y=${qmarkSmooth.y.toFixed(1)} 角度=${angle}° 抖动=${qmarkTraceMaxDelta.toFixed(2)}px 脸中心=(${face ? face.x.toFixed(0) : '-'},${face ? face.y.toFixed(0) : '-'})`,
     )
+  }
+  // 抖动量化：相邻帧之间**显示位置**的跳变（<0.5px 肉眼基本看不出来；>1px 会明显"颤"）
+  if (qmarkTrace) {
+    if (qmarkTracePrevX !== null) {
+      qmarkTraceMaxDelta = Math.max(
+        qmarkTraceMaxDelta,
+        Math.abs(qmarkSmooth.x - qmarkTracePrevX),
+        Math.abs(qmarkSmooth.y - qmarkTracePrevY),
+      )
+    }
+    qmarkTracePrevX = qmarkSmooth.x
+    qmarkTracePrevY = qmarkSmooth.y
+  } else {
+    qmarkTraceMaxDelta = 0
   }
 }
 

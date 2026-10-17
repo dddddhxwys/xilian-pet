@@ -101,14 +101,16 @@ body {
    ⚠️ 不要给图片加 scaleX(-1)：这张图存在的意义就是"字形不镜像"。 */
 #questionMark {
   position: absolute;
-  /* 首帧之前（JS 还没定位时）的兜底位置：她头附近 */
-  left: 32%;
-  top: 48%;
+  /* JS 用 translate3d(中心点) + translate(-50%,-50%) 定位，所以基准点在左上角 (0,0) */
+  left: 0;
+  top: 0;
   z-index: 2;
   width: 10.46%;
   aspect-ratio: 34 / 41;
-  /* 让 left/top 指向"问号中心"，JS 每帧写的是模型变换算出来的中心点 */
-  transform: translate(-50%, -50%);
+  /* 交给合成层：避免每帧改 left/top 触发重排 */
+  will-change: transform;
+  /* 兜底（JS 还没定位时）：她头附近。JS 每一帧都会覆盖这个 transform */
+  transform: translate(32%, 48%) translate(-50%, -50%);
   pointer-events: none;
   user-select: none;
 }

@@ -4804,9 +4804,11 @@ check('问号：朝她 / 跟着她动 / 左右各摇一次且幅度够（用户 
   assert.ok(base, '.qmark-inner 必须有基础旋转角')
   assert.ok(Number(base[1]) < 0, `基础角度必须为负（朝她），实际 ${base[1]}deg`)
   // ② 兜底位置：不能离她太远（她头中心约 50%，问号中心应在 25%~45%）
-  const left = Number(block.match(/left:\s*([\d.]+)%/)?.[1])
+  //    ⚠️ 定位已改成交给 JS 的 translate3d（每帧写），CSS 里只剩"首帧兜底"的 translate(x%,y%)
+  const fallback = block.match(/transform:\s*translate\(([\d.]+)%,\s*([\d.]+)%\)/)
+  assert.ok(fallback, '#questionMark 必须有首帧兜底位置（translate 百分比）')
   const width = Number(block.match(/width:\s*([\d.]+)%/)?.[1])
-  const centerPct = left + width / 2
+  const centerPct = Number(fallback[1]) + width / 2
   assert.ok(centerPct >= 25 && centerPct <= 45, `问号中心 x 应在 25%~45%（离她别太远），实际 ${centerPct.toFixed(1)}%`)
   // ③ 一次性编排（用户 2026-10-12 定）：先向左晃 → 停一下 → 向右晃 → 到终点淡出
   assert.ok(/@keyframes qmarkSwayOnce/.test(css), '必须有 qmarkSwayOnce（右键一次性编排）')
@@ -4920,6 +4922,24 @@ check('设置窗「行为」一节：控件存在 / 按 behavior 分组写盘 / 
   const main = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
   const height = Number(main.match(/const SETTINGS_HEIGHT = (\d+)/)?.[1])
   assert.ok(height >= 436, `加「行为」一节后窗口高度至少 436（实测内容需要 434），实际 ${height}`)
+})
+
+check('问号不颤动：合成层定位 / 尺寸不每帧重写 / 只跟踪脸基座 / 位置平滑', () => {
+  const live2d = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
+  // 抽搐的三个真实来源（2026-10-12 用户："播动画的时候一直在颤动"）：
+  //   ① 每帧改 left/top → 触发布局；② 每帧重写 width/height → 图片反复重采样；
+  //   ③ 跟踪部件包含眼睛/嘴 → 眨眼、口型把平均中心拉动
+  assert.ok(/translate3d\(/.test(live2d), '位置必须走 translate3d（合成层，不触发布局）')
+  assert.equal(/el\.style\.left\s*=/.test(live2d), false, '不能再每帧写 left（会触发布局）')
+  assert.equal(/el\.style\.top\s*=/.test(live2d), false, '不能再每帧写 top（会触发布局）')
+  assert.ok(/qmarkLastSize/.test(live2d), '尺寸要缓存，只在模型缩放变化时才重写（每帧重写 = 反复重采样 = 颤）')
+  assert.ok(/QMARK_SMOOTH/.test(live2d) && /qmarkSmooth/.test(live2d), '位置要有平滑（滤掉帧间微抖）')
+  assert.ok(
+    /QMARK_TRACK_PARTS = new Set\(\['Part18'\]\)/.test(live2d),
+    '只跟踪 Part18（脸基座）：眼睛/嘴会随眨眼/口型动，算进来中心就会抖',
+  )
+  const css = readFileSync(new URL('../packages/pet-shell/renderer/pet.css', import.meta.url), 'utf8')
+  assert.ok(/#questionMark\s*\{[^}]*will-change:\s*transform/s.test(css), '#questionMark 要 will-change: transform（提示合成层）')
 })
 
 console.log(`\n${'─'.repeat(56)}`)
