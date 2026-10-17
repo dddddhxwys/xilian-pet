@@ -4819,7 +4819,13 @@ check('问号：朝她 / 跟着她动 / 左右各摇一次且幅度够（用户 
   const amplitude = Math.max(...angles) - Math.min(...angles)
   assert.ok(amplitude >= 12, `摆动幅度至少 12°（用户说原来太小），实际 ${amplitude}°`)
   assert.ok(Math.max(...angles) >= 0, `摆动必须跨过直立方向（左右各摇），实际 ${angles.join(',')}`)
-  assert.ok(/translate\(-?\d+%/.test(swayBlock), '摇摆必须带左右位移（纯旋转看不出"左右各摇一次"）')
+  // ④ 圆心必须在**尾巴**（底部那个圆点），不是头部的弯 —— 用户 2026-10-12 明确要求
+  const origin = inner.match(/transform-origin:\s*([\d.]+)%\s+([\d.]+)%/)
+  assert.ok(origin, '.qmark-inner 必须显式写 transform-origin（圆心）')
+  assert.ok(Number(origin[2]) >= 80, `圆心 y 必须在底部（尾巴），实际 ${origin[2]}%`)
+  assert.ok(Number(origin[1]) <= 50, `圆心 x 应在左半边（尾巴圆点位置），实际 ${origin[1]}%`)
+  // ⑤ 不能再叠整体 translate：那会让尾巴也跟着平移，等于圆心跑了
+  assert.equal(/translate\(/.test(swayBlock), false, 'keyframes 不能再有 translate（会让"尾巴"移动）')
 })
 
 check('问号跟随她运动：位置每帧按模型变换重算（DOM 不会自己跟着 Live2D 走）', () => {

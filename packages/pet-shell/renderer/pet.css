@@ -119,20 +119,23 @@ body {
   height: 100%;
   background: url(assets/question-mark.png) center / contain no-repeat;
   /* 角度：-8° 逆时针 → 问号的"尾巴"朝右下方（= 朝着她）。
-     摇摆：+4° ⇄ -20°（跨过直立方向、幅度 24°）+ **左右平移 ±22%**（旋转在小图上只有 3~4px，
-     必须叠加位移才看得出"左右各摇一次"），周期 4s。 */
+     摇摆：+4° ⇄ -20°（跨过直立方向、幅度 24°），周期 4s。
+     ⚠️ 旋转圆心 = **尾巴那个点**（用户 2026-10-12："应该以尾部的点为圆心，而不是头部的弯"）：
+        原图 34×41，尾巴圆点在 (≈12, ≈37) → 35% / 90%。
+        以尾为轴甩，尾部几乎不动、钩子头大幅左右摆 —— 这就是用户要的"挂着摇"。
+     ⚠️ 不要再叠加整体 translate：那会让"尾巴"也跟着平移，等于圆心又跑了。 */
   transform: rotate(-8deg);
-  transform-origin: 50% 62%;
+  transform-origin: 35% 90%;
   animation: qmarkSway 4s ease-in-out infinite;
 }
 
 @keyframes qmarkSway {
   0%,
   100% {
-    transform: rotate(4deg) translate(-22%, 0);
+    transform: rotate(4deg);
   }
   50% {
-    transform: rotate(-20deg) translate(22%, -6%);
+    transform: rotate(-20deg);
   }
 }
 
