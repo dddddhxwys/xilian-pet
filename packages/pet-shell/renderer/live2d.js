@@ -508,13 +508,32 @@ function setExpression(name) {
  */
 let questionFlashUntil = 0
 let questionFlashTimer = null
-function syncDomQuestionMark() {
+/**
+ * 同步 DOM 问号的显隐与**动画模式**。
+ *
+ * 两种模式（用户 2026-10-12 定的编排）：
+ *  - `flash`：右键临时弹的 → 一次性「左晃 → 停 → 右晃 → 到终点淡出」；
+ *  - `loop` ：常驻提问状态（agent 在等你回答）→ 一直轻轻摇，**不能淡出**（否则用户看不到）。
+ * `restartFlash` = true 时强制重启动画（连点右键要重新晃，而不是接着上一次的进度）。
+ */
+function syncDomQuestionMark(restartFlash = false) {
   const el = document.getElementById('questionMark')
   if (!el) return
   const flashing = Date.now() < questionFlashUntil
-  const want = mirrorMode && (flashing || state.currentState === 'question')
-  el.hidden = !want
-  if (want) updateQuestionMarkPosition()
+  const persistent = state.currentState === 'question'
+  const want = mirrorMode && (flashing || persistent)
+  if (!want) {
+    el.hidden = true
+    el.classList.remove('flash', 'loop')
+    return
+  }
+  el.hidden = false
+  const mode = flashing ? 'flash' : 'loop'
+  const changed = !el.classList.contains(mode)
+  el.classList.remove('flash', 'loop')
+  if (changed || restartFlash) void el.offsetWidth // 强制 reflow，让动画从头开始
+  el.classList.add(mode)
+  updateQuestionMarkPosition()
 }
 
 /**
@@ -838,6 +857,8 @@ export function pokeExpression(name, ms = 1700) {
       questionFlashUntil = 0
       syncDomQuestionMark()
     }, Math.max(200, ms))
+    // 连点右键时要从头晃一遍，而不是接着上一次的进度（动画是"一次性"的）
+    syncDomQuestionMark(true)
   }
   setExpression(name)
   clearTimeout(pokeTimer)

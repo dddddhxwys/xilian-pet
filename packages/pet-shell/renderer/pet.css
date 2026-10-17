@@ -119,19 +119,57 @@ body {
   height: 100%;
   background: url(assets/question-mark.png) center / contain no-repeat;
   /* 角度：-8° 逆时针 → 问号的"尾巴"朝右下方（= 朝着她）。
-     摇摆：+4° ⇄ -20°（跨过直立方向、幅度 24°），周期 **2s**。
-     ⚠️ 周期必须**小于右键问号的显示时长**（pet.js 里 `pokeExpression('question', 2400)`）：
-        原来是 4s，而问号只显示 1.7s → 用户只看到"往左摇一次"就消失了
-        （2026-10-12："只有向左晃动的一次"）。周期 2s 能在一个显示周期里看到完整的左右各一次。
      ⚠️ 旋转圆心 = **尾巴那个点**（用户："应该以尾部的点为圆心，而不是头部的弯"）：
         原图 34×41，尾巴圆点在 (≈12, ≈37) → 35% / 90%。
-     ⚠️ 不要再叠加整体 translate：那会让"尾巴"也跟着平移，等于圆心又跑了。 */
+     ⚠️ 不要再叠加整体 translate：那会让"尾巴"也跟着平移，等于圆心又跑了。
+     动画有两种，由 live2d.js 按"临时弹的 / 常驻状态"切换 class：
+       .flash → qmarkSwayOnce（一次性：左晃 → 停 → 右晃 → 到终点淡出）
+       .loop  → qmarkSwayLoop（常驻提问状态：持续轻轻摇，不会消失） */
   transform: rotate(-8deg);
   transform-origin: 35% 90%;
-  animation: qmarkSway 2s ease-in-out infinite;
 }
 
-@keyframes qmarkSway {
+/* 右键临时弹的问号：用户 2026-10-12 要的编排 ——
+   「先向左晃，停一下，然后向右晃，晃到终点后淡出」。
+   时长 2.2s（< 问号显示 2.4s），forward 保持在淡出后的终态。
+   ⚠️ 时间点是按 2.2s 折算的百分比：左晃 0~0.4s、停 0.4~0.9s、右晃 0.9~1.7s、淡出 1.7~2.2s。 */
+#questionMark.flash .qmark-inner {
+  animation: qmarkSwayOnce 2.2s ease-in-out forwards;
+}
+
+@keyframes qmarkSwayOnce {
+  0% {
+    transform: rotate(0deg);
+    opacity: 1;
+  }
+  18% {
+    transform: rotate(-20deg);
+    opacity: 1;
+  }
+  40% {
+    transform: rotate(-20deg);
+    opacity: 1;
+  }
+  76% {
+    transform: rotate(8deg);
+    opacity: 1;
+  }
+  88% {
+    transform: rotate(8deg);
+    opacity: 1;
+  }
+  100% {
+    transform: rotate(8deg);
+    opacity: 0;
+  }
+}
+
+/* 常驻提问状态（agent 在等你回答）：一直轻轻摇，不能淡出（否则用户看不到） */
+#questionMark.loop .qmark-inner {
+  animation: qmarkSwayLoop 2.4s ease-in-out infinite;
+}
+
+@keyframes qmarkSwayLoop {
   0%,
   100% {
     transform: rotate(4deg);
