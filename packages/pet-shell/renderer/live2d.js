@@ -560,12 +560,13 @@ function syncDomQuestionMark(restartFlash = false) {
 const QMARK_ANCHOR_U = 0.8174
 const QMARK_ANCHOR_V = 0.3096
 /**
- * 往她那边挪一点（2026-10-12 用户："问号离昔涟太远"）。
+ * 往她那边挪一点（2026-10-12 用户："问号离昔涟太远"），但**要留出与头发的间距**。
  *
- * 模型问号原位置镜像后大约在舞台 x≈21%，用户觉得太远；这里把它朝她（屏幕右侧）挪
- * ≈11% 的舞台宽度。镜像下"局部 u 变小 → 屏幕 x 变大"，所以是**减**。
+ * 0.11 时问号贴在头发边缘：她的**头发有自己的物理摆动**（实测约 10px），
+ * 于是有时压进去、有时在外面（用户："终点有时候会覆盖到头发上，有时候不会"）。
+ * 现在改成 0.06 —— 比"太远"时的位置近约 14px，同时和头发留出空隙。
  */
-const QMARK_TOWARD_HER_U = 0.11
+const QMARK_TOWARD_HER_U = 0.06
 const QMARK_LOCAL_W = 27.2 / 0.07
 const QMARK_LOCAL_H = 32.8 / 0.07
 
@@ -601,6 +602,158 @@ let qmarkTracePrevX = null
 let qmarkTracePrevY = null
 
 /**
+ * 一次性校准：找出**模型自带问号**的那些画层。
+ *
+ * ⚠️ 实测发现 `Param6` **不是显隐开关**（Param6=1 / =0 的可见画层数完全一样，都是 89 个），
+ *    它是**变形**开关 —— 所以不能靠"可见差集"找，只能比较每个画层在 Param6 两种状态下的
+ *    **中心位置 / 包围盒尺寸**：问号画层的位移/缩放会明显变化，其它画层几乎不动。
+ */
+const glyphCalib = { phase: 'init', frames: 0, stats0: null, stats1: null, drawables: null }
+/** 读所有「部件不透明度」（问号大概率是部件级 opacity 开关，画层 opacity 读不到它） */
+function capturePartOpacities(core) {
+  const count = core.getPartCount?.() ?? 0
+  const out = []
+  for (let i = 0; i < count; i++) out.push(core.getPartOpacityByIndex?.(i) ?? 1)
+  return out
+}
+
+function captureDrawableStats(core) {
+  const canvas = localCanvas()
+  const count = core.getDrawableCount?.() ?? 0
+  const out = []
+  for (let i = 0; i < count; i++) {
+    const opacity = core.getDrawableOpacity?.(i) ?? 1
+    const positions = core.getDrawableVertexPositions?.(i)
+    const vertexCount = core.getDrawableVertexCount?.(i) ?? 0
+    if (!positions || vertexCount < 3) {
+      out.push({ opacity })
+      continue
+    }
+    let sumX = 0
+    let sumY = 0
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (let v = 0; v < vertexCount; v++) {
+      const p = rawToLocal(positions[v * 2], positions[v * 2 + 1], canvas)
+      sumX += p.x
+      sumY += p.y
+      if (p.x < minX) minX = p.x
+      if (p.y < minY) minY = p.y
+      if (p.x > maxX) maxX = p.x
+      if (p.y > maxY) maxY = p.y
+    }
+    out.push({ x: sumX / vertexCount, y: sumY / vertexCount, w: maxX - minX, h: maxY - minY, opacity })
+  }
+  return out
+}
+
+/** 直接按名字应用表情（**绕过镜像映射**）—— 只给校准用，别在业务路径里用 */
+function applyExpressionRaw(name) {
+  const model = state.model
+  if (!model || !name) return
+  try {
+    model.expression(name)
+  } catch (error) {
+    state.log(`[qmark] 校准应用表情 ${name} 失败：${error.message}`)
+  }
+}
+
+function calibrateQuestionGlyph() {
+  const core = state.model?.internalModel?.coreModel
+  if (!core || glyphCalib.phase === 'done') return
+  if (!contentLocal) return
+  glyphCalib.frames++
+  if (glyphCalib.frames < 10) return // 等模型稳定几帧
+  glyphCalib.phase = 'done'
+  // 模型里问号的**设计位置**（从透明底截图反推，见 QMARK_ANCHOR_U/V 注释）：
+  // 屏幕 (205.6,152.4) CSS ↔ 局部坐标 ≈ (3208,1158)。找"包围盒盖住这个点"的画层。
+  const predicted = {
+    x: contentLocal.x + QMARK_ANCHOR_U * contentLocal.w,
+    y: contentLocal.y + QMARK_ANCHOR_V * contentLocal.h,
+  }
+  const canvas = localCanvas()
+  const count = core.getDrawableCount?.() ?? 0
+  const candidates = []
+  for (let i = 0; i < count; i++) {
+    const positions = core.getDrawableVertexPositions?.(i)
+    const vertexCount = core.getDrawableVertexCount?.(i) ?? 0
+    if (!positions || vertexCount < 3) continue
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (let v = 0; v < vertexCount; v++) {
+      const p = rawToLocal(positions[v * 2], positions[v * 2 + 1], canvas)
+      if (p.x < minX) minX = p.x
+      if (p.y < minY) minY = p.y
+      if (p.x > maxX) maxX = p.x
+      if (p.y > maxY) maxY = p.y
+    }
+    const cx = (minX + maxX) / 2
+    const cy = (minY + maxY) / 2
+    const w = maxX - minX
+    const h = maxY - minY
+    const inside = predicted.x >= minX && predicted.x <= maxX && predicted.y >= minY && predicted.y <= maxY
+    const near = Math.hypot(cx - predicted.x, cy - predicted.y) < 250
+    if (inside || near) {
+      const part = core.getPartId?.(core.getDrawableParentPartIndex?.(i)) ?? '?'
+      candidates.push({ index: i, part, cx: Math.round(cx), cy: Math.round(cy), w: Math.round(w), h: Math.round(h), inside })
+    }
+  }
+  // 取"尺寸最小 + 离预测点最近"的那个（问号是一张小图）
+  candidates.sort(
+    (a, b) =>
+      (a.inside ? 0 : 1) - (b.inside ? 0 : 1) ||
+      Math.hypot(a.cx - predicted.x, a.cy - predicted.y) - Math.hypot(b.cx - predicted.x, b.cy - predicted.y),
+  )
+  const chosen = candidates.find((c) => c.w * c.h < 900 * 900) ?? candidates[0] ?? null
+  glyphCalib.drawables = chosen ? [chosen.index] : []
+  // 锚点偏移：初始位置仍然精确等于"模型问号的设计位置"，之后跟着这个画层一起变形/移动
+  glyphCalib.localOffset = chosen ? { x: predicted.x - chosen.cx, y: predicted.y - chosen.cy } : { x: 0, y: 0 }
+  glyphCalib.glyphSizeLocal = chosen ? { w: chosen.w, h: chosen.h } : null
+  state.log(
+    `[qmark] 校准：预测点=(${predicted.x.toFixed(0)},${predicted.y.toFixed(0)})，附近画层 ${candidates.length} 个 → ` +
+      (chosen
+        ? `选 #${chosen.index}[${chosen.part}]@(${chosen.cx},${chosen.cy}) ${(chosen.w * 0.07).toFixed(1)}x${(chosen.h * 0.07).toFixed(1)}CSS 偏移=(${glyphCalib.localOffset.x.toFixed(0)},${glyphCalib.localOffset.y.toFixed(0)})`
+        : '没找到'),
+  )
+}
+
+/** 模型自带问号画层的当前中心（局部像素；每帧随她的变形一起动） */
+function glyphCenterLocal() {
+  const core = state.model?.internalModel?.coreModel
+  if (!core || !glyphCalib.drawables?.length) return null
+  const canvas = localCanvas()
+  let sumX = 0
+  let sumY = 0
+  let n = 0
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const i of glyphCalib.drawables) {
+    const positions = core.getDrawableVertexPositions?.(i)
+    const vertexCount = core.getDrawableVertexCount?.(i) ?? 0
+    if (!positions) continue
+    for (let v = 0; v < vertexCount; v++) {
+      const p = rawToLocal(positions[v * 2], positions[v * 2 + 1], canvas)
+      sumX += p.x
+      sumY += p.y
+      if (p.x < minX) minX = p.x
+      if (p.y < minY) minY = p.y
+      if (p.x > maxX) maxX = p.x
+      if (p.y > maxY) maxY = p.y
+      n++
+    }
+  }
+  if (n === 0) return null
+  return { x: sumX / n, y: sumY / n, w: maxX - minX, h: maxY - minY }
+}
+
+
+/**
  * 脸部**坐标系**：中心 + 朝向（模型局部像素；已含变形）。
  *
  * ⚠️ 为什么需要朝向（2026-10-12 用户："问号并没有跟昔涟协同"）：
@@ -613,7 +766,7 @@ let qmarkTracePrevY = null
  *   θ = 0.5 · atan2(2·Sxy, Sxx − Syy)
  * 这样和变形完全一致（不依赖参数名/符号），镜像由 `model.toGlobal()` 统一处理。
  */
-function faceFrameLocal() {
+function faceFrameLocal(parts = QMARK_TRACK_PARTS) {
   const core = state.model?.internalModel?.coreModel
   if (!core) return null
   const canvas = localCanvas()
@@ -624,7 +777,7 @@ function faceFrameLocal() {
   const points = []
   for (let i = 0; i < count; i++) {
     const partId = core.getPartId?.(core.getDrawableParentPartIndex?.(i))
-    if (!QMARK_TRACK_PARTS.has(partId)) continue
+    if (!parts.has(partId)) continue
     const positions = core.getDrawableVertexPositions?.(i)
     const vertexCount = core.getDrawableVertexCount?.(i) ?? 0
     if (!positions || vertexCount < 1) continue
@@ -661,6 +814,39 @@ function rotateVec(x, y, angle) {
   return { x: x * c - y * s, y: x * s + y * c }
 }
 
+/** 问号可能压到的"她身上"的部件（头发/头饰/背饰/后发/外侧发/头发阴影） */
+const QMARK_HAIRY_PARTS = new Set(['Part7', 'Part8', 'Part9', 'Part10', 'Part22', 'Part30', 'Part31'])
+
+/**
+ * 诊断：问号当前**是否压到头发**（0 = 没压）。
+ *
+ * 做法：取 `.qmark-inner` 的屏幕外接矩形，采样 9 个点 → `model.toLocal()` 换算回模型局部 →
+ * 用**和点击判定同一套** `pickPartAt()` 三角形测试，看命中的部件是不是头发/头饰/背饰。
+ * 为什么要这么测：照片目测分不清"贴着"还是"压着"，而且头发会动 —— 只有逐帧量化才能调出间距。
+ */
+function markOverlapsHair() {
+  const el = document.getElementById('questionMark')
+  const inner = el?.querySelector('.qmark-inner')
+  const model = state.model
+  const core = model?.internalModel?.coreModel
+  if (!inner || !core || el.hidden) return null
+  const rect = inner.getBoundingClientRect()
+  const drawables = collectDrawables(core)
+  const canvas = localCanvas()
+  let hits = 0
+  let total = 0
+  for (const u of [0.12, 0.5, 0.88]) {
+    for (const v of [0.12, 0.5, 0.88]) {
+      const local = model.toLocal({ x: rect.left + rect.width * u, y: rect.top + rect.height * v })
+      if (!local) continue
+      total++
+      const hit = pickPartAt(drawables, local.x, local.y, canvas)
+      if (hit && QMARK_HAIRY_PARTS.has(hit.partId)) hits++
+    }
+  }
+  return { hits, total }
+}
+
 function updateQuestionMarkPosition() {
   const el = document.getElementById('questionMark')
   if (!el || el.hidden) return
@@ -670,16 +856,27 @@ function updateQuestionMarkPosition() {
     x: contentLocal.x + (QMARK_ANCHOR_U - QMARK_TOWARD_HER_U) * contentLocal.w,
     y: contentLocal.y + QMARK_ANCHOR_V * contentLocal.h,
   }
-  // 脸部中心 + 朝向；偏移量换算到**脸坐标系**里（offU 沿脸横轴、offV 沿脸纵轴）
+  // ── 首选：贴住"模型里问号位置上的那个画层" ─────────────────────────────
+  // 它每帧随她的骨骼/物理一起变形 → DOM 问号 = 该画层中心 + 固定偏移，效果就等于
+  // "非镜像时模型自带问号跟着她一起摆"（用户 2026-10-12 原话："就像没有镜像之前那样摆动"）。
+  const glyph = glyphCenterLocal()
+  let target = null
+  if (glyph && glyphCalib.localOffset) {
+    target = { x: glyph.x + glyphCalib.localOffset.x, y: glyph.y + glyphCalib.localOffset.y }
+  }
+  // ── 兜底：脸中心 + 脸坐标系偏移（校准没成功时还能正常显示）─────────────
   const face = faceFrameLocal()
   if (face && qmarkFaceOffset === null) {
     const delta = rotateVec(anchor.x - face.x, anchor.y - face.y, -face.angle)
     qmarkFaceOffset = { u: delta.x, v: delta.y }
   }
-  let target = anchor
-  if (face && qmarkFaceOffset) {
-    const back = rotateVec(qmarkFaceOffset.u, qmarkFaceOffset.v, face.angle)
-    target = { x: face.x + back.x, y: face.y + back.y }
+  if (!target) {
+    if (face && qmarkFaceOffset) {
+      const back = rotateVec(qmarkFaceOffset.u, qmarkFaceOffset.v, face.angle)
+      target = { x: face.x + back.x, y: face.y + back.y }
+    } else {
+      target = anchor
+    }
   }
   const raw = model.toGlobal(target)
   // 平滑：滤掉帧间微抖（0.31px 那种），否则小图上看起来就是"一直在颤"
@@ -702,6 +899,8 @@ function updateQuestionMarkPosition() {
   }
   if (qmarkTrace && Date.now() - qmarkTraceAt > 500) {
     qmarkTraceAt = Date.now()
+    const core = model.internalModel?.coreModel
+    const angleZ = core?.getParameterValueById ? Number(core.getParameterValueById('ParamAngleZ')) : NaN
     const angle = (() => {
       const inner = el.querySelector('.qmark-inner')
       if (!inner) return 0
@@ -716,10 +915,63 @@ function updateQuestionMarkPosition() {
       const dy = qmarkSmooth.y - faceScreen.y
       return { d: Math.hypot(dx, dy), a: (Math.atan2(dy, dx) * 180) / Math.PI }
     })()
+    // 诊断：所有"头发/头饰/背饰"部件的局部横向范围 vs 问号局部 x —— 算"要留多少间距才不压"
+    const hairSpan = (() => {
+      const core = model.internalModel?.coreModel
+      if (!core) return null
+      const canvas = localCanvas()
+      const count = core.getDrawableCount?.() ?? 0
+      const HAIRY = new Set(['Part7', 'Part8', 'Part9', 'Part10', 'Part22', 'Part30', 'Part31'])
+      let minX = Infinity
+      let maxX = -Infinity
+      for (let i = 0; i < count; i++) {
+        const partId = core.getPartId?.(core.getDrawableParentPartIndex?.(i))
+        if (!HAIRY.has(partId)) continue
+        const positions = core.getDrawableVertexPositions?.(i)
+        const vertexCount = core.getDrawableVertexCount?.(i) ?? 0
+        for (let v = 0; v < vertexCount; v++) {
+          const p = rawToLocal(positions[v * 2], positions[v * 2 + 1], canvas)
+          if (p.x < minX) minX = p.x
+          if (p.x > maxX) maxX = p.x
+        }
+      }
+      return Number.isFinite(minX) ? { minX, maxX } : null
+    })()
+    const overlap = markOverlapsHair()
+    // 诊断："她整体动多少" vs "问号动多少" —— 找出问号到底该跟哪个参考点
+    //   身体(Part23) / 秋千(Part5) / 全部画层质心（= 整个人的位置）
+    const bodyStat = faceFrameLocal(new Set(['Part23']))
+    const swingStat = faceFrameLocal(new Set(['Part5']))
+    const allStat = (() => {
+      const core2 = model.internalModel?.coreModel
+      if (!core2) return null
+      const canvas = localCanvas()
+      const count = core2.getDrawableCount?.() ?? 0
+      let sx = 0
+      let sy = 0
+      let n = 0
+      for (let i = 0; i < count; i++) {
+        if (core2.getDrawableDynamicFlagIsVisible && !core2.getDrawableDynamicFlagIsVisible(i)) continue
+        const positions = core2.getDrawableVertexPositions?.(i)
+        const vc = core2.getDrawableVertexCount?.(i) ?? 0
+        if (!positions || vc < 3) continue
+        for (let v = 0; v < vc; v++) {
+          const p2 = rawToLocal(positions[v * 2], positions[v * 2 + 1], canvas)
+          sx += p2.x
+          sy += p2.y
+          n++
+        }
+      }
+      return n > 0 ? { x: sx / n, y: sy / n } : null
+    })()
+    const glyph = glyphCenterLocal()
     state.log(
       `问号 x=${qmarkSmooth.x.toFixed(1)} y=${qmarkSmooth.y.toFixed(1)} 角度=${angle}° 抖动=${qmarkTraceMaxDelta.toFixed(2)}px ` +
         `脸中心=(${face ? face.x.toFixed(0) : '-'},${face ? face.y.toFixed(0) : '-'}) 脸朝向=${face ? ((face.angle * 180) / Math.PI).toFixed(1) : '-'}° ` +
-        `相对脸=${rel ? `${rel.d.toFixed(1)}px@${rel.a.toFixed(1)}°` : '-'}`,
+        `ParamAngleZ=${Number.isFinite(angleZ) ? angleZ.toFixed(1) : '-'} 相对脸=${rel ? `${rel.d.toFixed(1)}px@${rel.a.toFixed(1)}°` : '-'} ` +
+        `身体=(${bodyStat ? bodyStat.x.toFixed(0) : '-'},${bodyStat ? bodyStat.y.toFixed(0) : '-'}) 秋千=(${swingStat ? swingStat.x.toFixed(0) : '-'},${swingStat ? swingStat.y.toFixed(0) : '-'}) 全体=(${allStat ? allStat.x.toFixed(0) : '-'},${allStat ? allStat.y.toFixed(0) : '-'}) ` +
+        `模型问号画层=${glyph ? `(${glyph.x.toFixed(0)},${glyph.y.toFixed(0)}) ${(glyph.w * 0.07).toFixed(1)}x${(glyph.h * 0.07).toFixed(1)}CSS` : '-'} ` +
+        `压发=${overlap ? `${overlap.hits}/${overlap.total}` : '-'}`,
     )
   }
   // 抖动量化：相邻帧之间**显示位置**的跳变（<0.5px 肉眼基本看不出来；>1px 会明显"颤"）
@@ -1216,6 +1468,8 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, handD
   // 状态参数 +（可选）参数采样，都挂在每帧的最后一个时机
   model.internalModel.on('beforeModelUpdate', () => {
     applyState()
+    // 一次性找出"模型自带问号"的画层（之后每帧读它们的实时位置，DOM 问号贴过去）
+    calibrateQuestionGlyph()
     // 镜像问号是 DOM 元素，位置必须**每帧**按模型变换重算，才能跟着她呼吸/动作一起动
     updateQuestionMarkPosition()
     samplerSample(model.internalModel.coreModel)

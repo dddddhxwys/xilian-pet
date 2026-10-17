@@ -4793,100 +4793,85 @@ check('问号镜像适配接线：setExpression 走纯函数 + DOM 问号用模�
   assert.ok(/setMirror[\s\S]{0,600}setExpression\(mapped\.expression/.test(live2d), 'setMirror 后要重放当前状态表情')
 })
 
-check('问号：朝她 / 跟着她动 / 左右各摇一次且幅度够（用户 2026-10-12 多轮反馈）', () => {
+check('问号：不再自己摇（像非镜像那样贴着她动），只保留淡出 + 兜底位置', () => {
   const css = readFileSync(new URL('../packages/pet-shell/renderer/pet.css', import.meta.url), 'utf8')
   const block = css.match(/#questionMark\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
   const inner = css.match(/\.qmark-inner\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
   assert.ok(block.length > 0, '应能定位 #questionMark 规则')
-  assert.ok(inner.length > 0, '应能定位 .qmark-inner 规则（动画必须在内层，避免和定位 transform 打架）')
-  // ① 基础角必须是负角（逆时针）：镜像后她在问号右侧，负角才让"尾巴"朝她
-  const base = inner.match(/transform:\s*rotate\((-?[\d.]+)deg\)/)
-  assert.ok(base, '.qmark-inner 必须有基础旋转角')
-  assert.ok(Number(base[1]) < 0, `基础角度必须为负（朝她），实际 ${base[1]}deg`)
-  // ② 兜底位置：不能离她太远（她头中心约 50%，问号中心应在 25%~45%）
-  //    ⚠️ 定位已改成交给 JS 的 translate3d（每帧写），CSS 里只剩"首帧兜底"的 translate(x%,y%)
+  assert.ok(inner.length > 0, '应能定位 .qmark-inner 规则')
+  // ⚠️ 用户 2026-10-12："就像没有镜像之前那样摆动" —— 非镜像时它只是模型里的一张图，
+  //    不自己旋转/平移。所以 .qmark-inner 必须静止（transform: none），且没有任何 rotate keyframes。
+  assert.ok(/transform:\s*none/.test(inner), '.qmark-inner 必须静止（transform: none）')
+  assert.equal(/@keyframes[^{]*\{[^}]*rotate\(/.test(css), false, '不许再有 rotate keyframes（问号不再自己摇）')
+  assert.equal(/@keyframes[^{]*\{[^}]*translate\(/.test(css), false, '不许再有 translate keyframes（问号不再自己晃）')
+  // 兜底位置：她头附近（首帧 JS 还没定位时）
   const fallback = block.match(/transform:\s*translate\(([\d.]+)%,\s*([\d.]+)%\)/)
   assert.ok(fallback, '#questionMark 必须有首帧兜底位置（translate 百分比）')
   const width = Number(block.match(/width:\s*([\d.]+)%/)?.[1])
   const centerPct = Number(fallback[1]) + width / 2
   assert.ok(centerPct >= 25 && centerPct <= 45, `问号中心 x 应在 25%~45%（离她别太远），实际 ${centerPct.toFixed(1)}%`)
-  // ③ 一次性编排（用户 2026-10-12 定）：先向左晃 → 停一下 → 向右晃 → 到终点淡出
-  assert.ok(/@keyframes qmarkSwayOnce/.test(css), '必须有 qmarkSwayOnce（右键一次性编排）')
+  // 右键：只淡出（用户要的"淡出"保留）；常驻提问：不淡出、也不动
+  assert.ok(/@keyframes qmarkFadeOut/.test(css), '必须有 qmarkFadeOut（右键问号淡出）')
   assert.ok(
-    /#questionMark\.flash\s+\.qmark-inner\s*\{[\s\S]{0,120}animation:\s*qmarkSwayOnce\s+([\d.]+)s[^;]*forwards/.test(css),
-    '#questionMark.flash .qmark-inner 必须引用 qmarkSwayOnce 且 forwards（停在淡出终态）',
+    /#questionMark\.flash\s+\.qmark-inner\s*\{[\s\S]{0,120}animation:\s*qmarkFadeOut\s+([\d.]+)s/.test(css),
+    '#questionMark.flash .qmark-inner 必须引用 qmarkFadeOut',
   )
-  const onceBlock = css.match(/@keyframes qmarkSwayOnce\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
-  const onceAngles = [...onceBlock.matchAll(/rotate\((-?[\d.]+)deg\)/g)].map((m) => Number(m[1]))
-  assert.ok(onceAngles.length >= 3, 'qmarkSwayOnce 至少要有关键角度（起点/左/右）')
-  // 先左晃（负角到最深）→ 停（连续两个相同负角）→ 右晃（正角）
-  assert.ok(Math.min(...onceAngles) <= -25, `先向左晃要有足够幅度（用户要求"再大一点"），实际最深 ${Math.min(...onceAngles)}°`)
-  assert.ok(Math.max(...onceAngles) >= 8, `之后要向右晃且幅度够（跨过直立方向），实际 ${onceAngles.join(',')}`)
-  const negRuns = onceAngles.filter((a) => a === Math.min(...onceAngles)).length
-  assert.ok(negRuns >= 2, '"停一下"必须体现为两个相同的最深左角关键帧')
-  // 到终点后淡出：最后的关键帧 opacity = 0
-  assert.ok(/100%\s*\{[^}]*opacity:\s*0/.test(onceBlock), '动画终点必须淡出（opacity 0）')
-  assert.ok(/opacity:\s*1/.test(onceBlock), '淡出前必须是完全可见（opacity 1）')
-  // 常驻提问状态用循环版，不能淡出
-  assert.ok(/@keyframes qmarkSwayLoop/.test(css), '必须有 qmarkSwayLoop（常驻提问状态）')
-  assert.ok(/#questionMark\.loop\s+\.qmark-inner\s*\{[\s\S]{0,120}infinite/.test(css), '.loop 模式必须是无限循环')
-  assert.equal(/opacity/.test(css.match(/@keyframes qmarkSwayLoop\s*\{[\s\S]*?\n\}/)?.[0] ?? ''), false, '循环版不能有 opacity（常驻问号不能淡出）')
-  // ④ 圆心必须在**尾巴**（底部那个圆点），不是头部的弯 —— 用户 2026-10-12 明确要求
-  const origin = inner.match(/transform-origin:\s*([\d.]+)%\s+([\d.]+)%/)
-  assert.ok(origin, '.qmark-inner 必须显式写 transform-origin（圆心）')
-  assert.ok(Number(origin[2]) >= 80, `圆心 y 必须在底部（尾巴），实际 ${origin[2]}%`)
-  assert.ok(Number(origin[1]) <= 50, `圆心 x 应在左半边（尾巴圆点位置），实际 ${origin[1]}%`)
-  // ⑤ 两套动画都不能再叠整体 translate：那会让尾巴也跟着平移，等于圆心跑了
-  assert.equal(/translate\(/.test(onceBlock), false, '一次性动画不许 translate（会让"尾巴"移动）')
-  assert.equal(/translate\(/.test(css.match(/@keyframes qmarkSwayLoop\s*\{[\s\S]*?\n\}/)?.[0] ?? ''), false, '循环动画不许 translate')
+  const loopBlock = css.match(/#questionMark\.loop\s+\.qmark-inner\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
+  assert.ok(loopBlock.length > 0, '必须有 .loop 规则')
+  assert.ok(/animation:\s*none/.test(loopBlock), '常驻问号必须 animation: none（不能淡出、不能摇）')
+  // 淡出时长必须 ≤ 问号显示时长
+  const petJs = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+  const flashMs = Number(petJs.match(/pokeExpression\('question',\s*(\d+)\)/)?.[1])
+  const fadeMs = Number(css.match(/animation:\s*qmarkFadeOut\s+([\d.]+)s/)?.[1]) * 1000
+  assert.ok(flashMs >= 2000, `右键问号显示时长至少 2000ms，实际 ${flashMs}ms`)
+  assert.ok(
+    Number.isFinite(fadeMs) && fadeMs <= flashMs,
+    `淡出动画时长（${fadeMs}ms）必须 ≤ 显示时长（${flashMs}ms）`,
+  )
 })
 
-check('问号跟随她运动：位置每帧按**脸部部件实时位置**重算（不是模型容器）', () => {
+check('问号贴住「模型里问号位置上的画层」：每帧跟着她的骨骼/物理一起动', () => {
   const live2d = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
   assert.ok(/function updateQuestionMarkPosition\(\)/.test(live2d), '必须有 updateQuestionMarkPosition()')
-  // 每帧（beforeModelUpdate 钩子里）都要重算，否则她呼吸/摆动时问号会"钉"在原地
+  // 每帧（beforeModelUpdate 钩子里）都要重算，否则她动的时候问号会"钉"在原地
   assert.ok(
-    /on\('beforeModelUpdate',[\s\S]{0,220}updateQuestionMarkPosition\(\)/.test(live2d),
+    /on\('beforeModelUpdate',[\s\S]{0,260}updateQuestionMarkPosition\(\)/.test(live2d),
     'beforeModelUpdate（每帧）里必须调用 updateQuestionMarkPosition()',
   )
   assert.ok(/model\.toGlobal\(target\)/.test(live2d), '位置必须用 model.toGlobal 映射（自带镜像/缩放/位移）')
-  // ⚠️ 关键：锚点必须跟着**脸部的实时变形**走 —— 她的呼吸/歪头是参数级变形，模型容器几乎不动
-  assert.ok(/QMARK_TRACK_PARTS/.test(live2d) && /function faceFrameLocal\(\)/.test(live2d), '必须按脸部部件算实时中心和朝向')
-  // ⚠️ 还要跟**朝向**：只跟平移的话，她一歪头问号就相对她移动（用户："终点有时候覆盖头发有时不会"）
-  assert.ok(/angle = 0\.5 \* Math\.atan2\(2 \* sxy, sxx - syy\)/.test(live2d), '朝向要按脸部顶点二阶矩算（不依赖参数名/符号）')
-  assert.ok(/function rotateVec\(/.test(live2d) && /rotateVec\(anchor\.x - face\.x, anchor\.y - face\.y, -face\.angle\)/.test(live2d), '偏移量必须换算到脸坐标系里')
-  assert.ok(/rotateVec\(qmarkFaceOffset\.u, qmarkFaceOffset\.v, face\.angle\)/.test(live2d), '每帧用当前朝向把偏移展开回去')
-  assert.ok(/qmarkFaceOffset/.test(live2d), '问号 = 脸中心 + 固定局部偏移（这样才跟着她动）')
-  assert.ok(/QMARK_ANCHOR_U/.test(live2d) && /QMARK_ANCHOR_V/.test(live2d), '锚点在模型局部坐标里要有常数')
+  // ⚠️ 核心：按"模型里问号位置附近的画层"做锚点（几何搜索，不依赖参数名/符号）
+  assert.ok(/function calibrateQuestionGlyph\(\)/.test(live2d), '必须有一次性校准 calibrateQuestionGlyph()')
+  assert.ok(
+    /on\('beforeModelUpdate',[\s\S]{0,260}calibrateQuestionGlyph\(\)/.test(live2d),
+    '校准要挂在每帧钩子里（等模型稳定几帧后执行一次）',
+  )
+  assert.ok(/function glyphCenterLocal\(\)/.test(live2d), '必须能读到锚点画层的实时中心')
+  assert.ok(/glyphCalib\.localOffset/.test(live2d), '锚点偏移要固定（初始位置=模型问号的设计位置）')
+  assert.ok(/glyph\.x \+ glyphCalib\.localOffset\.x/.test(live2d), '每帧 target = 画层中心 + 固定偏移')
+  assert.ok(/QMARK_ANCHOR_U/.test(live2d) && /QMARK_ANCHOR_V/.test(live2d), '预测点用锚点常数（模型问号的设计位置）')
   assert.ok(/QMARK_LOCAL_W|QMARK_LOCAL_H/.test(live2d), '尺寸也要按模型缩放同步（大小设置变化时不跳）')
   const html = readFileSync(new URL('../packages/pet-shell/renderer/index.html', import.meta.url), 'utf8')
-  assert.ok(/class="qmark-inner"/.test(html), 'index.html 里问号要有内层 .qmark-inner（动画层）')
-  // 一次性动画的**时长**必须 ≤ 问号显示时长，否则"到终点淡出"会被提前掐掉
-  const petJs = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
-  const flashMs = Number(petJs.match(/pokeExpression\('question',\s*(\d+)\)/)?.[1])
-  const css = readFileSync(new URL('../packages/pet-shell/renderer/pet.css', import.meta.url), 'utf8')
-  const onceMs = Number(css.match(/animation:\s*qmarkSwayOnce\s+([\d.]+)s/)?.[1]) * 1000
-  assert.ok(flashMs >= 2000, `右键问号显示时长要够演完整编排，至少 2000ms，实际 ${flashMs}ms`)
-  assert.ok(
-    Number.isFinite(onceMs) && onceMs <= flashMs,
-    `一次性动画时长（${onceMs}ms）必须 ≤ 显示时长（${flashMs}ms），否则淡出还没演完问号就消失了`,
-  )
+  assert.ok(/class="qmark-inner"/.test(html), 'index.html 里问号要有内层 .qmark-inner')
+  // ⚠️ DOM 顺序：问号必须排在 canvas **之前**（画在下层）—— 头发摆过来是"挡住问号"，
+  //    而不是问号盖在头发上（用户反馈"终点有时会覆盖到头发上"）。
+  const domOrder = ['id="questionMark"', 'id="live2dCanvas"'].map((needle) => html.indexOf(needle))
+  assert.ok(domOrder[0] >= 0 && domOrder[1] >= 0 && domOrder[0] < domOrder[1], '问号必须在 canvas 之前（下层，被头发自然遮挡）')
 })
 
-check('问号动画模式切换：右键=一次性编排，常驻提问=循环不淡出', () => {
+check('问号显示模式切换：右键=淡出，常驻提问=一直显示不淡出', () => {
   const live2d = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
   // 模式由 syncDomQuestionMark 按「flash / loop」两个 class 切换
   assert.ok(/const mode = flashing \? 'flash' : 'loop'/.test(live2d), '显隐同步函数必须区分 flash / loop 两种模式')
-  assert.ok(/el\.classList\.add\(mode\)/.test(live2d), '必须把模式写到 class 上（CSS 才知道放哪套动画）')
-  assert.ok(/el\.classList\.remove\('flash', 'loop'\)/.test(live2d), '切模式前要清掉旧 class，避免两套动画叠加')
-  // 连点右键要重启动画（一次性编排不能"接着上次的进度"）
-  assert.ok(/syncDomQuestionMark\(true\)/.test(live2d), 'pokeExpression 里必须强制重启动画')
-  assert.ok(/void el\.offsetWidth/.test(live2d), '重启动画要强制 reflow（否则 class 改了但动画不重跑）')
-  // 常驻提问状态不能淡出：loop 版 keyframes 不许出现 opacity
+  assert.ok(/el\.classList\.add\(mode\)/.test(live2d), '必须把模式写到 class 上（CSS 才知道放哪套规则）')
+  assert.ok(/el\.classList\.remove\('flash', 'loop'\)/.test(live2d), '切模式前要清掉旧 class，避免两套规则叠加')
+  // 连点右键要重新淡出（否则第二次点击会"接着上一次已经淡完"而不显示）
+  assert.ok(/syncDomQuestionMark\(true\)/.test(live2d), 'pokeExpression 里必须强制重置')
+  assert.ok(/void el\.offsetWidth/.test(live2d), '重置要强制 reflow（否则 class 改了也不重播）')
+  // 常驻提问不能淡出
   const css = readFileSync(new URL('../packages/pet-shell/renderer/pet.css', import.meta.url), 'utf8')
-  const loopBlock = css.match(/@keyframes qmarkSwayLoop\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
-  assert.ok(loopBlock.length > 0, '必须有 qmarkSwayLoop')
-  assert.equal(/opacity/.test(loopBlock), false, '循环版必须有 opacity 吗？不能有 —— 常驻问号必须一直可见')
+  const loopBlock = css.match(/#questionMark\.loop\s+\.qmark-inner\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
+  assert.ok(loopBlock.length > 0, '必须有 .loop 规则')
+  assert.equal(/opacity/.test(loopBlock), false, '常驻问号不许有 opacity 动画（不能淡出）')
 })
 
 // ─────────────────────────────────────────────────────────────

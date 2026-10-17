@@ -95,16 +95,18 @@ body {
 /* （未读 +N 汇总背板 #badge 已随"未读功能去除"一并删除，2026-10-05） */
 
 /* 镜像时替代模型问号的图片（从模型贴图抠出来的原版，字形不镜像）。
-   结构：外层 #questionMark 由 live2d.js **每帧按模型变换定位**（left/top/width/height 用 px 写入），
-   内层 .qmark-inner 只做"左右慢慢摇"的动画 —— 分开是为了避免动画的 transform
+   结构：外层 #questionMark 由 live2d.js **每帧按模型变换定位**（translate3d 写中心点），
+   内层 .qmark-inner 只做"左右摇"的动画 —— 分开是为了避免动画的 transform
    和定位互相覆盖（2026-10-12 用户："问号并没有随昔涟一起运动"）。
+   ⚠️ 不要再给 #questionMark 设 z-index / 别把它排到 canvas 后面：它现在是
+      **画在 canvas 前面（下层）** —— 她的头发摆过来就是"头发挡住问号"，自然的前后关系，
+      而不是问号盖在头发上（用户反馈的"终点有时覆盖到头发"）。
    ⚠️ 不要给图片加 scaleX(-1)：这张图存在的意义就是"字形不镜像"。 */
 #questionMark {
   position: absolute;
   /* JS 用 translate3d(中心点) + translate(-50%,-50%) 定位，所以基准点在左上角 (0,0) */
   left: 0;
   top: 0;
-  z-index: 2;
   width: 10.46%;
   aspect-ratio: 34 / 41;
   /* 交给合成层：避免每帧改 left/top 触发重排 */
@@ -120,71 +122,32 @@ body {
   width: 100%;
   height: 100%;
   background: url(assets/question-mark.png) center / contain no-repeat;
-  /* 角度：-8° 逆时针 → 问号的"尾巴"朝右下方（= 朝着她）。
-     ⚠️ 旋转圆心 = **尾巴那个点**（用户："应该以尾部的点为圆心，而不是头部的弯"）：
-        原图 34×41，尾巴圆点在 (≈12, ≈37) → 35% / 90%。
-     ⚠️ 不要再叠加整体 translate：那会让"尾巴"也跟着平移，等于圆心又跑了。
-     动画有两种，由 live2d.js 按"临时弹的 / 常驻状态"切换 class：
-       .flash → qmarkSwayOnce（一次性：左晃 → 停 → 右晃 → 到终点淡出）
-       .loop  → qmarkSwayLoop（常驻提问状态：持续轻轻摇，不会消失） */
-  transform: rotate(-8deg);
-  transform-origin: 35% 90%;
+  /* ⚠️ 2026-10-12 大改：问号**不再有自己独立的摇摆动画**。
+     用户原话："就像没有镜像之前那样摆动" —— 非镜像时它就是模型里的一张图，
+     只跟着她的身体动，不会自己转。现在位置由 live2d.js 每帧贴到"模型里问号位置附近的画层"上，
+     所以这里保持静止（不再 rotate / 不再 translate），只由 class 控制出现与淡出。 */
+  transform: none;
 }
 
-/* 右键临时弹的问号：用户 2026-10-12 要的编排 ——
-   「先向左晃，停一下，然后向右晃，晃到终点后淡出」。
-   时长 2.3s（< 问号显示 2.4s），forwards 保持在淡出后的终态。
-   ⚠️ 时间点按 2.3s 折算：左晃 0~0.37s，**停 0.37~1.24s（约 0.87s）**，
-      右晃 1.24~1.93s，淡出 2.12~2.3s。
-   ⚠️ 幅度：左 -30° / 右 +12°（用户 2026-10-12："晃动的幅度再大一点"
-      → 原来是 -20° / +8°，现在 42° 摆幅）。 */
+/* 右键临时弹的问号：出现 → 跟着她动 → 最后 0.3s 淡出（用户要求的"淡出"保留） */
 #questionMark.flash .qmark-inner {
-  animation: qmarkSwayOnce 2.3s ease-in-out forwards;
+  animation: qmarkFadeOut 2.4s linear forwards;
 }
 
-@keyframes qmarkSwayOnce {
-  0% {
-    transform: rotate(0deg);
-    opacity: 1;
-  }
-  16% {
-    transform: rotate(-30deg);
-    opacity: 1;
-  }
-  54% {
-    transform: rotate(-30deg);
-    opacity: 1;
-  }
-  84% {
-    transform: rotate(12deg);
-    opacity: 1;
-  }
-  92% {
-    transform: rotate(12deg);
+@keyframes qmarkFadeOut {
+  0%,
+  88% {
     opacity: 1;
   }
   100% {
-    transform: rotate(12deg);
     opacity: 0;
   }
 }
 
-/* 常驻提问状态（agent 在等你回答）：一直轻轻摇，不能淡出（否则用户看不到）。
-   幅度与一次性编排同步（+10° ⇄ -30°），免得两种模式观感不一致。 */
+/* 常驻提问状态（agent 在等你回答）：一直显示、不淡出 */
 #questionMark.loop .qmark-inner {
-  animation: qmarkSwayLoop 2.4s ease-in-out infinite;
+  animation: none;
 }
-
-@keyframes qmarkSwayLoop {
-  0%,
-  100% {
-    transform: rotate(10deg);
-  }
-  50% {
-    transform: rotate(-30deg);
-  }
-}
-
 /* 气泡：和面板/设置窗同一套语言（珍珠白卡片、粉调阴影、圆角 14） */
 #bubble {
   position: absolute;
