@@ -242,8 +242,7 @@ export function readAlpha() {
 }
 
 /** 先把模型整块铺进舞台（保底，保证测量期间角色可见） */
-export function fit() {
-  const { model, canvas } = state
+export function fit() {  const { model, canvas } = state
   if (!model || !canvas) return
   const cw = canvas.clientWidth || canvas.width
   const ch = canvas.clientHeight || canvas.height
@@ -255,6 +254,23 @@ export function fit() {
   model.position.set((cw - mw * scale) / 2, ch - mh * scale)
   fitBase = { x: model.position.x, y: model.position.y, rotation: model.rotation }
   state.log(`初步适配（按画布）${mw.toFixed(0)}×${mh.toFixed(0)} → 舞台 ${cw}×${ch}，scale=${scale.toFixed(4)}`)
+}
+
+/**
+ * 按当前画布尺寸**立即重排**（主进程改完窗口尺寸后会发 `pet:relayout` 叫它）。
+ *
+ * 为什么不只靠 `window.resize`：2026-10-12 实测拖动大小滑杆后，窗口外框确实从
+ * 260×300 变成 156×180，但渲染端**没有重排**（构图日志没有新行）→ 模型保持旧大小/旧位置，
+ * 被窗口右下裁掉，用户看到的是"大小没起作用、角色像被平移"。
+ * 直接由主进程发信号最可靠，`resize` 防抖作为兜底保留。
+ */
+export function relayout() {
+  // ⚠️ 不能只排一次：主进程 setBounds 之后，渲染端视口尺寸的更新**是滞后的**
+  //    （实测紧接着排的那次读到的还是旧尺寸，然后被"参数指纹去重"静默掉）。
+  //    补两次（200ms / 600ms）覆盖这个窗口；layoutFromContent 本身幂等、日志会去重。
+  layoutFromContent()
+  setTimeout(() => layoutFromContent(), 200)
+  setTimeout(() => layoutFromContent(), 600)
 }
 
 /** 在测量窗口内反复采样，最后按包围盒并集重新构图 */
@@ -351,10 +367,21 @@ let lastLayoutStamp = ''
 let suppressedLayouts = 0
 
 function layoutFromContent() {
-  const { model, canvas } = state
+  const { model } = state
   if (!model || !contentLocal) return
-  const cssW = canvas.clientWidth || canvas.width
-  const cssH = canvas.clientHeight || canvas.height
+  // ⚠️ 舞台尺寸要读 **#stage**，不能读 canvas.clientWidth：
+  //    Pixi 开了 autoDensity，会把画布的**内联 style 宽高**定死成创建时的尺寸，
+  //    窗口缩小后 stage/body/innerWidth 都变成 156×182 了，画布却还是 262×302
+  //    → 模型按 262 的世界排布、被 156 的窗口裁掉右下角（用户看到的"没缩放、像被平移"）。
+  const stageEl = document.getElementById('stage')
+  const cssW = stageEl?.clientWidth || window.innerWidth
+  const cssH = stageEl?.clientHeight || window.innerHeight
+  // 先让 Pixi 渲染器/画布同步到舞台尺寸，再算构图（顺序不能反）
+  try {
+    state.app?.renderer?.resize?.(cssW, cssH)
+  } catch (error) {
+    state.log(`渲染器 resize 失败：${error.message}`)
+  }
 
   const availW = (cssW - FIT_MARGIN_PX * 2) * FIT_FILL
   const availH = (cssH - FIT_MARGIN_PX * 2) * FIT_FILL
@@ -390,24 +417,22 @@ function layoutFromContent() {
   // 下次内容尺寸变化时（窗口/DPR 变了）自动重排，不用重新测量
   if (!state.resizeHooked) {
     state.resizeHooked = true
-    let pending = false
     let lastResize = ''
-    let lastLayoutAt = 0
+    let layoutTimer = 0
     window.addEventListener('resize', () => {
       // ① 尺寸实质没变就完全不做（分数 DPI 下这种通知会反复来）
       const size = `${window.innerWidth}×${window.innerHeight}`
       if (size === lastResize) return
       lastResize = size
-      // ② 就算真的变了也要限流：重排一次做完就够，没必要每帧一次
-      const now = performance.now()
-      if (now - lastLayoutAt < 200) return
-      lastLayoutAt = now
-      if (pending) return
-      pending = true
-      requestAnimationFrame(() => {
-        pending = false
+      // ② 防抖（**不是节流**）：拖动"大小"滑杆会连着来很多次 resize，
+      //    "超时就丢弃"的节流会让**最后一次尺寸永远不重排** → 模型保持旧大小/旧位置，
+      //    看起来像"没缩放、还被平移了一下"（2026-10-12 用户实测大小滑杆失效的根因）。
+      //    防抖保证最后一次一定会排。
+      clearTimeout(layoutTimer)
+      layoutTimer = setTimeout(() => {
+        layoutTimer = 0
         layoutFromContent()
-      })
+      }, 120)
     })
   }
 }

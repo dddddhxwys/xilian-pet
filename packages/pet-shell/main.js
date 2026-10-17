@@ -817,19 +817,35 @@ function createWindow() {
    * 于是**面板按 getBounds() 锚定就会跑到离她很远的地方**（视觉上"错位"）。
    *
    * 只在尺寸确实不对时才 setBounds，避免 moved/resize 事件互相触发死循环。
+   *
+   * ⚠️ 容差 2px（不是 0）：本机上对无边框透明窗 setBounds(260×300) 之后
+   *    `getBounds()` 会报 261×301（Windows 给无边框窗口的取整），严格相等会变成
+   *    "纠正 → 又报 261×301 → 再纠正"的**死循环**（实测 1 秒刷了十几行日志）。
+   *    2px 容差能放过这种取整抖动，但仍然能抓住真正的漂移（534×586 那种差 2 倍）。
    */
   function enforceWindowSize() {
     if (win.isDestroyed()) return
     const b = win.getBounds()
     const want = targetWindowSize()
-    if (b.width === want.width && b.height === want.height) return
+    const SIZE_TOLERANCE = 2
+    if (Math.abs(b.width - want.width) <= SIZE_TOLERANCE && Math.abs(b.height - want.height) <= SIZE_TOLERANCE) {
+      return
+    }
     log(
       `窗口尺寸漂移 ${b.width}×${b.height} → 纠正回 ${want.width}×${want.height}` +
         `（当前大小 ${currentScale}×；跨屏/DPI 变化或刚改过大小）`,
     )
+    // 同 applyScale 的原因：resizable:false 时 setBounds 不会让网页视口跟着变，
+    // 要临时放开一次（否则"纠正了外框、画面还是旧的"）
+    const wasResizable = win.isResizable()
+    if (!wasResizable) win.setResizable(true)
     win.setBounds({ x: b.x, y: b.y, width: want.width, height: want.height })
+    if (!wasResizable) {
+      setTimeout(() => {
+        if (!win.isDestroyed()) win.setResizable(false)
+      }, 80)
+    }
   }
-
   win.on('moved', () => {
     saveWindowState(win)
     enforceWindowSize()
@@ -993,6 +1009,28 @@ app.whenReady().then(async () => {
   }
 
   /**
+   * 给桌宠窗口设一个新矩形。
+   *
+   * ⚠️ 为什么不能直接 `win.setBounds()`（2026-10-12 用户实测"大小没起作用、像被平移"）：
+   *   窗口是 `resizable: false`，在 Windows 上用 setBounds 改尺寸时**网页视口不会跟着变**
+   *   （窗口外框变小了，页面里的 canvas 还是 260×300）→ 模型保持原大小、被窗口右下裁掉，
+   *   看起来就是"没缩放 + 整体往右下平移"。
+   *   做法：临时允许 resize → setBounds → 下一帧再关回去。
+   */
+  function setPetBounds(next) {
+    if (win.isDestroyed()) return
+    const wasResizable = win.isResizable()
+    if (!wasResizable) win.setResizable(true)
+    win.setBounds(next)
+    if (!wasResizable) {
+      // 放到下一帧再关：setBounds 之后 Windows 还要发一次 WM_SIZE/WM_DPICHANGED
+      setTimeout(() => {
+        if (!win.isDestroyed()) win.setResizable(false)
+      }, 80)
+    }
+  }
+
+  /**
    * 应用「大小」（阶段 4 第一项）。
    *
    * 做法：**改窗口尺寸**（窗口 = 基准 260×300 × scale），渲染端画布是 100% 的，
@@ -1014,7 +1052,14 @@ app.whenReady().then(async () => {
     const anchor = { x: b.x + Math.round(b.width / 2), y: b.y + Math.round(b.height / 2) }
     const area = screen.getDisplayNearestPoint(anchor).workArea
     const pos = resizeAroundBottomCenter(area, b, want.width, want.height)
-    win.setBounds({ x: pos.x, y: pos.y, width: want.width, height: want.height })
+    setPetBounds({ x: pos.x, y: pos.y, width: want.width, height: want.height })
+    // 让渲染端**立刻重排**：实测光改窗口尺寸时 live2d 的 resize 事件不可靠，
+    // 模型会保持旧大小/旧位置（用户看到"没缩放、像被平移"）。
+    // 发两次：setBounds 之后渲染端视口更新有延迟，晚了那次才读到新尺寸。
+    if (!win.isDestroyed()) win.webContents.send('pet:relayout')
+    setTimeout(() => {
+      if (!win.isDestroyed()) win.webContents.send('pet:relayout')
+    }, 300)
     log(`大小：${next.toFixed(2)}× → 窗口 ${want.width}×${want.height}（锚底边，位置 ${pos.x},${pos.y}）`)
   }
   // 启动时立刻按设置里的倍数建窗口（还没显示，改尺寸不会闪）

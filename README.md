@@ -167,7 +167,7 @@ http://127.0.0.1:19387/xilian-pet/health
 | 接手复核报告（验证到什么程度、哪些没做）| [docs/接手复核报告.md](docs/接手复核报告.md) |
 | 怎么测 | [docs/测试指引.md](docs/测试指引.md) |
 
-自测（改任何东西都要跑，目前 232 项；**以 `node tools/check-plugin.mjs` 实际输出为准**）：
+自测（改任何东西都要跑，目前 233 项；**以 `node tools/check-plugin.mjs` 实际输出为准**）：
 
 ```powershell
 node tools/check-plugin.mjs

@@ -3332,7 +3332,11 @@ check('渲染端不能对 resize 无脑重排（分数 DPI 下会变成抖动循
   // ⚠️ 必须断言**守卫语句本身**，不能只断言变量名存在 ——
   //    只删掉 `return` 而保留赋值时，弱断言照样通过（第一次写这条测试就漏了，变异测试抓出来的）。
   assert.match(block[0], /if\s*\(size === lastResize\)\s*return/, 'resize 必须先判断尺寸是否实质变化再动手')
-  assert.match(block[0], /if\s*\(now - lastLayoutAt < \d+\)\s*return/, 'resize 必须限流，不能每帧重排')
+  // 2026-10-12 改：**防抖**（不是节流）。节流"超时丢弃"会把拖动大小滑杆时的
+  // **最后一次** resize 丢掉 → 模型保持旧大小/旧位置（用户实测"大小没起作用、像被平移"）。
+  assert.match(block[0], /clearTimeout\(layoutTimer\)/, 'resize 必须防抖：先清掉上一次等待中的重排')
+  assert.match(block[0], /layoutTimer = setTimeout\(/, 'resize 必须安排一次末尾重排（保证最后一次尺寸生效）')
+  assert.doesNotMatch(block[0], /now - lastLayoutAt/, '不能再用"超时丢弃"的节流（会丢最后一次）')
   assert.match(src, /layoutStamp === lastLayoutStamp/, '构图日志必须按参数指纹去重')
   assert.match(src, /suppressedLayouts/, '必须统计并汇报被静音掉的重复次数')
 })
@@ -4536,6 +4540,30 @@ check('main.js 把 scale 接到窗口：applyScale + 底边锚定 + 守卫用当
   // 两个入口都要应用（改设置 / 恢复默认）
   assert.ok(/applyScale\(settings\.appearance\.scale\)/.test(src), 'settings:patch 后要 applyScale')
   assert.ok(/applyScale\(settings\.appearance\.scale\)[\s\S]{0,40}\n/.test(src), '启动时也要按已存设置建窗口')
+})
+
+check('改大小后必须让 Pixi 画布跟随舞台（autoDensity 会把画布内联宽高定死）', () => {
+  // 2026-10-12 用户实测"大小没起作用、角色像被平移"的**真正根因**：
+  // Pixi 的 autoDensity 在创建时把画布内联 style 宽高定死成 262×302；
+  // 窗口缩到 156×180 后 stage/body/innerWidth 都变成 156，**只有 canvas 还是 262**，
+  // 于是模型按 262 的世界排布、被窗口裁掉右下角。
+  const src = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
+  const block = src.match(/function layoutFromContent\(\)[\s\S]*?\n {2}const availW/)
+  assert.ok(block, '应能定位 layoutFromContent 的开头')
+  assert.ok(/getElementById\('stage'\)/.test(block[0]), '舞台尺寸必须读 #stage')
+  assert.doesNotMatch(block[0], /canvas\.clientWidth\s*\|\|/, '不能再从 canvas.clientWidth 读舞台尺寸（会被 autoDensity 定死）')
+  assert.ok(
+    /state\.app\?\.renderer\?\.resize\?\.\(cssW, cssH\)/.test(block[0]),
+    '重排前必须先把 Pixi 渲染器 resize 到舞台尺寸，否则画布不跟随窗口',
+  )
+  // 主进程改完窗口尺寸要主动叫渲染端重排（resize 事件实测不可靠）
+  assert.ok(/export function relayout\(\)/.test(src), 'live2d 必须导出 relayout()')
+  const main = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+  assert.ok(/send\('pet:relayout'\)/.test(main), '主进程改完窗口尺寸要发 pet:relayout')
+  const preload = readFileSync(new URL('../packages/pet-shell/preload.cjs', import.meta.url), 'utf8')
+  assert.ok(/onRelayout:/.test(preload), 'preload 必须暴露 onRelayout')
+  const petJs = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+  assert.ok(/api\.onRelayout\?\.\(/.test(petJs), 'pet.js 必须订阅 pet:relayout 并调用 live2d.relayout()')
 })
 
 console.log(`\n${'─'.repeat(56)}`)

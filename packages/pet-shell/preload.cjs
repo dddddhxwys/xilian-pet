@@ -58,6 +58,12 @@ contextBridge.exposeInMainWorld('xilianPet', {
   onBubble: (callback) => ipcRenderer.on('pet:bubble', (_event, text) => callback(String(text))),
   /** Live2D 模型信息：{ dir, exists, url } —— url 走 pet:// 协议，避开 file:// 的 fetch 限制 */
   modelInfo: () => ipcRenderer.invoke('pet:model-info'),
+  /**
+   * 主进程改完窗口尺寸（「大小」设置）后通知渲染端重排。
+   * 为什么需要：实测拖动大小滑杆后窗口确实变了尺寸，但渲染端的 resize 事件没有可靠触发，
+   * 模型保持旧大小/旧位置 → 用户看到"大小没生效、像被平移"。主进程主动发信号最稳。
+   */
+  onRelayout: (callback) => ipcRenderer.on('pet:relayout', () => callback()),
   /** 请主进程立刻截一张自检截图（用于精确捕捉动作的关键帧） */
   snapshotNow: () => ipcRenderer.send('pet:snapshot-now'),
   /** 通知主进程：渲染端 handler 已注册完毕，可以补发最近状态了 */

@@ -754,6 +754,15 @@ async function startLive2D() {
     live2dActive = false
   }
 
+  // 主进程改完窗口尺寸（「大小」设置）会发 pet:relayout —— 直接重排，比等 resize 可靠
+  api.onRelayout?.(() => {
+    try {
+      live2d?.relayout?.()
+    } catch (error) {
+      api.log(`relayout 失败：${error.message}`)
+    }
+  })
+
   // 兜底：无论成功失败，8 秒内一定要放行窗口显示，
   // 免得构图回调因为任何意外没触发，窗口永远不出现。
   setTimeout(signalFitReady, 8000)
