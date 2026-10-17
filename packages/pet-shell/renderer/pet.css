@@ -131,10 +131,11 @@ body {
 
 /* 右键临时弹的问号：用户 2026-10-12 要的编排 ——
    「先向左晃，停一下，然后向右晃，晃到终点后淡出」。
-   时长 2.2s（< 问号显示 2.4s），forward 保持在淡出后的终态。
-   ⚠️ 时间点是按 2.2s 折算的百分比：左晃 0~0.4s、停 0.4~0.9s、右晃 0.9~1.7s、淡出 1.7~2.2s。 */
+   时长 2.3s（< 问号显示 2.4s），forwards 保持在淡出后的终态。
+   ⚠️ 时间点按 2.3s 折算：左晃 0~0.37s，**停 0.37~1.24s（约 0.87s，用户要求"再长一点"）**，
+      右晃 1.24~1.93s，淡出 2.12~2.3s。 */
 #questionMark.flash .qmark-inner {
-  animation: qmarkSwayOnce 2.2s ease-in-out forwards;
+  animation: qmarkSwayOnce 2.3s ease-in-out forwards;
 }
 
 @keyframes qmarkSwayOnce {
@@ -142,19 +143,19 @@ body {
     transform: rotate(0deg);
     opacity: 1;
   }
-  18% {
+  16% {
     transform: rotate(-20deg);
     opacity: 1;
   }
-  40% {
+  54% {
     transform: rotate(-20deg);
     opacity: 1;
   }
-  76% {
+  84% {
     transform: rotate(8deg);
     opacity: 1;
   }
-  88% {
+  92% {
     transform: rotate(8deg);
     opacity: 1;
   }
