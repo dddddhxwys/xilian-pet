@@ -64,6 +64,11 @@ contextBridge.exposeInMainWorld('xilianPet', {
    * 模型保持旧大小/旧位置 → 用户看到"大小没生效、像被平移"。主进程主动发信号最稳。
    */
   onRelayout: (callback) => ipcRenderer.on('pet:relayout', () => callback()),
+  /**
+   * 不透明度（0.3–1）：**渲染端**整体淡出。
+   * 为什么不用主进程 setOpacity：Windows 的透明窗口上它无效（实测像素无变化）。
+   */
+  onOpacity: (callback) => ipcRenderer.on('pet:opacity', (_event, value) => callback(Number(value))),
   /** 请主进程立刻截一张自检截图（用于精确捕捉动作的关键帧） */
   snapshotNow: () => ipcRenderer.send('pet:snapshot-now'),
   /** 通知主进程：渲染端 handler 已注册完毕，可以补发最近状态了 */

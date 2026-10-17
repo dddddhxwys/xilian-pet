@@ -763,6 +763,14 @@ async function startLive2D() {
     }
   })
 
+  // 不透明度：整块舞台（她 + 气泡）一起淡。
+  // ⚠️ 不能用主进程 win.setOpacity —— Windows 透明窗口上无效（实测像素没变化）。
+  api.onOpacity?.((value) => {
+    const next = Number.isFinite(value) ? Math.min(1, Math.max(0.3, value)) : 1
+    const stageEl = document.getElementById('stage')
+    if (stageEl) stageEl.style.opacity = String(next)
+  })
+
   // 兜底：无论成功失败，8 秒内一定要放行窗口显示，
   // 免得构图回调因为任何意外没触发，窗口永远不出现。
   setTimeout(signalFitReady, 8000)

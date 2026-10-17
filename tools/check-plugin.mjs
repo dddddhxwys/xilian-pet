@@ -4523,7 +4523,8 @@ check('设置窗有「大小」滑杆，且范围与 settings.js 的 SCALE_MIN/M
   assert.ok(tag.length > 0, 'settings.html 缺大小滑杆（id="scale"）')
   assert.equal(Number(tag.match(/min="([\d.]+)"/)?.[1]), min, '滑杆 min 必须等于 SCALE_MIN')
   assert.equal(Number(tag.match(/max="([\d.]+)"/)?.[1]), max, '滑杆 max 必须等于 SCALE_MAX')
-  assert.ok(/api\.patch\(\{\s*appearance:\s*\{\s*scale/.test(rendererJs), '拖动必须走 settings:patch 写盘')
+  assert.ok(/api\.patch\(\{\s*appearance:\s*\{/.test(rendererJs), '拖动必须走 settings:patch 写盘')
+  assert.ok(/wireSlider\(scaleEl, scaleValEl, fmtScale, 'scale'/.test(rendererJs), '大小滑杆必须接到 scale 字段')
   assert.ok(/addEventListener\('input'/.test(rendererJs), '滑杆要监听 input（拖动即时生效）')
 })
 
@@ -4564,6 +4565,33 @@ check('改大小后必须让 Pixi 画布跟随舞台（autoDensity 会把画布�
   assert.ok(/onRelayout:/.test(preload), 'preload 必须暴露 onRelayout')
   const petJs = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
   assert.ok(/api\.onRelayout\?\.\(/.test(petJs), 'pet.js 必须订阅 pet:relayout 并调用 live2d.relayout()')
+})
+
+check('设置窗有「不透明度」滑杆，范围与 settings.js 的 OPACITY_MIN/MAX 一致', () => {
+  const html = readFileSync(new URL('../packages/pet-shell/renderer/settings.html', import.meta.url), 'utf8')
+  const core = readFileSync(new URL('../packages/pet-shell/settings.js', import.meta.url), 'utf8')
+  const min = Number(core.match(/export const OPACITY_MIN = ([\d.]+)/)?.[1])
+  const max = Number(core.match(/export const OPACITY_MAX = ([\d.]+)/)?.[1])
+  assert.equal(min, 0.3, 'settings.js 的 OPACITY_MIN 应是 0.3')
+  assert.equal(max, 1, 'settings.js 的 OPACITY_MAX 应是 1')
+  const tag = html.match(/<input[^>]*id="opacity"[^>]*>/)?.[0] ?? ''
+  assert.ok(tag.length > 0, 'settings.html 缺不透明度滑杆（id="opacity"）')
+  assert.equal(Number(tag.match(/min="([\d.]+)"/)?.[1]), min, '滑杆 min 必须等于 OPACITY_MIN')
+  assert.equal(Number(tag.match(/max="([\d.]+)"/)?.[1]), max, '滑杆 max 必须等于 OPACITY_MAX')
+})
+
+check('不透明度必须走渲染端（windows 透明窗上 setOpacity 无效）', () => {
+  // 2026-10-12 实测：win.setOpacity(0.3) 之后截屏对比像素 diff 只有 0.2，
+  // 改成渲染端 #stage.style.opacity 后 diff 12.6（真的淡了）。
+  const main = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+  assert.ok(/function applyOpacity\(opacity\)/.test(main), '必须有 applyOpacity()')
+  assert.ok(/send\('pet:opacity'/.test(main), '主进程必须把不透明度发给渲染端（pet:opacity）')
+  assert.ok(/applyOpacity\(settings\.appearance\.opacity\)/.test(main), 'settings:patch/reset 后要 applyOpacity')
+  const preload = readFileSync(new URL('../packages/pet-shell/preload.cjs', import.meta.url), 'utf8')
+  assert.ok(/onOpacity:/.test(preload), 'preload 必须暴露 onOpacity')
+  const petJs = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+  assert.ok(/api\.onOpacity\?\.\(/.test(petJs), 'pet.js 必须订阅 pet:opacity')
+  assert.ok(/style\.opacity\s*=\s*String\(next\)/.test(petJs), 'pet.js 必须把透明度写到 #stage.style.opacity')
 })
 
 console.log(`\n${'─'.repeat(56)}`)

@@ -17,7 +17,14 @@ import http from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'node:fs'
 import { contentBand, draggingExpired, hitTest } from './hit-test.js'
 import { createSseLink } from './sse-link.js'
-import { defaultSettings, normalizeSettings, parseSettingsText, serializeSettings } from './settings.js'
+import {
+  OPACITY_MAX,
+  OPACITY_MIN,
+  defaultSettings,
+  normalizeSettings,
+  parseSettingsText,
+  serializeSettings,
+} from './settings.js'
 import { TRAY_TOOLTIP, TOGGLE_SHORTCUT, buildTrayMenuTemplate, trayActionFor } from './tray-model.js'
 import { centerInWorkArea, resizeAroundBottomCenter } from './window-placement.js'
 import { readFile } from 'node:fs/promises'
@@ -55,8 +62,8 @@ const HEIGHT = Number(process.env.PET_HEIGHT ?? 300)
 // ── 设置 + 托盘（阶段 2：设置的读写已接上，但**还没影响任何行为**）──
 /** 设置窗尺寸（阶段 2 只有「关于」，先给紧凑高度；阶段 4 接外观/行为后会加高） */
 const SETTINGS_WIDTH = 376
-/** 阶段 4：多了「外观 · 大小」一节 → 卡片从 208 长到 252（实测不溢出，见接手报告） */
-const SETTINGS_HEIGHT = 252
+/** 阶段 4：多了「外观」一节（大小 / 不透明度）→ 卡片 208 → 252 → 300（实测不溢出，见接手报告） */
+const SETTINGS_HEIGHT = 300
 /** 设置小窗：关闭即销毁（下次重开重新读设置） */
 let settingsWin = null
 /** 托盘：整个进程一个 */
@@ -1065,6 +1072,34 @@ app.whenReady().then(async () => {
   // 启动时立刻按设置里的倍数建窗口（还没显示，改尺寸不会闪）
   applyScale(settings.appearance.scale)
 
+  /**
+   * 应用「不透明度」（阶段 4 第二项）。
+   *
+   * 用 Electron 的 `win.setOpacity()`（Windows 上就是分层窗口的 alpha），
+   * **不动渲染端**：整窗一起淡（她 + 气泡），和系统滑块的手感一致。
+   * 范围 0.3–1 由 settings.js 的 normalizeSettings 夹紧，这里再兜一次底。
+   *
+   * ⚠️ 透明度**不持久到窗口状态里**：启动时按设置重新 setOpacity 即可。
+   */
+  /**
+   * 应用「不透明度」（阶段 4 第二项）。
+   *
+   * ⚠️ 主进程的 `win.setOpacity()` 在**透明窗口**上无效（Windows 实测：设 30% 后
+   *    截屏对比像素几乎没变化，diff 0.2）。所以真正生效的是**渲染端整体 opacity**：
+   *    主进程把值发给 `pet.js`，由它设 `#stage.style.opacity`（她 + 气泡一起淡）。
+   *    `setOpacity` 仍然调用（非透明窗口/其他平台上是有用的），但只当兜底。
+   */
+  function applyOpacity(opacity) {
+    if (win.isDestroyed()) return
+    const next = Math.min(OPACITY_MAX, Math.max(OPACITY_MIN, Number(opacity) || OPACITY_MAX))
+    try {
+      win.setOpacity(next) // 兜底（透明窗口上无效，见上）
+    } catch {}
+    if (!win.webContents.isDestroyed()) win.webContents.send('pet:opacity', next)
+    log(`不透明度：${Math.round(next * 100)}%`)
+  }
+  applyOpacity(settings.appearance.opacity)
+
   // ── 托盘（阶段 2）─────────────────────────────────────────────────
   // 菜单项本身是纯数据（tray-model.js，可单测），这里只做 Electron 适配。
   function trayTemplate() {
@@ -1222,14 +1257,16 @@ app.whenReady().then(async () => {
       behavior: { ...settings.behavior, ...(src.behavior ?? {}) },
     })
     persistSettings()
-    // 大小变了就立刻改窗口（阶段 4 第一项；其余字段的生效在后续小步里接）
+    // 大小 / 不透明度变了就立刻生效（阶段 4 逐项接通；镜像与开关在后续小步里接）
     if (settings.appearance.scale !== before.appearance.scale) applyScale(settings.appearance.scale)
+    if (settings.appearance.opacity !== before.appearance.opacity) applyOpacity(settings.appearance.opacity)
     return settingsPayload()
   })
   ipcMain.handle('settings:reset', () => {
     settings = defaultSettings()
     persistSettings()
     applyScale(settings.appearance.scale)
+    applyOpacity(settings.appearance.opacity)
     log('设置已恢复默认')
     return settingsPayload()
   })
@@ -1328,6 +1365,12 @@ app.whenReady().then(async () => {
   // 渲染端说"构图算好了，可以显示了"
   ipcMain.on('pet:fit-ready', () => {
     if (!win.isDestroyed()) showWindow(win)
+    // 渲染端此刻一定活着：把"启动时就要生效"的可视设置补发一次
+    // （applyScale/applyOpacity 在 whenReady 里跑的时候，渲染端还没加载完，会丢）
+    if (!win.isDestroyed()) {
+      win.webContents.send('pet:opacity', settings.appearance.opacity)
+      win.webContents.send('pet:relayout')
+    }
   })
   ipcMain.on('pet:move-by', (_event, dx, dy) => {
     if (win.isDestroyed()) return
