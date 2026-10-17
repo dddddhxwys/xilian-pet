@@ -17,9 +17,9 @@ import http from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'node:fs'
 import { contentBand, draggingExpired, hitTest } from './hit-test.js'
 import { createSseLink } from './sse-link.js'
-import { defaultSettings, normalizeSettings, serializeSettings } from './settings.js'
+import { defaultSettings, normalizeSettings, parseSettingsText, serializeSettings } from './settings.js'
 import { TRAY_TOOLTIP, TOGGLE_SHORTCUT, buildTrayMenuTemplate, trayActionFor } from './tray-model.js'
-import { centerInWorkArea } from './window-placement.js'
+import { centerInWorkArea, resizeAroundBottomCenter } from './window-placement.js'
 import { readFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -55,7 +55,8 @@ const HEIGHT = Number(process.env.PET_HEIGHT ?? 300)
 // ── 设置 + 托盘（阶段 2：设置的读写已接上，但**还没影响任何行为**）──
 /** 设置窗尺寸（阶段 2 只有「关于」，先给紧凑高度；阶段 4 接外观/行为后会加高） */
 const SETTINGS_WIDTH = 376
-const SETTINGS_HEIGHT = 208
+/** 阶段 4：多了「外观 · 大小」一节 → 卡片从 208 长到 252（实测不溢出，见接手报告） */
+const SETTINGS_HEIGHT = 252
 /** 设置小窗：关闭即销毁（下次重开重新读设置） */
 let settingsWin = null
 /** 托盘：整个进程一个 */
@@ -66,6 +67,14 @@ let tray = null
  *    把赋值变成 "Assignment to constant variable"，托盘与 IPC 全没注册）。
  */
 let settings = defaultSettings()
+
+/**
+ * 当前「大小」倍数（= settings.appearance.scale）。
+ *
+ * 为什么要单独存一份：`enforceWindowSize()`（在 createWindow 里）也要知道期望尺寸，
+ * 而窗口尺寸 = 基准 260×300 × 这个倍数。只在 applyScale()/设置变更时同步，别处只读。
+ */
+let currentScale = 1
 
 // ── Live2D 模型目录 ─────────────────────────────────────────────────
 // 默认在仓库内的 assets/live2d/Cyrene（2026-10-06 起模型已随仓库入库，经作者授权；见 NOTICE.md 第四节）。
@@ -787,7 +796,19 @@ function createWindow() {
   })
 
   /**
-   * 把桌宠窗口**锁回 260×300 DIP**。
+   * 当前应有的桌宠窗口尺寸 = 基准 260×300 × currentScale。
+   * ⚠️ 必须和 applyScale() 用同一套取整规则，否则 enforceWindowSize 会把正常的尺寸
+   *    反复"纠正"回去（resize 事件 → 死循环）。
+   */
+  function targetWindowSize() {
+    return {
+      width: Math.max(1, Math.round(WIDTH * currentScale)),
+      height: Math.max(1, Math.round(HEIGHT * currentScale)),
+    }
+  }
+
+  /**
+   * 把桌宠窗口**锁回期望尺寸**（基准 × 当前大小倍数）。
    *
    * ⚠️ 为什么必须有（2026-10-12 用户实机报"面板错位"）：
    * 跨屏拖动 / Windows 缩放比例变化时，Windows 会按物理像素重算窗口尺寸，而
@@ -800,9 +821,13 @@ function createWindow() {
   function enforceWindowSize() {
     if (win.isDestroyed()) return
     const b = win.getBounds()
-    if (b.width === WIDTH && b.height === HEIGHT) return
-    log(`窗口尺寸漂移 ${b.width}×${b.height} → 纠正回 ${WIDTH}×${HEIGHT}（跨屏/DPI 变化，面板错位的根因）`)
-    win.setBounds({ x: b.x, y: b.y, width: WIDTH, height: HEIGHT })
+    const want = targetWindowSize()
+    if (b.width === want.width && b.height === want.height) return
+    log(
+      `窗口尺寸漂移 ${b.width}×${b.height} → 纠正回 ${want.width}×${want.height}` +
+        `（当前大小 ${currentScale}×；跨屏/DPI 变化或刚改过大小）`,
+    )
+    win.setBounds({ x: b.x, y: b.y, width: want.width, height: want.height })
   }
 
   win.on('moved', () => {
@@ -939,11 +964,15 @@ app.whenReady().then(async () => {
   // 点击穿透的命中测试：主进程轮询光标 + 渲染端送来的 alpha 掩码
   startHitTestLoop(win)
 
-  // ── 设置持久化（阶段 2：只读写，**还不影响任何行为**）──────────────
+  // ── 设置持久化（阶段 2 起）────────────────────────────────────────
   // 阶段 1 的 settings.js 是纯函数；文件位置、读坏文件怎么办，都在这里收口。
+  // ⚠️ 解析用 parseSettingsText（会剥 UTF-8 BOM）—— 记事本/PowerShell 写出来的 JSON
+  //    带 BOM，直接 JSON.parse 会抛错并**静默变回默认设置**。
   const settingsPath = join(STATE_DIR, 'settings.json')
   try {
-    settings = normalizeSettings(JSON.parse(readFileSync(settingsPath, 'utf8')))
+    const parsed = parseSettingsText(readFileSync(settingsPath, 'utf8'))
+    if (parsed === null) throw new Error('设置文件内容不是合法 JSON')
+    settings = parsed
     log(
       `设置已加载：scale=${settings.appearance.scale} opacity=${settings.appearance.opacity} ` +
         `mirror=${settings.appearance.mirror} autoFace=${settings.appearance.autoFace}`,
@@ -962,6 +991,34 @@ app.whenReady().then(async () => {
   function settingsPayload() {
     return { appVersion: APP_VERSION, settings }
   }
+
+  /**
+   * 应用「大小」（阶段 4 第一项）。
+   *
+   * 做法：**改窗口尺寸**（窗口 = 基准 260×300 × scale），渲染端画布是 100% 的，
+   * 所以 live2d 的 resize 逻辑会自动重新构图（她变大了），命中掩码也会在 resize 后重发。
+   *
+   * 位置：以**底边中点**为锚（脚不动、左右对称展开），再夹回当前显示器工作区 ——
+   *      纯函数在 window-placement.js（`resizeAroundBottomCenter`），已配行为断言 + 变异。
+   */
+  function applyScale(scale) {
+    if (win.isDestroyed()) return
+    const next = Math.min(1.6, Math.max(0.6, Number(scale) || 1))
+    currentScale = next
+    const want = {
+      width: Math.max(1, Math.round(WIDTH * next)),
+      height: Math.max(1, Math.round(HEIGHT * next)),
+    }
+    const b = win.getBounds()
+    if (b.width === want.width && b.height === want.height) return
+    const anchor = { x: b.x + Math.round(b.width / 2), y: b.y + Math.round(b.height / 2) }
+    const area = screen.getDisplayNearestPoint(anchor).workArea
+    const pos = resizeAroundBottomCenter(area, b, want.width, want.height)
+    win.setBounds({ x: pos.x, y: pos.y, width: want.width, height: want.height })
+    log(`大小：${next.toFixed(2)}× → 窗口 ${want.width}×${want.height}（锚底边，位置 ${pos.x},${pos.y}）`)
+  }
+  // 启动时立刻按设置里的倍数建窗口（还没显示，改尺寸不会闪）
+  applyScale(settings.appearance.scale)
 
   // ── 托盘（阶段 2）─────────────────────────────────────────────────
   // 菜单项本身是纯数据（tray-model.js，可单测），这里只做 Electron 适配。
@@ -1113,17 +1170,21 @@ app.whenReady().then(async () => {
   ipcMain.handle('settings:patch', (_event, partial) => {
     // 深合并：只给 appearance.scale 时不能把同组其他项冲回默认
     const src = partial !== null && typeof partial === 'object' ? partial : {}
+    const before = settings
     settings = normalizeSettings({
       ...settings,
       appearance: { ...settings.appearance, ...(src.appearance ?? {}) },
       behavior: { ...settings.behavior, ...(src.behavior ?? {}) },
     })
     persistSettings()
+    // 大小变了就立刻改窗口（阶段 4 第一项；其余字段的生效在后续小步里接）
+    if (settings.appearance.scale !== before.appearance.scale) applyScale(settings.appearance.scale)
     return settingsPayload()
   })
   ipcMain.handle('settings:reset', () => {
     settings = defaultSettings()
     persistSettings()
+    applyScale(settings.appearance.scale)
     log('设置已恢复默认')
     return settingsPayload()
   })

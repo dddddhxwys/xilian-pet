@@ -3,9 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <!--
-      设置小窗（阶段 2：结构）。
+      设置小窗。
       入口两个：托盘「设置…」+ 面板右上角 ⚙。
-      阶段 2 只放「关于（版本）/ 恢复默认」；外观（大小/不透明度/镜像）与行为开关在阶段 4 接进来。
+      阶段 4 先接「外观 · 大小」：滑杆 0.6–1.6，拖动即时生效并写盘。
+      其余项（不透明度 / 镜像 / 行为开关）在后续小步里接进来。
       CSP：只用本地文件、无 eval；头像来自 packages/pet-plugin/icon.webp（file: 放行）。
     -->
     <meta
@@ -23,13 +24,22 @@
         <button type="button" id="close" class="icon" title="关闭（Esc）">✕</button>
       </header>
 
+      <div class="sec">外观</div>
+      <div class="row">
+        <span>大小</span>
+        <div class="ctl">
+          <input type="range" id="scale" min="0.6" max="1.6" step="0.05" value="1" />
+          <b id="scaleVal">1.00×</b>
+        </div>
+      </div>
+
       <div class="sec">关于</div>
       <div class="row">
         <span>版本</span>
         <b id="version">—</b>
       </div>
 
-      <div class="note" id="note">外观（大小 / 不透明度 / 镜像）与行为开关会在下一步接入这里。</div>
+      <div class="note" id="note">拖动滑杆即时生效，会记住。</div>
 
       <footer>
         <button type="button" id="reset" class="ghost">恢复默认</button>

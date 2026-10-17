@@ -128,6 +128,35 @@ header b {
   color: var(--xl-text-strong);
 }
 
+/* 行内控件（滑杆 + 数值）：靠右对齐，数值用等宽数字防止拖动时抖动 */
+.ctl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 132px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--xl-line);
+  outline: none;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--xl-grad-accent);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(232, 137, 166, 0.45);
+}
+
 .note {
   position: relative;
   flex: 1;

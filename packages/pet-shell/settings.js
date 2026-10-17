@@ -129,3 +129,24 @@ export function serializeSettings(settings) {
     ) + '\n'
   )
 }
+
+/**
+ * 把 settings.json 的**文本**解析成合法设置；解析不出来返回 null（调用方回退默认）。
+ *
+ * ⚠️ 必须**剥掉 UTF-8 BOM**：Windows 记事本 / PowerShell 5.1 的 `Set-Content -Encoding UTF8`
+ * 写出来都带 BOM，而 `JSON.parse` 见到 BOM 直接抛错 —— 结果是"用户改了设置但没生效，
+ * 还没任何提示"（2026-10-12 用探针写配置时亲身踩到）。
+ *
+ * @param {unknown} text
+ * @returns {ReturnType<typeof normalizeSettings> | null}
+ */
+export function parseSettingsText(text) {
+  if (typeof text !== 'string') return null
+  const cleaned = text.replace(/^\uFEFF/, '').trim()
+  if (cleaned === '') return null
+  try {
+    return normalizeSettings(JSON.parse(cleaned))
+  } catch {
+    return null
+  }
+}

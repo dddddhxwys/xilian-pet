@@ -32,7 +32,11 @@ import {
 } from '../packages/pet-shell/hit-test.js'
 import { createSseLink } from '../packages/pet-shell/sse-link.js'
 import { TRAY_TOOLTIP, TOGGLE_SHORTCUT, QUIT_SHORTCUT, buildTrayMenuTemplate, trayActionFor } from '../packages/pet-shell/tray-model.js'
-import { centerInWorkArea, clampIntoWorkArea } from '../packages/pet-shell/window-placement.js'
+import {
+  centerInWorkArea,
+  clampIntoWorkArea,
+  resizeAroundBottomCenter,
+} from '../packages/pet-shell/window-placement.js'
 import {
   DEFAULT_SETTINGS,
   OPACITY_MAX,
@@ -42,6 +46,7 @@ import {
   SETTINGS_VERSION,
   defaultSettings,
   normalizeSettings,
+  parseSettingsText,
   serializeSettings,
 } from '../packages/pet-shell/settings.js'
 import { addPluginRow, looksLikePluginEntryPath, looksLikeProfilePatch, pluginRowSnippet, readPluginRowPath, removePluginRow } from './lib/patch-edit.mjs'
@@ -4323,6 +4328,28 @@ check('序列化对坏输入也安全：写盘永远写出合法 JSON', () => {
   assert.ok(!text.includes('NaN'), '不能把 NaN 写进文件')
 })
 
+check('读盘：UTF-8 BOM 必须能解析（记事本/PowerShell 写出来的都带 BOM）', () => {
+  const body = serializeSettings({ appearance: { scale: 1.4 } })
+  const withBom = '\uFEFF' + body
+  // JSON.parse 直接吃 BOM 会抛 —— 这条断言保证调用方走的是 parseSettingsText 而不是裸 parse
+  assert.throws(() => JSON.parse(withBom), '前提：裸 JSON.parse 确实会被 BOM 打断')
+  const parsed = parseSettingsText(withBom)
+  assert.notEqual(parsed, null, '带 BOM 的设置文件必须能读出来')
+  assert.equal(parsed.appearance.scale, 1.4, 'BOM 不能影响字段值')
+})
+
+check('读盘：坏 JSON / 空文件 / 非字符串一律返回 null（调用方回退默认，绝不抛错）', () => {
+  assert.equal(parseSettingsText('{ 这不是 json'), null)
+  assert.equal(parseSettingsText(''), null, '空文件 → null')
+  assert.equal(parseSettingsText('   \n\t  '), null, '只有空白 → null')
+  assert.equal(parseSettingsText(undefined), null)
+  assert.equal(parseSettingsText(null), null)
+  assert.equal(parseSettingsText(123), null)
+  // 合法 JSON 但内容是数组/字符串 → 规范化成默认（不是 null：文件本身是合法 JSON）
+  assert.deepEqual(parseSettingsText('[1,2]'), defaultSettings())
+  assert.deepEqual(parseSettingsText('"hello"'), defaultSettings())
+})
+
 // ─────────────────────────────────────────────────────────────
 console.log('\n[15] 托盘菜单模型 / 窗口摆放（纯函数；Electron API 在 Node 里跑不了，所以抽出来测）')
 
@@ -4371,6 +4398,34 @@ check('夹进工作区：在里面的不动、越界的拉回来（阶段 4 改�
   assert.deepEqual(clampIntoWorkArea(workArea, { x: 100, y: 200, width: 260, height: 300 }), { x: 100, y: 200 })
   assert.deepEqual(clampIntoWorkArea(workArea, { x: 1800, y: 900, width: 260, height: 300 }), { x: 1660, y: 780 })
   assert.deepEqual(clampIntoWorkArea(workArea, { x: -500, y: -200, width: 260, height: 300 }), { x: 0, y: 0 })
+})
+
+check('改大小：以底边中点为锚 —— 放大后脚不动、左右对称展开', () => {
+  const workArea = { x: 0, y: 0, width: 1920, height: 1080 }
+  const before = { x: 800, y: 400, width: 260, height: 300 }
+  // 1.6× → 416×480：底边仍在 700，中心仍在 930
+  const bigger = resizeAroundBottomCenter(workArea, before, 416, 480)
+  assert.equal(bigger.y + 480, 700, '底边（她的脚）必须保持不动')
+  assert.equal(bigger.x + 416 / 2, 930, '水平中心必须保持不动')
+  // 0.6× → 156×180：缩小同样保底边
+  const smaller = resizeAroundBottomCenter(workArea, before, 156, 180)
+  assert.equal(smaller.y + 180, 700)
+  assert.equal(smaller.x + 156 / 2, 930)
+})
+
+check('改大小：放大到屏幕边缘外会被夹回工作区（否则她会跑出屏幕）', () => {
+  const workArea = { x: 0, y: 0, width: 1920, height: 1080 }
+  // 贴着右下角的窗口，放大后底边/右边都会越界
+  const nearEdge = { x: 1700, y: 800, width: 260, height: 300 }
+  const out = resizeAroundBottomCenter(workArea, nearEdge, 416, 480)
+  assert.ok(out.x >= 0 && out.x + 416 <= 1920, `x 越界：${out.x}`)
+  assert.ok(out.y >= 0 && out.y + 480 <= 1080, `y 越界：${out.y}`)
+  // 比工作区还大 → 贴左上
+  assert.deepEqual(
+    resizeAroundBottomCenter(workArea, nearEdge, 2000, 1200),
+    { x: 0, y: 0 },
+    '窗口比屏幕还大时必须贴左上，不能是负坐标',
+  )
 })
 
 // 这条是**源码护栏**，不是行为断言 —— 它守的是一个真实事故：
@@ -4447,6 +4502,40 @@ check('三个 CSS 都走 token、气泡换成珍珠白、菜单输入框保留 f
   assert.ok(/#bubble\s*\{[^}]*var\(--xl-shadow-card\)/s.test(pet), '气泡阴影要用 --xl-shadow-card')
   // 固定 300×320 里靠 #input 吸收折叠/展开的差
   assert.ok(/#input\s*\{[^}]*flex:\s*1/s.test(menu), '#input 必须是 flex 吸收高度差')
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[17] 阶段 4 · 大小（窗口尺寸 = 基准 × scale，锚底边）')
+
+check('设置窗有「大小」滑杆，且范围与 settings.js 的 SCALE_MIN/MAX 一致', () => {
+  const html = readFileSync(new URL('../packages/pet-shell/renderer/settings.html', import.meta.url), 'utf8')
+  const rendererJs = readFileSync(new URL('../packages/pet-shell/renderer/settings.js', import.meta.url), 'utf8')
+  const core = readFileSync(new URL('../packages/pet-shell/settings.js', import.meta.url), 'utf8')
+  const min = Number(core.match(/export const SCALE_MIN = ([\d.]+)/)?.[1])
+  const max = Number(core.match(/export const SCALE_MAX = ([\d.]+)/)?.[1])
+  assert.equal(min, 0.6, 'settings.js 的 SCALE_MIN 应是 0.6')
+  assert.equal(max, 1.6, 'settings.js 的 SCALE_MAX 应是 1.6')
+  const tag = html.match(/<input[^>]*id="scale"[^>]*>/)?.[0] ?? ''
+  assert.ok(tag.length > 0, 'settings.html 缺大小滑杆（id="scale"）')
+  assert.equal(Number(tag.match(/min="([\d.]+)"/)?.[1]), min, '滑杆 min 必须等于 SCALE_MIN')
+  assert.equal(Number(tag.match(/max="([\d.]+)"/)?.[1]), max, '滑杆 max 必须等于 SCALE_MAX')
+  assert.ok(/api\.patch\(\{\s*appearance:\s*\{\s*scale/.test(rendererJs), '拖动必须走 settings:patch 写盘')
+  assert.ok(/addEventListener\('input'/.test(rendererJs), '滑杆要监听 input（拖动即时生效）')
+})
+
+check('main.js 把 scale 接到窗口：applyScale + 底边锚定 + 守卫用当前倍数', () => {
+  const src = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+  assert.ok(/function applyScale\(scale\)/.test(src), '必须有 applyScale()')
+  assert.ok(
+    /import \{[^}]*resizeAroundBottomCenter[^}]*\} from '\.\/window-placement\.js'/.test(src),
+    '必须用纯函数 resizeAroundBottomCenter（它有行为断言 + 变异测试）',
+  )
+  assert.ok(/resizeAroundBottomCenter\(area, b, want\.width, want\.height\)/.test(src), 'applyScale 要真的按底边锚定计算位置')
+  assert.ok(/let currentScale = 1/.test(src), 'currentScale 必须是模块级变量')
+  assert.ok(/Math\.round\(WIDTH \* currentScale\)/.test(src), 'enforceWindowSize 必须按当前倍数算期望尺寸')
+  // 两个入口都要应用（改设置 / 恢复默认）
+  assert.ok(/applyScale\(settings\.appearance\.scale\)/.test(src), 'settings:patch 后要 applyScale')
+  assert.ok(/applyScale\(settings\.appearance\.scale\)[\s\S]{0,40}\n/.test(src), '启动时也要按已存设置建窗口')
 })
 
 console.log(`\n${'─'.repeat(56)}`)
