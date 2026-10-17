@@ -14,10 +14,11 @@
  */
 
 import { createRequire } from 'node:module'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, execSync } from 'node:child_process'
 import { mkdirSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseListeningPorts, resolveDshUrl } from '../dsh-discovery.js'
 
 const require = createRequire(import.meta.url)
 const here = dirname(fileURLToPath(import.meta.url))
@@ -70,11 +71,30 @@ const env = { ...process.env }
 delete env.ELECTRON_RUN_AS_NODE
 
 env.PET_STATE_DIR = env.PET_STATE_DIR ?? stateDir
-env.PET_DSH_URL = env.PET_DSH_URL ?? 'http://127.0.0.1:19387'
 env.PET_ROUTE_PREFIX = env.PET_ROUTE_PREFIX ?? '/xilian-pet'
 
+/**
+ * 找 DSH 地址：**不能写死端口** —— DSH 重启可能换端口（实测 19387 → 63974），
+ * 写死会让桌宠一直 `ECONNREFUSED`。优先级见 dsh-discovery.js。
+ *
+ * 这里注入"枚举监听端口"的实现：用 netstat（正常用户进程里可用；
+ * agent 沙箱里管道 stdio 会 EPERM，所以外面包了 try/catch，失败就退化为"只探默认端口"）。
+ */
+function listListeningPorts() {
+  try {
+    const text = execSync('netstat -ano -p TCP', { encoding: 'utf8', timeout: 8000, windowsHide: true })
+    return parseListeningPorts(text)
+  } catch (error) {
+    console.log('[launch] netstat 枚举失败（沙箱/权限）→ 只探测默认端口：', error?.message ?? error)
+    return []
+  }
+}
+
+const dsh = await resolveDshUrl(env, env.PET_ROUTE_PREFIX, { listListeningPorts })
+env.PET_DSH_URL = dsh.url
+
 console.log('[launch] electron   =', electronPath)
-console.log('[launch] DSH_URL    =', env.PET_DSH_URL)
+console.log('[launch] DSH_URL    =', env.PET_DSH_URL, `（${dsh.source}）`)
 console.log('[launch] prefix     =', env.PET_ROUTE_PREFIX)
 console.log('[launch] state dir  =', env.PET_STATE_DIR)
 console.log('[launch] ELECTRON_RUN_AS_NODE 已删除 =', !('ELECTRON_RUN_AS_NODE' in env))

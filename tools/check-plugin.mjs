@@ -31,6 +31,7 @@ import {
   rawToLocal,
 } from '../packages/pet-shell/hit-test.js'
 import { fitTransform } from '../packages/pet-shell/renderer/mirror-math.js'
+import { isPetHealthResponse, parseListeningPorts, resolveDshUrl } from '../packages/pet-shell/dsh-discovery.js'
 import { createSseLink } from '../packages/pet-shell/sse-link.js'
 import { TRAY_TOOLTIP, TOGGLE_SHORTCUT, QUIT_SHORTCUT, buildTrayMenuTemplate, trayActionFor } from '../packages/pet-shell/tray-model.js'
 import {
@@ -4673,6 +4674,83 @@ check('镜像接线：主进程算朝向（300ms 防抖）+ 渲染端镜像渲�
   const html = readFileSync(new URL('../packages/pet-shell/renderer/settings.html', import.meta.url), 'utf8')
   assert.ok(/id="mirror"/.test(html), '设置窗必须有「左右翻转」开关')
   assert.ok(/id="autoFace"/.test(html), '设置窗必须有「自动朝向」开关')
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[19] DSH 地址发现（端口变了也能连上；桌宠不能写死 19387）')
+
+check('解析 netstat：只取 loopback 监听端口、去重、升序、忽略已建立连接', () => {
+  const text = [
+    '  Proto  Local Address          Foreign Address        State           PID',
+    '  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       912',
+    '  TCP    127.0.0.1:63974        0.0.0.0:0              LISTENING       12345',
+    '  TCP    127.0.0.1:63974        0.0.0.0:0              LISTENING       12345',
+    '  TCP    127.0.0.1:19387        0.0.0.0:0              ESTABLISHED     111',
+    '  TCP    [::]:445               [::]:0                 LISTENING       4',
+    '  TCP    192.168.1.5:5000       0.0.0.0:0              LISTENING       222',
+    '  garbage line',
+  ].join('\r\n')
+  const ports = parseListeningPorts(text)
+  assert.deepEqual(ports, [135, 445, 63974], '应只保留本机可达的监听端口（去重升序）')
+  // 显式指定 host 时 0.0.0.0 / [::] 也算（它们能连 127.0.0.1）
+  assert.ok(parseListeningPorts('  TCP    127.0.0.1:7000   0.0.0.0:0   LISTENING   1').includes(7000))
+  assert.deepEqual(parseListeningPorts(''), [])
+  assert.deepEqual(parseListeningPorts(null), [], '非字符串输入不应抛错')
+})
+
+check('健康响应判定：只认 plugin=xilian-pet', () => {
+  assert.equal(isPetHealthResponse({ plugin: 'xilian-pet', code: 28 }), true)
+  assert.equal(isPetHealthResponse({ plugin: 'other' }), false)
+  assert.equal(isPetHealthResponse({}), false)
+  assert.equal(isPetHealthResponse(null), false)
+})
+
+check('地址解析优先级：手动 > DSH 环境变量 > 默认端口 > 自动发现 > 回退并告警', async () => {
+  const seen = []
+  const fakeProbe = (url) => {
+    seen.push(url)
+    return Promise.resolve(url.includes('63974') ? { plugin: 'xilian-pet' } : null)
+  }
+  // ① 手动指定最优先（连 probe 都不该发生）
+  const manual = await resolveDshUrl({ PET_DSH_URL: 'http://127.0.0.1:1' }, '/xilian-pet', {
+    listListeningPorts: () => [],
+    probe: fakeProbe,
+  })
+  assert.equal(manual.url, 'http://127.0.0.1:1')
+  assert.equal(seen.length, 0, '有 PET_DSH_URL 时不应探测')
+  // ② DSH 自己的环境变量
+  const fromEnv = await resolveDshUrl({ DSH_WEB_URL: 'http://127.0.0.1:63974' }, '/xilian-pet', { probe: fakeProbe })
+  assert.equal(fromEnv.url, 'http://127.0.0.1:63974')
+  assert.ok(/DSH_WEB_URL/.test(fromEnv.source))
+  // ③ 默认端口可用
+  const byDefault = await resolveDshUrl({}, '/xilian-pet', {
+    listListeningPorts: () => [63974],
+    probe: (url) => Promise.resolve(url.includes('19387') ? { plugin: 'xilian-pet' } : null),
+  })
+  assert.equal(byDefault.url, 'http://127.0.0.1:19387')
+  // ④ 默认端口不可用 → 自动发现
+  const discovered = await resolveDshUrl({}, '/xilian-pet', {
+    listListeningPorts: () => [5000, 63974, 7000],
+    probe: fakeProbe,
+  })
+  assert.equal(discovered.url, 'http://127.0.0.1:63974', '应发现真正在线的端口')
+  assert.ok(/自动发现/.test(discovered.source), `source=${discovered.source}`)
+  // ⑤ 什么都没找到 → 回退默认，但**必须**在 source 里明确告警（不能假装成功）
+  const missing = await resolveDshUrl({}, '/xilian-pet', {
+    listListeningPorts: () => [5000],
+    probe: () => Promise.resolve(null),
+  })
+  assert.equal(missing.url, 'http://127.0.0.1:19387')
+  assert.ok(/没找到/.test(missing.source), '找不到时必须明确告警')
+})
+
+check('启动器接线：不再写死 19387，且把 DSH 地址来源打进日志', () => {
+  const src = readFileSync(new URL('../packages/pet-shell/scripts/launch.mjs', import.meta.url), 'utf8')
+  assert.ok(/import \{ parseListeningPorts, resolveDshUrl \}/.test(src), '启动器必须用 dsh-discovery')
+  assert.ok(/await resolveDshUrl\(env, env\.PET_ROUTE_PREFIX/.test(src), '必须真的调用 resolveDshUrl')
+  assert.ok(/netstat -ano -p TCP/.test(src), '自动发现要用 netstat 枚举监听端口')
+  assert.ok(/（\$\{dsh\.source\}）/.test(src), '日志里要写明地址来源（排障关键）')
+  assert.ok(!/PET_DSH_URL \?\? 'http:\/\/127\.0\.0\.1:19387'/.test(src), '不能再把 19387 写死成唯一来源')
 })
 
 console.log(`\n${'─'.repeat(56)}`)
