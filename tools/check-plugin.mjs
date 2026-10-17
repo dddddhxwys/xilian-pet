@@ -4774,14 +4774,21 @@ check('镜像时问号表情必须换成 reset（模型问号贴图镜像后会�
   assert.equal(expressionForMirror('question', 'yes'), 'question')
 })
 
-check('问号镜像适配接线：setExpression 走纯函数 + DOM 问号存在 + 状态切换会同步', () => {
+check('问号镜像适配接线：setExpression 走纯函数 + DOM 问号用模型原图 + 状态切换会同步', () => {
   const live2d = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
   assert.ok(/expressionForMirror\(name, mirrorMode\)/.test(live2d), 'setExpression 必须经 expressionForMirror')
   assert.ok(/function syncDomQuestionMark\(\)/.test(live2d), '必须有 DOM 问号的同步函数')
   assert.ok(/questionFlashUntil/.test(live2d), '右键问号要有"显示窗口"时间')
-  assert.ok(/id="questionMark"/.test(readFileSync(new URL('../packages/pet-shell/renderer/index.html', import.meta.url), 'utf8')), 'index.html 必须有 #questionMark')
+  const html = readFileSync(new URL('../packages/pet-shell/renderer/index.html', import.meta.url), 'utf8')
+  assert.ok(/id="questionMark"/.test(html), 'index.html 必须有 #questionMark')
   const css = readFileSync(new URL('../packages/pet-shell/renderer/pet.css', import.meta.url), 'utf8')
   assert.ok(/#questionMark\s*\{/.test(css), 'pet.css 必须给 #questionMark 定位置和样式')
+  // 2026-10-12 用户反馈"DOM 字体问号和模型问号差别太大" → 改成用**模型贴图里抠出来的原图**
+  assert.ok(/url\(assets\/question-mark\.png\)/.test(css), '#questionMark 必须用模型原图 question-mark.png（不能用字体）')
+  assert.equal(/#questionMark\s*\{[^}]*font-family/s.test(css), false, '#questionMark 不该再用字体画问号')
+  assert.equal(/id="questionMark"[^>]*>[^<\s]/.test(html), false, 'index.html 里 #questionMark 不应再有文字内容')
+  const asset = readFileSync(new URL('../packages/pet-shell/renderer/assets/question-mark.png', import.meta.url))
+  assert.ok(asset.length > 500, 'question-mark.png 资源必须存在且非空')
   // 切换镜像时要把当前状态的表情重新按新规则应用一次，否则问号状态会残留反问号
   assert.ok(/setMirror[\s\S]{0,600}setExpression\(mapped\.expression/.test(live2d), 'setMirror 后要重放当前状态表情')
 })

@@ -119,6 +119,8 @@ export function requiredInRelease(options = {}) {
     'packages/pet-shell/tray.ico',
     'packages/pet-shell/renderer/tokens.css',
     'packages/pet-shell/renderer/mirror-math.js',
+    // 从模型贴图抠出来的原版问号（镜像时用；不是第三方新素材，见 NOTICE.md）
+    'packages/pet-shell/renderer/assets/question-mark.png',
     'packages/pet-shell/renderer/settings.html',
     'packages/pet-shell/renderer/settings.css',
     'packages/pet-shell/renderer/settings.js',

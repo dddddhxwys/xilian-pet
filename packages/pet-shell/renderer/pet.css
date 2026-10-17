@@ -94,26 +94,21 @@ body {
 
 /* （未读 +N 汇总背板 #badge 已随"未读功能去除"一并删除，2026-10-05） */
 
-/* 镜像时替代模型问号的 DOM 问号（模型贴图镜像后会变成"反问号"）。
-   位置按镜像后的构图放：她左上角 —— 也就是未镜像时模型问号所在的右上角关于中线的对称位置。
-   ⚠️ 字号用 vh 跟着窗口缩放走（窗口尺寸 = 260×300 × 大小倍数）。 */
+/* 镜像时替代模型问号的图片（从模型贴图抠出来的原版，字形不镜像）。
+   ⚠️ 位置 = 模型问号位置**关于舞台中线对称**的点（她右上 → 镜像后左上）。
+   尺寸用百分比跟着窗口缩放（窗口 = 260×300 × 大小倍数）：
+   - 原图 34×41 物理像素（DPR 1.25）= 27.2×32.8 CSS；舞台 260 宽 → width 10.46%
+   - 中心 CSS (205.6, 152.4) → 镜像后中心 (54.4, 152.4)
+   - left = (54.4 - 13.6) / 260 = 15.69%，top = (152.4 - 16.4) / 300 = 45.33%
+   ⚠️ 不要加 scaleX(-1)：这张图存在的意义就是"字形不镜像"。 */
 #questionMark {
   position: absolute;
-  left: 24%;
-  top: 30%;
+  left: 15.69%;
+  top: 45.33%;
   z-index: 2;
-  font-family: "Segoe Script", "Ink Free", "Comic Sans MS", "Microsoft YaHei", cursive;
-  font-size: 30px;
-  font-size: 8vh;
-  line-height: 1;
-  font-weight: 700;
-  color: var(--xl-accent);
-  text-shadow:
-    0 1px 0 #fff,
-    0 0 6px rgba(255, 255, 255, 0.95),
-    0 2px 8px rgba(232, 137, 166, 0.35);
-  /* ⚠️ 不要再加 scaleX(-1)：这个 DOM 问号存在的意义就是"字形不镜像、能正常读" */
-  transform: rotate(-8deg);
+  width: 10.46%;
+  aspect-ratio: 34 / 41;
+  background: url(assets/question-mark.png) center / contain no-repeat;
   pointer-events: none;
   user-select: none;
 }
