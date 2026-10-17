@@ -95,29 +95,32 @@ body {
 /* （未读 +N 汇总背板 #badge 已随"未读功能去除"一并删除，2026-10-05） */
 
 /* 镜像时替代模型问号的图片（从模型贴图抠出来的原版，字形不镜像）。
-   ⚠️ 位置 = 模型问号位置**关于舞台中线对称**的点（她右上 → 镜像后左上）。
-   尺寸用百分比跟着窗口缩放（窗口 = 260×300 × 大小倍数）：
-   - 原图 34×41 物理像素（DPR 1.25）= 27.2×32.8 CSS；舞台 260 宽 → width 10.46%
-   - 中心 CSS (205.6, 152.4) → 镜像后中心 (54.4, 152.4)
-   - left = (54.4 - 13.6) / 260 = 15.69%，top = (152.4 - 16.4) / 300 = 45.33%
-   ⚠️ 不要加 scaleX(-1)：这张图存在的意义就是"字形不镜像"。 */
+   结构：外层 #questionMark 由 live2d.js **每帧按模型变换定位**（left/top/width/height 用 px 写入），
+   内层 .qmark-inner 只做"左右慢慢摇"的动画 —— 分开是为了避免动画的 transform
+   和定位互相覆盖（2026-10-12 用户："问号并没有随昔涟一起运动"）。
+   ⚠️ 不要给图片加 scaleX(-1)：这张图存在的意义就是"字形不镜像"。 */
 #questionMark {
   position: absolute;
-  /* 2026-10-12 用户："问号离昔涟太远" → 从左侧 15.69% 往她那边挪近（中心 21% → 32%）。
-     位置仍是"镜像后模型问号该在的地方"再向她的头部靠拢；她头中心约在 50%。 */
-  left: 26.8%;
-  top: 45.33%;
+  /* 首帧之前（JS 还没定位时）的兜底位置：她头附近 */
+  left: 32%;
+  top: 48%;
   z-index: 2;
   width: 10.46%;
   aspect-ratio: 34 / 41;
-  background: url(assets/question-mark.png) center / contain no-repeat;
+  /* 让 left/top 指向"问号中心"，JS 每帧写的是模型变换算出来的中心点 */
+  transform: translate(-50%, -50%);
   pointer-events: none;
   user-select: none;
+}
+
+.qmark-inner {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: url(assets/question-mark.png) center / contain no-repeat;
   /* 角度：-8° 逆时针 → 问号的"尾巴"朝右下方（= 朝着她）。
-     镜像后她在问号右侧，负角才让尾巴朝她（用户 2026-10-12 反馈）。
-     摇摆：+4° ⇄ -20°（**跨过直立方向**、幅度 24°），周期 4s ——
-     用户："应该左右摇晃一次，而不是只向左摇一次"，且"摇晃幅度太小"。
-     摆到 +4° 那侧时尾巴稍微离开她一点（摆动过程允许），静止基准仍朝她。 */
+     摇摆：+4° ⇄ -20°（跨过直立方向、幅度 24°）+ **左右平移 ±22%**（旋转在小图上只有 3~4px，
+     必须叠加位移才看得出"左右各摇一次"），周期 4s。 */
   transform: rotate(-8deg);
   transform-origin: 50% 62%;
   animation: qmarkSway 4s ease-in-out infinite;
@@ -126,10 +129,10 @@ body {
 @keyframes qmarkSway {
   0%,
   100% {
-    transform: rotate(4deg) translateY(0);
+    transform: rotate(4deg) translate(-22%, 0);
   }
   50% {
-    transform: rotate(-20deg) translateY(-5%);
+    transform: rotate(-20deg) translate(22%, -6%);
   }
 }
 

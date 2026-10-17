@@ -505,7 +505,6 @@ function setExpression(name) {
  * 镜像时替代模型问号的 **DOM 问号**（未镜像、可读）。
  *
  * 显示条件：镜像开启，并且（当前状态是 question 或正在临时弹问号）。
- * 位置在 CSS 里（`#questionMark`，镜像时她左上角就是模型问号原本该在的位置）。
  */
 let questionFlashUntil = 0
 let questionFlashTimer = null
@@ -515,6 +514,50 @@ function syncDomQuestionMark() {
   const flashing = Date.now() < questionFlashUntil
   const want = mirrorMode && (flashing || state.currentState === 'question')
   el.hidden = !want
+  if (want) updateQuestionMarkPosition()
+}
+
+/**
+ * 把 DOM 问号**贴到模型上**（每帧调用）。
+ *
+ * 为什么需要（2026-10-12 用户："问号并没有随昔涟一起运动"）：
+ * DOM 元素不会跟着 Live2D 的呼吸/摆动走。做法是：
+ *  - 在模型**局部坐标系**里取一个"问号位置"的锚点（下面三个常数从实测画面反推）；
+ *  - 每帧用 `model.toGlobal()` 映射到舞台像素 —— 它会自动带上镜像、缩放、位移；
+ *  - 尺寸也按模型缩放同步，这样「大小」设置变化时问号不会跳大小。
+ *
+ * 常数来源（`.cache/ui-mockups/pet-question-alpha.png`，stage 262×302、fit scale 0.07）：
+ *  - 问号中心屏幕 (205.6, 152.4)；内容包围盒 x 13.5..248.5、y 88..296
+ *    → 相对包围盒 u = (205.6-13.5)/235 = 0.8174，v = (152.4-88)/208 = 0.3096
+ *  - 屏幕上问号 27.2×32.8 CSS px → 局部尺寸 = 27.2/0.07 × 32.8/0.07
+ */
+const QMARK_ANCHOR_U = 0.8174
+const QMARK_ANCHOR_V = 0.3096
+/**
+ * 往她那边挪一点（2026-10-12 用户："问号离昔涟太远"）。
+ *
+ * 模型问号原位置镜像后大约在舞台 x≈21%，用户觉得太远；这里把它朝她（屏幕右侧）挪
+ * ≈11% 的舞台宽度。镜像下"局部 u 变小 → 屏幕 x 变大"，所以是**减**。
+ */
+const QMARK_TOWARD_HER_U = 0.11
+const QMARK_LOCAL_W = 27.2 / 0.07
+const QMARK_LOCAL_H = 32.8 / 0.07
+function updateQuestionMarkPosition() {
+  const el = document.getElementById('questionMark')
+  if (!el || el.hidden) return
+  const model = state.model
+  if (!model || !contentLocal) return
+  const anchor = {
+    x: contentLocal.x + (QMARK_ANCHOR_U - QMARK_TOWARD_HER_U) * contentLocal.w,
+    y: contentLocal.y + QMARK_ANCHOR_V * contentLocal.h,
+  }
+  const point = model.toGlobal(anchor)
+  const sx = Math.abs(model.scale.x)
+  const sy = Math.abs(model.scale.y)
+  el.style.left = `${point.x}px`
+  el.style.top = `${point.y}px`
+  el.style.width = `${QMARK_LOCAL_W * sx}px`
+  el.style.height = `${QMARK_LOCAL_H * sy}px`
 }
 
 /**
@@ -992,6 +1035,8 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, handD
   // 状态参数 +（可选）参数采样，都挂在每帧的最后一个时机
   model.internalModel.on('beforeModelUpdate', () => {
     applyState()
+    // 镜像问号是 DOM 元素，位置必须**每帧**按模型变换重算，才能跟着她呼吸/动作一起动
+    updateQuestionMarkPosition()
     samplerSample(model.internalModel.coreModel)
   })
 

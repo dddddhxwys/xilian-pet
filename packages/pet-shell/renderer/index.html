@@ -41,9 +41,11 @@
         所以镜像开启时改用这个**不镜像**的问号 —— 图是从模型贴图里抠出来的原版
         （`assets/question-mark.png`，由 live2d.js 的 syncDomQuestionMark 控制显示），
         观感和模型自带问号一致，不是另画的字体。
-        无镜像时隐藏它，仍旧用模型自带的问号贴图（位置/动画都跟着模型走）。
+        外层 #questionMark 由 live2d.js **每帧按模型变换定位**（跟着她呼吸/动作/镜像一起动），
+        内层 .qmark-inner 只负责"慢慢左右摇"的动画 —— 两者分开，不然 transform 会打架。
+        无镜像时隐藏它，仍旧用模型自带的问号贴图。
       -->
-      <div id="questionMark" hidden></div>
+      <div id="questionMark" hidden><i class="qmark-inner"></i></div>
 
       <!--
         曾经这里有个 #notice 通知条（A7 主动提醒：审批积压 / 久坐 / 花销，

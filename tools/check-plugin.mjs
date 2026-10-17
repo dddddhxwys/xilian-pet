@@ -4793,23 +4793,25 @@ check('问号镜像适配接线：setExpression 走纯函数 + DOM 问号用模�
   assert.ok(/setMirror[\s\S]{0,600}setExpression\(mapped\.expression/.test(live2d), 'setMirror 后要重放当前状态表情')
 })
 
-check('问号：朝她 / 离她别太远 / 左右各摇一次且幅度够（用户 2026-10-12 三轮反馈）', () => {
+check('问号：朝她 / 跟着她动 / 左右各摇一次且幅度够（用户 2026-10-12 多轮反馈）', () => {
   const css = readFileSync(new URL('../packages/pet-shell/renderer/pet.css', import.meta.url), 'utf8')
   const block = css.match(/#questionMark\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
+  const inner = css.match(/\.qmark-inner\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
   assert.ok(block.length > 0, '应能定位 #questionMark 规则')
+  assert.ok(inner.length > 0, '应能定位 .qmark-inner 规则（动画必须在内层，避免和定位 transform 打架）')
   // ① 基础角必须是负角（逆时针）：镜像后她在问号右侧，负角才让"尾巴"朝她
-  const base = block.match(/transform:\s*rotate\((-?[\d.]+)deg\)/)
-  assert.ok(base, '#questionMark 必须有基础旋转角')
+  const base = inner.match(/transform:\s*rotate\((-?[\d.]+)deg\)/)
+  assert.ok(base, '.qmark-inner 必须有基础旋转角')
   assert.ok(Number(base[1]) < 0, `基础角度必须为负（朝她），实际 ${base[1]}deg`)
-  // ② 位置：不能离她太远（她头中心约 50%，问号中心应在 25%~45%）
+  // ② 兜底位置：不能离她太远（她头中心约 50%，问号中心应在 25%~45%）
   const left = Number(block.match(/left:\s*([\d.]+)%/)?.[1])
   const width = Number(block.match(/width:\s*([\d.]+)%/)?.[1])
   const centerPct = left + width / 2
   assert.ok(centerPct >= 25 && centerPct <= 45, `问号中心 x 应在 25%~45%（离她别太远），实际 ${centerPct.toFixed(1)}%`)
-  // ③ 摇摆：周期够慢、幅度够大，而且**跨到直立方向两侧**（左右各摇一次，不是只向一边）
+  // ③ 摇摆：周期够慢、幅度够大、跨到直立两侧，而且**必须有位移**（纯旋转在小图上只有 3~4px，看不出摇）
   assert.ok(/@keyframes qmarkSway/.test(css), '必须有 qmarkSway 摇摆动画')
-  assert.ok(/animation:\s*qmarkSway\s+([\d.]+)s/.test(block), '#questionMark 必须引用 qmarkSway 动画')
-  const period = Number(block.match(/animation:\s*qmarkSway\s+([\d.]+)s/)?.[1])
+  assert.ok(/animation:\s*qmarkSway\s+([\d.]+)s/.test(inner), '.qmark-inner 必须引用 qmarkSway 动画')
+  const period = Number(inner.match(/animation:\s*qmarkSway\s+([\d.]+)s/)?.[1])
   assert.ok(period >= 2, `摇摆要"慢慢"摇，周期至少 2s，实际 ${period}s`)
   const swayBlock = css.match(/@keyframes qmarkSway\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
   const angles = [...swayBlock.matchAll(/rotate\((-?[\d.]+)deg\)/g)].map((m) => Number(m[1]))
@@ -4817,6 +4819,22 @@ check('问号：朝她 / 离她别太远 / 左右各摇一次且幅度够（用�
   const amplitude = Math.max(...angles) - Math.min(...angles)
   assert.ok(amplitude >= 12, `摆动幅度至少 12°（用户说原来太小），实际 ${amplitude}°`)
   assert.ok(Math.max(...angles) >= 0, `摆动必须跨过直立方向（左右各摇），实际 ${angles.join(',')}`)
+  assert.ok(/translate\(-?\d+%/.test(swayBlock), '摇摆必须带左右位移（纯旋转看不出"左右各摇一次"）')
+})
+
+check('问号跟随她运动：位置每帧按模型变换重算（DOM 不会自己跟着 Live2D 走）', () => {
+  const live2d = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
+  assert.ok(/function updateQuestionMarkPosition\(\)/.test(live2d), '必须有 updateQuestionMarkPosition()')
+  // 每帧（beforeModelUpdate 钩子里）都要重算，否则她呼吸/摆动时问号会"钉"在原地
+  assert.ok(
+    /on\('beforeModelUpdate',[\s\S]{0,220}updateQuestionMarkPosition\(\)/.test(live2d),
+    'beforeModelUpdate（每帧）里必须调用 updateQuestionMarkPosition()',
+  )
+  assert.ok(/model\.toGlobal\(anchor\)/.test(live2d), '位置必须用 model.toGlobal 映射（自带镜像/缩放/位移）')
+  assert.ok(/QMARK_ANCHOR_U/.test(live2d) && /QMARK_ANCHOR_V/.test(live2d), '锚点在模型局部坐标里要有常数')
+  assert.ok(/QMARK_LOCAL_W|QMARK_LOCAL_H/.test(live2d), '尺寸也要按模型缩放同步（大小设置变化时不跳）')
+  const html = readFileSync(new URL('../packages/pet-shell/renderer/index.html', import.meta.url), 'utf8')
+  assert.ok(/class="qmark-inner"/.test(html), 'index.html 里问号要有内层 .qmark-inner（动画层）')
 })
 
 console.log(`\n${'─'.repeat(56)}`)
