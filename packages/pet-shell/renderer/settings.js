@@ -9,6 +9,7 @@ const opacityEl = document.getElementById('opacity')
 const opacityValEl = document.getElementById('opacityVal')
 const mirrorEl = document.getElementById('mirror')
 const autoFaceEl = document.getElementById('autoFace')
+const clickInteractionEl = document.getElementById('clickInteraction')
 const noteEl = document.getElementById('note')
 const noteDefault = noteEl.textContent
 
@@ -32,6 +33,8 @@ function paint(state) {
   autoFaceEl.checked = autoFace === true
   // 自动朝向开着时，手动翻转会被覆盖 —— 界面上说清楚，避免"点了没反应"
   mirrorEl.closest('.row').classList.toggle('muted', autoFaceEl.checked)
+  const { clickInteraction = true } = state.settings?.behavior ?? {}
+  clickInteractionEl.checked = clickInteraction === true
 }
 
 /** 顶部提示条，1.6s 后恢复原文 */
@@ -69,12 +72,12 @@ function wireSlider(input, valueEl, format, field, onDone) {
 wireSlider(scaleEl, scaleValEl, fmtScale, 'scale')
 wireSlider(opacityEl, opacityValEl, fmtPercent, 'opacity', () => flashNote('不透明度已更新'))
 
-// ── 开关（左右翻转 / 自动朝向）──────────────────────────────────────
-/** 给一个 checkbox 接上"改动即写盘 + 回填" */
-function wireToggle(input, field, onDone) {
+// ── 开关（左右翻转 / 自动朝向 / 点击互动）──────────────────────────
+/** 给一个 checkbox 接上"改动即写盘 + 回填"。group = appearance / behavior（和后端结构一致） */
+function wireToggle(input, group, field, onDone) {
   input.addEventListener('change', async () => {
     try {
-      paint(await api.patch({ appearance: { [field]: input.checked } }))
+      paint(await api.patch({ [group]: { [field]: input.checked } }))
       onDone?.()
     } catch (error) {
       flashNote(`保存失败：${error?.message ?? error}`)
@@ -82,13 +85,22 @@ function wireToggle(input, field, onDone) {
   })
 }
 
-wireToggle(mirrorEl, 'mirror', () => flashNote(mirrorEl.checked ? '已左右翻转' : '已恢复朝向'))
-wireToggle(autoFaceEl, 'autoFace', () => flashNote(autoFaceEl.checked ? '自动朝向已开启' : '自动朝向已关闭（可用手动翻转）'))
+wireToggle(mirrorEl, 'appearance', 'mirror', () => flashNote(mirrorEl.checked ? '已左右翻转' : '已恢复朝向'))
+wireToggle(autoFaceEl, 'appearance', 'autoFace', () =>
+  flashNote(autoFaceEl.checked ? '自动朝向已开启' : '自动朝向已关闭（可用手动翻转）'),
+)
+wireToggle(clickInteractionEl, 'behavior', 'clickInteraction', () =>
+  flashNote(
+    clickInteractionEl.checked
+      ? '点击互动已开启（摸头/墨镜/秋千）'
+      : '点击互动已关闭（她仍可拖动，右键面板照常）',
+  ),
+)
 
 document.getElementById('reset').addEventListener('click', async () => {
   try {
     paint(await api.reset())
-    flashNote('已恢复默认（大小 1.0× / 不透明度 100%）')
+    flashNote('已恢复默认（大小 1.0× / 不透明度 100% / 全部开关打开）')
   } catch (error) {
     flashNote(`恢复默认失败：${error?.message ?? error}`)
   }

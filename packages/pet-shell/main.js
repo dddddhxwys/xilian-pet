@@ -62,8 +62,9 @@ const HEIGHT = Number(process.env.PET_HEIGHT ?? 300)
 // ── 设置 + 托盘（阶段 2：设置的读写已接上，但**还没影响任何行为**）──
 /** 设置窗尺寸（阶段 2 只有「关于」，先给紧凑高度；阶段 4 接外观/行为后会加高） */
 const SETTINGS_WIDTH = 376
-/** 阶段 4：外观一节（大小 / 不透明度 / 左右翻转 / 自动朝向）→ 卡片 208 → 252 → 300 → 384 */
-const SETTINGS_HEIGHT = 384
+/** 阶段 4：外观一节（大小 / 不透明度 / 左右翻转 / 自动朝向）→ 208 → 252 → 300 → 384；
+   *  再加「行为 · 点击互动」一节 → 436（实测内容溢出 50px，384+50=434，取 436 留 2px 余量） */
+const SETTINGS_HEIGHT = 436
 /** 设置小窗：关闭即销毁（下次重开重新读设置） */
 let settingsWin = null
 /** 托盘：整个进程一个 */
@@ -119,6 +120,22 @@ function sendMirror(win, reason) {
   const value = effectiveMirrorState()
   if (!win.webContents.isDestroyed()) win.webContents.send('pet:mirror', value)
   log(`镜像：${value ? '开' : '关'}（${reason}）`)
+}
+
+/**
+ * 把**行为开关**发给渲染端（阶段 4：点击互动 / 气泡）。
+ *
+ * 这两个开关都在渲染端生效（点击分区在渲染端判定、气泡也在渲染端画），
+ * 所以主进程只负责"设置变了 → 推送"，不参与具体行为。
+ * ⚠️ 和外观设置一样有"启动时机"问题：`fit-ready` 之前渲染端可能还没监听，必须补发。
+ */
+function sendBehavior(win, reason) {
+  if (!win || win.isDestroyed()) return
+  const { clickInteraction, bubble } = settings.behavior
+  if (!win.webContents.isDestroyed()) {
+    win.webContents.send('pet:behavior', { clickInteraction, bubble })
+  }
+  log(`行为开关：点击互动 ${clickInteraction ? '开' : '关'}，气泡 ${bubble ? '开' : '关'}（${reason}）`)
 }
 
 /**
@@ -1342,7 +1359,7 @@ app.whenReady().then(async () => {
       behavior: { ...settings.behavior, ...(src.behavior ?? {}) },
     })
     persistSettings()
-    // 大小 / 不透明度 / 镜像变了就立刻生效（阶段 4 逐项接通；行为开关在后续小步里接）
+    // 大小 / 不透明度 / 镜像变了就立刻生效（阶段 4 逐项接通）
     if (settings.appearance.scale !== before.appearance.scale) applyScale(settings.appearance.scale)
     if (settings.appearance.opacity !== before.appearance.opacity) applyOpacity(settings.appearance.opacity)
     if (
@@ -1351,6 +1368,13 @@ app.whenReady().then(async () => {
     ) {
       autoMirrorPending = null // 开关变了就重新开始防抖，别沿用旧状态
       sendMirror(win, settings.appearance.autoFace ? '自动朝向下由鼠标决定' : '手动翻转')
+    }
+    // 行为开关（阶段 4）：点击互动 / 气泡 —— 不需要重启，立刻推给渲染端
+    if (
+      settings.behavior.clickInteraction !== before.behavior.clickInteraction ||
+      settings.behavior.bubble !== before.behavior.bubble
+    ) {
+      sendBehavior(win, '设置已改')
     }
     return settingsPayload()
   })
@@ -1361,6 +1385,7 @@ app.whenReady().then(async () => {
     applyOpacity(settings.appearance.opacity)
     autoMirrorPending = null
     sendMirror(win, '恢复默认')
+    sendBehavior(win, '恢复默认')
     log('设置已恢复默认')
     return settingsPayload()
   })
@@ -1465,6 +1490,7 @@ app.whenReady().then(async () => {
       win.webContents.send('pet:opacity', settings.appearance.opacity)
       win.webContents.send('pet:mirror', effectiveMirrorState())
       win.webContents.send('pet:relayout')
+      sendBehavior(win, '启动')
     }
   })
   ipcMain.on('pet:move-by', (_event, dx, dy) => {

@@ -74,6 +74,14 @@ contextBridge.exposeInMainWorld('xilianPet', {
    * 命中掩码跟着一起翻，所以点击不需要额外映射。
    */
   onMirror: (callback) => ipcRenderer.on('pet:mirror', (_event, value) => callback(value === true)),
+  /**
+   * 行为开关：{ clickInteraction, bubble }（阶段 4）。
+   * 都在渲染端生效 —— 点击互动关了只是"点了不演效果"，拖拽/右键面板照常。
+   */
+  onBehavior: (callback) =>
+    ipcRenderer.on('pet:behavior', (_event, value) =>
+      callback({ clickInteraction: value?.clickInteraction !== false, bubble: value?.bubble !== false }),
+    ),
   /** 请主进程立刻截一张自检截图（用于精确捕捉动作的关键帧） */
   snapshotNow: () => ipcRenderer.send('pet:snapshot-now'),
   /** 通知主进程：渲染端 handler 已注册完毕，可以补发最近状态了 */

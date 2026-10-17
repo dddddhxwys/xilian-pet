@@ -49,8 +49,15 @@ let dragX = 0
 let dragY = 0
 let bubbleTimer = null
 let latestSessionId = undefined
-// 用量视图：插件在状态帧里带（见 reducer 的 primaryTokens），右键时交给菜单小窗显示
+/** 用量视图：插件在状态帧里带（见 reducer 的 primaryTokens），右键时交给菜单小窗显示 */
 let tokensView = null
+/**
+ * 行为开关（阶段 4，主进程推过来的）：
+ * - clickInteraction=false：左键点她**不演分区效果**（摸头/墨镜/秋千弹）。拖拽、右键面板照常。
+ * - bubble=false：不显示气泡提示（下一项接）。
+ * 默认全开（和 settings.js 的 DEFAULT_SETTINGS 一致）；主进程启动时会补发一次。
+ */
+let behavior = { clickInteraction: true, bubble: true }
 
 // Live2D 是否成功接管。失败时保持 false → 用占位图 + 占位图的 alpha 掩码（验收项 A10 降级）
 let live2dActive = false
@@ -390,6 +397,11 @@ window.addEventListener('mouseup', (event) => {
     `[点击] (${Math.round(event.clientX)},${Math.round(event.clientY)}) → ` +
       (hit ? `${hit.partName}（${hit.zone}）` : '无分区'),
   )
+  // 行为开关：点击互动关掉后**不演任何分区效果**（拖拽在上面已经处理完，右键面板是另一条链路）
+  if (behavior.clickInteraction === false) {
+    api.log('[点击] 点击互动已关闭 → 不演分区效果（拖拽/右键面板不受影响）')
+    return
+  }
   if (hit && ZONE_EFFECTS[hit.zone]) {
     ZONE_EFFECTS[hit.zone]()
     // 秋千：照常"弹一下"，另外数连点 —— 固定窗口内第 6 次 → 出晕（spiral）
@@ -779,6 +791,12 @@ async function startLive2D() {
     } catch (error) {
       api.log(`镜像失败：${error.message}`)
     }
+  })
+
+  // 行为开关（阶段 4）：点击互动关掉后，左键点她**不演效果**，但拖拽和右键面板照常
+  api.onBehavior?.((value) => {
+    behavior = { ...behavior, ...value }
+    api.log(`行为开关已更新：点击互动 ${behavior.clickInteraction ? '开' : '关'}，气泡 ${behavior.bubble ? '开' : '关'}`)
   })
 
   // 兜底：无论成功失败，8 秒内一定要放行窗口显示，

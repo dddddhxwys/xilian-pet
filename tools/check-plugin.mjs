@@ -4883,6 +4883,45 @@ check('问号动画模式切换：右键=一次性编排，常驻提问=循环�
   assert.equal(/opacity/.test(loopBlock), false, '循环版必须有 opacity 吗？不能有 —— 常驻问号必须一直可见')
 })
 
+// ─────────────────────────────────────────────────────────────
+console.log('\n[21] 行为开关（阶段 4：点击互动）')
+
+check('点击互动开关：主进程推送 + 渲染端守卫 + 拖拽不受影响 + 右键面板照常', () => {
+  const main = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+  assert.ok(/function sendBehavior\(win, reason\)/.test(main), '必须有 sendBehavior()')
+  assert.ok(/webContents\.send\('pet:behavior'/.test(main), '必须发 pet:behavior 通道')
+  assert.ok(
+    /settings\.behavior\.clickInteraction !== before\.behavior\.clickInteraction/.test(main),
+    '设置变了要重新推送（否则界面点了没反应）',
+  )
+  assert.ok(/sendBehavior\(win, '启动'\)/.test(main), 'fit-ready 时要补发（渲染端可能晚于 apply 就绪）')
+  assert.ok(/sendBehavior\(win, '恢复默认'\)/.test(main), '恢复默认也要推送')
+  const preload = readFileSync(new URL('../packages/pet-shell/preload.cjs', import.meta.url), 'utf8')
+  assert.ok(/onBehavior:/.test(preload), 'preload 必须暴露 onBehavior')
+  assert.ok(/'pet:behavior'/.test(preload), '通道名要和主进程一致')
+  const pet = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+  assert.ok(/let behavior = \{ clickInteraction: true, bubble: true \}/.test(pet), '渲染端要有默认全开的状态')
+  assert.ok(/api\.onBehavior\?\./.test(pet), '渲染端要订阅行为开关')
+  assert.ok(/behavior\.clickInteraction === false/.test(pet), '点击互动关闭时必须跳过分区效果')
+  // 拖拽必须先处理：关掉"点击互动"不能把"拖得动"也关掉（用户明确要求）
+  const dragIdx = pet.indexOf('if (movedFar) {')
+  const guardIdx = pet.indexOf('behavior.clickInteraction === false')
+  assert.ok(dragIdx > 0 && guardIdx > dragIdx, '拖拽处理必须在点击互动守卫之前（关互动不影响拖拽）')
+  assert.ok(/contextmenu/.test(pet), '右键面板链路必须仍然存在（不受这个开关影响）')
+})
+
+check('设置窗「行为」一节：控件存在 / 按 behavior 分组写盘 / 窗口高度不溢出', () => {
+  const html = readFileSync(new URL('../packages/pet-shell/renderer/settings.html', import.meta.url), 'utf8')
+  assert.ok(/id="clickInteraction"/.test(html), '设置窗要有 #clickInteraction 开关')
+  assert.ok(/<div class="sec">行为<\/div>/.test(html), '要有「行为」分组标题')
+  const js = readFileSync(new URL('../packages/pet-shell/renderer/settings.js', import.meta.url), 'utf8')
+  assert.ok(/wireToggle\(clickInteractionEl, 'behavior', 'clickInteraction'/.test(js), '要按 behavior 分组写盘（不能写进 appearance）')
+  assert.ok(/state\.settings\?\.behavior/.test(js), 'paint 要回填 behavior 状态')
+  const main = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+  const height = Number(main.match(/const SETTINGS_HEIGHT = (\d+)/)?.[1])
+  assert.ok(height >= 436, `加「行为」一节后窗口高度至少 436（实测内容需要 434），实际 ${height}`)
+})
+
 console.log(`\n${'─'.repeat(56)}`)
 console.log(`通过 ${passed} 项，失败 ${failed} 项`)
 if (warnings.length > 0) console.log(`插件告警 ${warnings.length} 条：\n  ${warnings.slice(0, 5).join('\n  ')}`)
