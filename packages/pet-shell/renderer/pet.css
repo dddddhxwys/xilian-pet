@@ -111,6 +111,23 @@ body {
   background: url(assets/question-mark.png) center / contain no-repeat;
   pointer-events: none;
   user-select: none;
+  /* 角度：-10° 逆时针 → 问号的"尾巴"朝右下方（= 朝着她）。
+     模型原图放在她右上角时，尾巴本来就是朝她的；镜像到左上角后要靠这个角度补回来。
+     （用户 2026-10-12："问号的角度不对，尾部应该微微朝向昔涟"）
+     再叠一层很慢的摇摆（3.6s 两度），像浮在那儿 —— 用户要求"问号应该慢慢摇动" */
+  transform: rotate(-10deg);
+  transform-origin: 50% 60%;
+  animation: qmarkSway 3.6s ease-in-out infinite;
+}
+
+@keyframes qmarkSway {
+  0%,
+  100% {
+    transform: rotate(-6deg) translateY(0);
+  }
+  50% {
+    transform: rotate(-14deg) translateY(-3%);
+  }
 }
 
 /* 气泡：和面板/设置窗同一套语言（珍珠白卡片、粉调阴影、圆角 14） */
