@@ -30,7 +30,7 @@ import {
   pointInDrawableLocal,
   rawToLocal,
 } from '../packages/pet-shell/hit-test.js'
-import { fitTransform } from '../packages/pet-shell/renderer/mirror-math.js'
+import { expressionForMirror, fitTransform } from '../packages/pet-shell/renderer/mirror-math.js'
 import { isPetHealthResponse, parseListeningPorts, resolveDshUrl } from '../packages/pet-shell/dsh-discovery.js'
 import { createSseLink } from '../packages/pet-shell/sse-link.js'
 import { TRAY_TOOLTIP, TOGGLE_SHORTCUT, QUIT_SHORTCUT, buildTrayMenuTemplate, trayActionFor } from '../packages/pet-shell/tray-model.js'
@@ -2318,13 +2318,20 @@ check('摸头顶反应：缓动包络 + 混合/叠加语义 + 幅度 【用户 2
     `峰值：眼睑要闭到底（${EYE_CLOSED_OPEN}），实际 ${atPeak.ParamEyeLOpen}`,
   )
   assert.ok(Math.abs(atPeak.ParamEyeROpen - EYE_CLOSED_OPEN) < 1e-6, '峰值：右眼同样要闭到底')
-  assert.ok(Math.abs(atPeak.ParamAngleZ - (6 - 16)) < 1e-6, '峰值：ParamAngleZ = 当前 + (-16)')
-  assert.ok(Math.abs(atPeak.ParamBodyAngleZ - (2 - 7)) < 1e-6, '峰值：ParamBodyAngleZ = 当前 + (-7)')
+  assert.ok(
+    Math.abs(atPeak.ParamAngleZ - (6 + HEAD_PAT.params.ParamAngleZ.add)) < 1e-6,
+    `峰值：ParamAngleZ = 当前 + ${HEAD_PAT.params.ParamAngleZ.add}`,
+  )
+  assert.ok(
+    Math.abs(atPeak.ParamBodyAngleZ - (2 + HEAD_PAT.params.ParamBodyAngleZ.add)) < 1e-6,
+    `峰值：ParamBodyAngleZ = 当前 + ${HEAD_PAT.params.ParamBodyAngleZ.add}`,
+  )
   const atMid = resolvePokeParams(HEAD_PAT, (HEAD_PAT.riseMs + HEAD_PAT.holdMs + HEAD_PAT.totalMs) / 2, read)
   assert.ok(Math.abs(atMid.ParamAngleZ - 6) < Math.abs(atPeak.ParamAngleZ - 6), '回落中段应比峰值更接近原状')
 
-  // ④ 幅度：-8° 被用户判为"太小"，这里锁住下限，防止又调回去
-  assert.ok(HEAD_PAT.params.ParamAngleZ.add <= -12, `歪头幅度至少要 12°，实际 ${HEAD_PAT.params.ParamAngleZ.add}°`)
+  // ④ 幅度：-8° / -16° 都被用户判为"太小"。2026-10-12 再反馈"角度小了" → 锁到 20° 以上
+  assert.ok(HEAD_PAT.params.ParamAngleZ.add <= -20, `歪头幅度至少要 20°，实际 ${HEAD_PAT.params.ParamAngleZ.add}°`)
+  assert.ok(HEAD_PAT.params.ParamBodyAngleZ.add <= -8, `身体倾至少要 8°，实际 ${HEAD_PAT.params.ParamBodyAngleZ.add}°`)
 
   // ⑤ 动作驱动的参数**必须用 `{add}`**：待机动作 Scene4（180s）每帧都在写它们，
   //    用 `{to}` 覆盖会把秋千的头部/身体摆动停掉 ✗
@@ -4751,6 +4758,32 @@ check('启动器接线：不再写死 19387，且把 DSH 地址来源打进日�
   assert.ok(/netstat -ano -p TCP/.test(src), '自动发现要用 netstat 枚举监听端口')
   assert.ok(/（\$\{dsh\.source\}）/.test(src), '日志里要写明地址来源（排障关键）')
   assert.ok(!/PET_DSH_URL \?\? 'http:\/\/127\.0\.0\.1:19387'/.test(src), '不能再把 19387 写死成唯一来源')
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[20] 镜像的表情适配（问号不能是反问号；摸头要比之前更明显）')
+
+check('镜像时问号表情必须换成 reset（模型问号贴图镜像后会变成反问号）', () => {
+  assert.equal(expressionForMirror('question', true), 'reset', '镜像 + 问号 → reset（关掉模型贴图）')
+  assert.equal(expressionForMirror('question', false), 'question', '不镜像时仍用模型问号')
+  // 其他表情是无文字图形，镜像后观感正常，不能被误改
+  for (const name of ['sunglasses', 'happy', 'surprise', 'spiral', 'reset']) {
+    assert.equal(expressionForMirror(name, true), name, `${name} 不该被镜像改写`)
+  }
+  // 非布尔 mirror 视为不镜像（配置坏值时不要乱改表情）
+  assert.equal(expressionForMirror('question', 'yes'), 'question')
+})
+
+check('问号镜像适配接线：setExpression 走纯函数 + DOM 问号存在 + 状态切换会同步', () => {
+  const live2d = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
+  assert.ok(/expressionForMirror\(name, mirrorMode\)/.test(live2d), 'setExpression 必须经 expressionForMirror')
+  assert.ok(/function syncDomQuestionMark\(\)/.test(live2d), '必须有 DOM 问号的同步函数')
+  assert.ok(/questionFlashUntil/.test(live2d), '右键问号要有"显示窗口"时间')
+  assert.ok(/id="questionMark"/.test(readFileSync(new URL('../packages/pet-shell/renderer/index.html', import.meta.url), 'utf8')), 'index.html 必须有 #questionMark')
+  const css = readFileSync(new URL('../packages/pet-shell/renderer/pet.css', import.meta.url), 'utf8')
+  assert.ok(/#questionMark\s*\{/.test(css), 'pet.css 必须给 #questionMark 定位置和样式')
+  // 切换镜像时要把当前状态的表情重新按新规则应用一次，否则问号状态会残留反问号
+  assert.ok(/setMirror[\s\S]{0,600}setExpression\(mapped\.expression/.test(live2d), 'setMirror 后要重放当前状态表情')
 })
 
 console.log(`\n${'─'.repeat(56)}`)

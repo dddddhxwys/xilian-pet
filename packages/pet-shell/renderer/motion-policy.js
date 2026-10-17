@@ -429,9 +429,11 @@ export const HEAD_PAT = {
     // 闭到底（不是"眯"）：0 = 模型声明的最小值，也是眨眼用的同一个值，见 EYE_CLOSED_OPEN
     ParamEyeLOpen: { to: EYE_CLOSED_OPEN },
     ParamEyeROpen: { to: EYE_CLOSED_OPEN },
-    // 幅度：-8° 实机"太小"，实测 -16° 才明显；再加一点身体倾，像"靠过来"
-    ParamAngleZ: { add: -16 },
-    ParamBodyAngleZ: { add: -7 },
+    // 幅度：-8° 实机"太小"，实测 -16° 才明显（2026-10-11）。
+    // 2026-10-12 用户再反馈"角度小了、不够明显" → 加到 -24° / 身体 -10°（各 +50% / +43%）。
+    // 镜像时这两个角度会**随模型一起镜像**（ParamAngleZ 是模型空间旋转，scaleX 取负后视觉方向自动反过来）
+    ParamAngleZ: { add: -24 },
+    ParamBodyAngleZ: { add: -10 },
   },
 }
 

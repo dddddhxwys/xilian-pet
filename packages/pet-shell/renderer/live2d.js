@@ -71,7 +71,7 @@ import {
 //    `../hit-test.js` 会被解析成 pet://app/hit-test.js → 404 → 整个模块加载失败 → 静默降级成占位图 ✗（实机踩过）
 import { PART_NAMES, PART_ZONES, pickPartAt, rawToLocal } from './hit-math.js'
 // 构图变换（含镜像）的纯函数：坐标算错是镜像最典型的 bug，单独抽出来用 Node 行为断言钉死
-import { fitTransform } from './mirror-math.js'
+import { expressionForMirror, fitTransform } from './mirror-math.js'
 
 /**
  * ⚠️ 这个模型同一时刻**只能有一个表情生效** ——
@@ -462,6 +462,10 @@ export function setMirror(value) {
   mirrorMode = next
   state.log(`镜像：${next ? '开' : '关'}`)
   layoutFromContent()
+  // 镜像切换会改变"问号用模型还是用 DOM" —— 立刻按当前状态重放一次表情并同步 DOM 问号
+  const mapped = STATE_MAP[state.currentState] ?? STATE_MAP.idle
+  setExpression(mapped.expression ?? 'reset')
+  syncDomQuestionMark()
 }
 
 /** 直接写底层 Cubism 参数（模型内部参数 id） */
@@ -481,16 +485,36 @@ function setParams(params) {
 function setExpression(name) {
   const model = state.model
   if (!model || !name) return
+  // ⚠️ 镜像时**问号不能用模型表情**：那张问号贴图会跟着模型一起被镜像成"反问号"。
+  //    换成 reset 关掉它，由 DOM 的 #questionMark 画一个不镜像的问号（见 syncDomQuestionMark）。
+  const effective = expressionForMirror(name, mirrorMode)
   const available = new Set((model.internalModel?.settings?.expressions ?? []).map((e) => e.Name))
-  if (!available.has(name)) {
-    state.log(`表情 ${name} 不存在，跳过`)
+  if (!available.has(effective)) {
+    state.log(`表情 ${effective} 不存在，跳过`)
     return
   }
   try {
-    model.expression(name)
+    model.expression(effective)
   } catch (error) {
-    state.log(`表情 ${name} 失败：${error.message}`)
+    state.log(`表情 ${effective} 失败：${error.message}`)
   }
+  syncDomQuestionMark()
+}
+
+/**
+ * 镜像时替代模型问号的 **DOM 问号**（未镜像、可读）。
+ *
+ * 显示条件：镜像开启，并且（当前状态是 question 或正在临时弹问号）。
+ * 位置在 CSS 里（`#questionMark`，镜像时她左上角就是模型问号原本该在的位置）。
+ */
+let questionFlashUntil = 0
+let questionFlashTimer = null
+function syncDomQuestionMark() {
+  const el = document.getElementById('questionMark')
+  if (!el) return
+  const flashing = Date.now() < questionFlashUntil
+  const want = mirrorMode && (flashing || state.currentState === 'question')
+  el.hidden = !want
 }
 
 /**
@@ -703,6 +727,15 @@ export function debugZoneBoxes() {
 
 export function pokeExpression(name, ms = 1700) {
   if (!state.model || !state.ready) return false
+  // 镜像时的问号由 DOM 画（模型里的问号会被镜像成反问号），给它一个"显示窗口"
+  if (name === 'question') {
+    questionFlashUntil = Date.now() + Math.max(200, ms)
+    clearTimeout(questionFlashTimer)
+    questionFlashTimer = setTimeout(() => {
+      questionFlashUntil = 0
+      syncDomQuestionMark()
+    }, Math.max(200, ms))
+  }
   setExpression(name)
   clearTimeout(pokeTimer)
   pokeTimer = setTimeout(() => {

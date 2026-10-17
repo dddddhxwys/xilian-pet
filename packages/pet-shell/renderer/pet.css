@@ -94,6 +94,30 @@ body {
 
 /* （未读 +N 汇总背板 #badge 已随"未读功能去除"一并删除，2026-10-05） */
 
+/* 镜像时替代模型问号的 DOM 问号（模型贴图镜像后会变成"反问号"）。
+   位置按镜像后的构图放：她左上角 —— 也就是未镜像时模型问号所在的右上角关于中线的对称位置。
+   ⚠️ 字号用 vh 跟着窗口缩放走（窗口尺寸 = 260×300 × 大小倍数）。 */
+#questionMark {
+  position: absolute;
+  left: 24%;
+  top: 30%;
+  z-index: 2;
+  font-family: "Segoe Script", "Ink Free", "Comic Sans MS", "Microsoft YaHei", cursive;
+  font-size: 30px;
+  font-size: 8vh;
+  line-height: 1;
+  font-weight: 700;
+  color: var(--xl-accent);
+  text-shadow:
+    0 1px 0 #fff,
+    0 0 6px rgba(255, 255, 255, 0.95),
+    0 2px 8px rgba(232, 137, 166, 0.35);
+  /* ⚠️ 不要再加 scaleX(-1)：这个 DOM 问号存在的意义就是"字形不镜像、能正常读" */
+  transform: rotate(-8deg);
+  pointer-events: none;
+  user-select: none;
+}
+
 /* 气泡：和面板/设置窗同一套语言（珍珠白卡片、粉调阴影、圆角 14） */
 #bubble {
   position: absolute;

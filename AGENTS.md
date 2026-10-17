@@ -23,7 +23,7 @@ Electron 透明置顶窗（显示器）→ IPC → Live2D 渲染端；另有操�
 | `packages/pet-plugin/` | Host 插件（零依赖、零构建）：路由 + `reducer.js` 状态机（**主动提醒引擎 `reminders.js` 已于 2026-10-11 按用户要求整体删除**） |
 | `packages/pet-shell/` | Electron 主进程：SSE 订阅、`pet://` 协议、光标轮询命中测试、窗口/构图持久化 |
 | `packages/pet-shell/renderer/` | 渲染端：`pet.js`（普通脚本）/ `live2d.js`（**ES 模块**）/ `hit-math.js` / `motion-policy.js` |
-| `tools/check-plugin.mjs` | **自测，改任何东西都要跑**（当前 **243 项**，必须全绿；**数字会变，以实际输出为准**） |
+| `tools/check-plugin.mjs` | **自测，改任何东西都要跑**（当前 **245 项**，必须全绿；**数字会变，以实际输出为准**） |
 | `docs/`·`chajian/` | 文档与研究记录（**大多带历史包袱，先读接手状态报告**） |
 
 ## 2. "改什么 → 怎么生效"（实测，别猜）
@@ -62,7 +62,7 @@ Electron 透明置顶窗（显示器）→ IPC → Live2D 渲染端；另有操�
 ## 5. 常用命令
 
 ```powershell
-node tools/check-plugin.mjs                    # 自测（243 项，必须全绿；不需要 DSH）
+node tools/check-plugin.mjs                    # 自测（245 项，必须全绿；不需要 DSH）
 Invoke-RestMethod "$env:DSH_WEB_URL/xilian-pet/health"   # 端口会变，别写死
 .\start-pet.cmd   /   .\start-pet.cmd --check  # 桌宠（Ctrl+Shift+Q 退出）
 node tools/package-release.mjs --with-model --with-electron

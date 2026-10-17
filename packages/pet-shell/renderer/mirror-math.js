@@ -38,3 +38,22 @@ export function fitTransform(content, cssW, cssH, options = {}) {
   const posY = dY - content.y * scale
   return { scale, scaleX, scaleY: scale, posX, posY, marginPx }
 }
+
+/**
+ * 镜像时该用哪个**表情**。
+ *
+ * 为什么需要（2026-10-12 用户实测）：模型里的「问号」是一张贴图（由 `Param6` 驱动，
+ * `expression7.exp3.json` 里 `Param6: 1`）。整模型镜像后**问号字形本身也被镜像了**，
+ * 变成"反问号"读不出来。
+ * 处理：镜像时**不弹**模型里的问号表情（换成 `reset`，把问号关掉），
+ * 改由 DOM 画一个**不镜像**的问号（`#questionMark`，见 pet.css / live2d.js）。
+ * 其余表情（墨镜/星星/闭眼笑…）都是无文字图形，镜像后观感正常，不动。
+ *
+ * @param {string} name 原表情名
+ * @param {boolean} mirror 当前是否镜像
+ * @returns {string} 实际要应用的表情名
+ */
+export function expressionForMirror(name, mirror) {
+  if (mirror === true && name === 'question') return 'reset'
+  return name
+}
