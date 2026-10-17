@@ -39,6 +39,29 @@ export function clampIntoWorkArea(workArea, bounds) {
 }
 
 /**
+ * 点是否落在「矩形外扩 radius 后」的范围内（含边界）。
+ *
+ * 用途：自动朝向的**互动死区** —— 光标在她附近时不要跟着鼠标翻，
+ * 否则摸头/点击/拖拽的时候她会一直动来动去（用户明确要求）。
+ *
+ * radius 为 0 时就是普通的"点是否在矩形内（含边）"。
+ *
+ * @param {{x:number,y:number}} point
+ * @param {{x:number,y:number,width:number,height:number}} rect
+ * @param {number} radius
+ * @returns {boolean}
+ */
+export function pointNearRect(point, rect, radius) {
+  const r = Math.max(0, radius)
+  return (
+    point.x >= rect.x - r &&
+    point.x <= rect.x + rect.width + r &&
+    point.y >= rect.y - r &&
+    point.y <= rect.y + rect.height + r
+  )
+}
+
+/**
  * 改变窗口尺寸时**保住她的脚**：以「底边中点」为锚缩放，再夹回工作区。
  *
  * 为什么锚底边中点，而不是窗口中心：

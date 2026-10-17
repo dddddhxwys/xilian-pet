@@ -36,6 +36,7 @@ import { TRAY_TOOLTIP, TOGGLE_SHORTCUT, QUIT_SHORTCUT, buildTrayMenuTemplate, tr
 import {
   centerInWorkArea,
   clampIntoWorkArea,
+  pointNearRect,
   resizeAroundBottomCenter,
 } from '../packages/pet-shell/window-placement.js'
 import {
@@ -4431,6 +4432,20 @@ check('改大小：放大到屏幕边缘外会被夹回工作区（否则她会�
     { x: 0, y: 0 },
     '窗口比屏幕还大时必须贴左上，不能是负坐标',
   )
+})
+
+check('自动朝向的互动死区：点在她窗口外扩 radius 内才算"靠近"（含边界）', () => {
+  // 用户 2026-10-12 要求："鼠标放在她附近的时候不要触发镜像跟随，防止互动时动来动去"
+  const rect = { x: 100, y: 100, width: 260, height: 300 }
+  const R = 80
+  assert.equal(pointNearRect({ x: 200, y: 200 }, rect, R), true, '框内当然算靠近')
+  assert.equal(pointNearRect({ x: 100 - R, y: 200 }, rect, R), true, '左边正好在边界上（含）')
+  assert.equal(pointNearRect({ x: 100 - R - 1, y: 200 }, rect, R), false, '再往外 1px 就算离开')
+  assert.equal(pointNearRect({ x: 100 + 260 + R, y: 100 + 300 + R }, rect, R), true, '右下角边界（含）')
+  assert.equal(pointNearRect({ x: 200, y: 100 + 300 + R + 1 }, rect, R), false, '下方超出 1px 算离开')
+  // radius=0 时退化成普通"点在矩形内"
+  assert.equal(pointNearRect({ x: 100, y: 100 }, rect, 0), true)
+  assert.equal(pointNearRect({ x: 99, y: 100 }, rect, 0), false)
 })
 
 // 这条是**源码护栏**，不是行为断言 —— 它守的是一个真实事故：

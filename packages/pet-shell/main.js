@@ -26,7 +26,7 @@ import {
   serializeSettings,
 } from './settings.js'
 import { TRAY_TOOLTIP, TOGGLE_SHORTCUT, buildTrayMenuTemplate, trayActionFor } from './tray-model.js'
-import { centerInWorkArea, resizeAroundBottomCenter } from './window-placement.js'
+import { centerInWorkArea, pointNearRect, resizeAroundBottomCenter } from './window-placement.js'
 import { readFile } from 'node:fs/promises'
 import { dirname, extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -92,6 +92,16 @@ let autoMirrorState = false
 /** 自动朝向的防抖状态：{ value, since }；用户明确要求 300ms 防抖（鼠标快速划过时不来回翻） */
 let autoMirrorPending = null
 const MIRROR_DEBOUNCE_MS = 300
+/**
+ * 自动朝向的**互动死区**（DIP）：光标落在她窗口外扩这个距离内时**暂停跟随**。
+ *
+ * 为什么要有（用户 2026-10-12 明确要求）：摸头 / 点击 / 拖拽的时候鼠标就在她身上，
+ * 如果还跟着鼠标左右翻，她会一直"动来动去"，互动体验很差。
+ * 80 大致是她周围"伸手可及"的范围；离开这个范围才恢复跟随。
+ */
+const AUTO_FACE_NEAR_RADIUS = 80
+/** 当前是否因为"光标在她附近"而暂停跟随（只用来打一次日志，避免刷屏） */
+let autoFaceNearFrozen = false
 
 /**
  * 实际生效的镜像值：
@@ -115,14 +125,31 @@ function sendMirror(win, reason) {
  * 自动朝向：光标在她**左侧**就镜像（脸朝左），右侧就翻回来。
  *
  * 带 300ms 防抖：光标必须"稳定在另一侧"满 300ms 才真的翻，避免快速划过时抽筋。
+ * 带**互动死区**：光标在她附近（窗口外扩 AUTO_FACE_NEAR_RADIUS）时完全暂停跟随 ——
+ * 摸头/点按钮/拖拽时她不会跟着鼠标乱翻（用户明确要求）。
  * ⚠️ 方向约定（左→镜像开）是推断的，用户实机确认若感觉反了，把比较改成 `>` 即可（一行）。
  */
 function maybeAutoFace(win, cursor) {
   if (!settings.appearance.autoFace) {
     autoMirrorPending = null
+    autoFaceNearFrozen = false
     return
   }
   const b = win.getBounds()
+  // ① 互动死区：靠近她 → 冻结在当前朝向（并把待执行的翻转取消）
+  if (pointNearRect(cursor, b, AUTO_FACE_NEAR_RADIUS)) {
+    autoMirrorPending = null
+    if (!autoFaceNearFrozen) {
+      autoFaceNearFrozen = true
+      log('自动朝向：光标靠近她 → 暂停跟随（互动时不会乱翻）')
+    }
+    return
+  }
+  if (autoFaceNearFrozen) {
+    autoFaceNearFrozen = false
+    log('自动朝向：光标已离开 → 恢复跟随')
+  }
+  // ② 左右跟随
   const want = cursor.x < b.x + b.width / 2
   if (want === autoMirrorState) {
     autoMirrorPending = null
