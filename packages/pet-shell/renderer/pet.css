@@ -119,14 +119,16 @@ body {
   height: 100%;
   background: url(assets/question-mark.png) center / contain no-repeat;
   /* 角度：-8° 逆时针 → 问号的"尾巴"朝右下方（= 朝着她）。
-     摇摆：+4° ⇄ -20°（跨过直立方向、幅度 24°），周期 4s。
-     ⚠️ 旋转圆心 = **尾巴那个点**（用户 2026-10-12："应该以尾部的点为圆心，而不是头部的弯"）：
+     摇摆：+4° ⇄ -20°（跨过直立方向、幅度 24°），周期 **2s**。
+     ⚠️ 周期必须**小于右键问号的显示时长**（pet.js 里 `pokeExpression('question', 2400)`）：
+        原来是 4s，而问号只显示 1.7s → 用户只看到"往左摇一次"就消失了
+        （2026-10-12："只有向左晃动的一次"）。周期 2s 能在一个显示周期里看到完整的左右各一次。
+     ⚠️ 旋转圆心 = **尾巴那个点**（用户："应该以尾部的点为圆心，而不是头部的弯"）：
         原图 34×41，尾巴圆点在 (≈12, ≈37) → 35% / 90%。
-        以尾为轴甩，尾部几乎不动、钩子头大幅左右摆 —— 这就是用户要的"挂着摇"。
      ⚠️ 不要再叠加整体 translate：那会让"尾巴"也跟着平移，等于圆心又跑了。 */
   transform: rotate(-8deg);
   transform-origin: 35% 90%;
-  animation: qmarkSway 4s ease-in-out infinite;
+  animation: qmarkSway 2s ease-in-out infinite;
 }
 
 @keyframes qmarkSway {

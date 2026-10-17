@@ -417,7 +417,7 @@ window.addEventListener('mouseup', (event) => {
 window.addEventListener('contextmenu', (event) => {
   event.preventDefault()
   if (!overOpaquePixel(event.clientX, event.clientY)) return
-  live2d?.pokeExpression('question', 1700) // "你想干嘛？"
+  live2d?.pokeExpression('question', 2400) // "你想干嘛？"
   openPanel()
 })
 
@@ -562,6 +562,7 @@ async function startLive2D() {
     forceMotion: info.forceMotion,
     sampleMs: info.sampleMs,
     handDebug: info.handDebug,
+    qmarkTrace: info.qmarkTrace,
     cachedFit,
     onFitReady: (box, fromCache) => {
       if (!fromCache && box) {
@@ -730,7 +731,7 @@ async function startLive2D() {
     setTimeout(() => {
       api.log('调试模式：自动弹出操作面板')
       // 和真实右键路径保持一致（否则拍不到 poke 的效果）
-      live2d?.pokeExpression('question', 1700)
+      live2d?.pokeExpression('question', 2400)
       openPanel()
     }, 2500)
   }

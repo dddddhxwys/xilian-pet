@@ -1865,6 +1865,8 @@ app.whenReady().then(async () => {
       sampleMs: process.env.PET_SAMPLE_PARAMS === '1' ? Number(process.env.PET_SAMPLE_MS ?? 5000) : 0,
       // 逐帧打印手部过渡的数值（排查"弹两下"要的是单调性，肉眼盯动画数不清）
       handDebug: process.env.PET_HAND_DEBUG === '1',
+      // 每 0.5 秒打印一次镜像问号的位置（排查"不跟着她动/不摇"这类看不见的判断）
+      qmarkTrace: process.env.PET_QMARK_TRACE === '1',
       // 启动后自动弹她一下（核对"被弹"的振荡，不必真的去点秋千）
       forceFlick: process.env.PET_FORCE_FLICK === '1',
       // 把左键分区的部件框画出来（核对部件级命中测试的坐标变换 —— 这是它唯一的风险点）

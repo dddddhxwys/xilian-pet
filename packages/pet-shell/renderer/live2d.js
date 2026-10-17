@@ -542,6 +542,48 @@ const QMARK_ANCHOR_V = 0.3096
 const QMARK_TOWARD_HER_U = 0.11
 const QMARK_LOCAL_W = 27.2 / 0.07
 const QMARK_LOCAL_H = 32.8 / 0.07
+
+/**
+ * 问号要用**脸部部件的实时位置**做参照（2026-10-12 用户："问号并没有跟随昔涟晃动"）。
+ *
+ * 为什么不能用模型容器：她的呼吸 / 歪头 / 摆身都是**参数级变形**（ParamAngle 等），
+ * 模型容器（model.position/scale）几乎不动，用容器算出来的位置等于钉死。
+ * 所以每帧从 Cubism 读**脸部画层的顶点**（已含变形），算脸中心，再叠一个固定的局部偏移。
+ * 只取稳定部件（脸/眉/眼/嘴），别把"闪耀/开心"这类会开关的特效层算进来，否则中心会跳。
+ */
+const QMARK_TRACK_PARTS = new Set(['Part18', 'Part6', 'Part11', 'Part32'])
+/** 局部坐标里的「问号锚点 - 脸中心」；第一次定位时算出来，之后固定 */
+let qmarkFaceOffset = null
+
+/** 每 0.5 秒打印一次问号位置（PET_QMARK_TRACE=1）——排查"不跟着动 / 不摇"这类肉眼判断 */
+let qmarkTrace = false
+let qmarkTraceAt = 0
+
+/** 脸部当前中心（模型局部像素；已含变形） */
+function faceCenterLocal() {
+  const core = state.model?.internalModel?.coreModel
+  if (!core) return null
+  const canvas = localCanvas()
+  const count = core.getDrawableCount?.() ?? 0
+  let sumX = 0
+  let sumY = 0
+  let n = 0
+  for (let i = 0; i < count; i++) {
+    const partId = core.getPartId?.(core.getDrawableParentPartIndex?.(i))
+    if (!QMARK_TRACK_PARTS.has(partId)) continue
+    const positions = core.getDrawableVertexPositions?.(i)
+    const vertexCount = core.getDrawableVertexCount?.(i) ?? 0
+    if (!positions || vertexCount < 1) continue
+    for (let v = 0; v < vertexCount; v++) {
+      const p = rawToLocal(positions[v * 2], positions[v * 2 + 1], canvas)
+      sumX += p.x
+      sumY += p.y
+      n++
+    }
+  }
+  return n > 0 ? { x: sumX / n, y: sumY / n } : null
+}
+
 function updateQuestionMarkPosition() {
   const el = document.getElementById('questionMark')
   if (!el || el.hidden) return
@@ -551,13 +593,31 @@ function updateQuestionMarkPosition() {
     x: contentLocal.x + (QMARK_ANCHOR_U - QMARK_TOWARD_HER_U) * contentLocal.w,
     y: contentLocal.y + QMARK_ANCHOR_V * contentLocal.h,
   }
-  const point = model.toGlobal(anchor)
+  // 每帧拿脸中心（含呼吸/歪头的变形），问号 = 脸中心 + 固定局部偏移 → 跟着她动
+  const face = faceCenterLocal()
+  if (face && qmarkFaceOffset === null) {
+    qmarkFaceOffset = { x: anchor.x - face.x, y: anchor.y - face.y }
+  }
+  const target = face && qmarkFaceOffset ? { x: face.x + qmarkFaceOffset.x, y: face.y + qmarkFaceOffset.y } : anchor
+  const point = model.toGlobal(target)
   const sx = Math.abs(model.scale.x)
   const sy = Math.abs(model.scale.y)
   el.style.left = `${point.x}px`
   el.style.top = `${point.y}px`
   el.style.width = `${QMARK_LOCAL_W * sx}px`
   el.style.height = `${QMARK_LOCAL_H * sy}px`
+  if (qmarkTrace && Date.now() - qmarkTraceAt > 500) {
+    qmarkTraceAt = Date.now()
+    const angle = (() => {
+      const inner = el.querySelector('.qmark-inner')
+      if (!inner) return 0
+      const m = new DOMMatrix(getComputedStyle(inner).transform)
+      return Math.round((Math.atan2(m.b, m.a) * 180) / Math.PI)
+    })()
+    state.log(
+      `问号 x=${point.x.toFixed(1)} y=${point.y.toFixed(1)} 角度=${angle}° 脸中心=(${face ? face.x.toFixed(0) : '-'},${face ? face.y.toFixed(0) : '-'})`,
+    )
+  }
 }
 
 /**
@@ -967,10 +1027,11 @@ export function patHead() {
 }
 
 /** 初始化：创建 PIXI 应用并加载模型 */
-export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, handDebug: handDebugFlag, cachedFit, onFitReady }) {
+export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, handDebug: handDebugFlag, qmarkTrace: qmarkTraceFlag, cachedFit, onFitReady }) {
   state.canvas = canvas
   state.log = log ?? (() => {})
   handDebug = handDebugFlag === true
+  qmarkTrace = qmarkTraceFlag === true
   if (!window.PIXI?.live2d?.Live2DModel) {
     throw new Error('PIXI.live2d 未就绪 —— vendor 脚本没加载成功？')
   }

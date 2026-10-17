@@ -4828,7 +4828,7 @@ check('问号：朝她 / 跟着她动 / 左右各摇一次且幅度够（用户 
   assert.equal(/translate\(/.test(swayBlock), false, 'keyframes 不能再有 translate（会让"尾巴"移动）')
 })
 
-check('问号跟随她运动：位置每帧按模型变换重算（DOM 不会自己跟着 Live2D 走）', () => {
+check('问号跟随她运动：位置每帧按**脸部部件实时位置**重算（不是模型容器）', () => {
   const live2d = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
   assert.ok(/function updateQuestionMarkPosition\(\)/.test(live2d), '必须有 updateQuestionMarkPosition()')
   // 每帧（beforeModelUpdate 钩子里）都要重算，否则她呼吸/摆动时问号会"钉"在原地
@@ -4836,11 +4836,21 @@ check('问号跟随她运动：位置每帧按模型变换重算（DOM 不会自
     /on\('beforeModelUpdate',[\s\S]{0,220}updateQuestionMarkPosition\(\)/.test(live2d),
     'beforeModelUpdate（每帧）里必须调用 updateQuestionMarkPosition()',
   )
-  assert.ok(/model\.toGlobal\(anchor\)/.test(live2d), '位置必须用 model.toGlobal 映射（自带镜像/缩放/位移）')
+  assert.ok(/model\.toGlobal\(target\)/.test(live2d), '位置必须用 model.toGlobal 映射（自带镜像/缩放/位移）')
+  // ⚠️ 关键：锚点必须跟着**脸部的实时变形**走 —— 她的呼吸/歪头是参数级变形，模型容器几乎不动
+  assert.ok(/QMARK_TRACK_PARTS/.test(live2d) && /function faceCenterLocal\(\)/.test(live2d), '必须按脸部部件算实时中心')
+  assert.ok(/qmarkFaceOffset/.test(live2d), '问号 = 脸中心 + 固定局部偏移（这样才跟着她动）')
   assert.ok(/QMARK_ANCHOR_U/.test(live2d) && /QMARK_ANCHOR_V/.test(live2d), '锚点在模型局部坐标里要有常数')
   assert.ok(/QMARK_LOCAL_W|QMARK_LOCAL_H/.test(live2d), '尺寸也要按模型缩放同步（大小设置变化时不跳）')
   const html = readFileSync(new URL('../packages/pet-shell/renderer/index.html', import.meta.url), 'utf8')
   assert.ok(/class="qmark-inner"/.test(html), 'index.html 里问号要有内层 .qmark-inner（动画层）')
+  // 摇摆周期必须小于问号显示时长，否则用户只能看到半程（"只有向左晃动的一次"）
+  const petJs = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+  const flashMs = Number(petJs.match(/pokeExpression\('question',\s*(\d+)\)/)?.[1])
+  const css = readFileSync(new URL('../packages/pet-shell/renderer/pet.css', import.meta.url), 'utf8')
+  const periodMs = Number(css.match(/animation:\s*qmarkSway\s+([\d.]+)s/)?.[1]) * 1000
+  assert.ok(flashMs >= 2000, `右键问号显示时长要够看出完整摇摆，至少 2000ms，实际 ${flashMs}ms`)
+  assert.ok(periodMs <= flashMs, `摇摆周期（${periodMs}ms）必须 ≤ 显示时长（${flashMs}ms），否则只能看到半程`)
 })
 
 console.log(`\n${'─'.repeat(56)}`)
