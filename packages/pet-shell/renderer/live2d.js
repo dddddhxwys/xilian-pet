@@ -600,8 +600,20 @@ let qmarkTraceMaxDelta = 0
 let qmarkTracePrevX = null
 let qmarkTracePrevY = null
 
-/** 脸部当前中心（模型局部像素；已含变形） */
-function faceCenterLocal() {
+/**
+ * 脸部**坐标系**：中心 + 朝向（模型局部像素；已含变形）。
+ *
+ * ⚠️ 为什么需要朝向（2026-10-12 用户："问号并没有跟昔涟协同"）：
+ * 只跟"脸中心平移"的话，她的头一歪/一摆，问号相对头部的位置就变了 ——
+ * 于是问号有时贴在脸边、有时压到头发上（用户观察到"终点有时候覆盖头发，有时候不会"）。
+ * 正确做法：把偏移量记在**脸的坐标系**里（沿脸的左右轴 / 上下轴），
+ * 每帧用脸部当前的朝向重新展开 → 不管她怎么歪头，问号始终在"同一个相对位置"。
+ *
+ * 朝向用 Part18 顶点的**二阶矩**算（主方向 = 脸的横轴）：
+ *   θ = 0.5 · atan2(2·Sxy, Sxx − Syy)
+ * 这样和变形完全一致（不依赖参数名/符号），镜像由 `model.toGlobal()` 统一处理。
+ */
+function faceFrameLocal() {
   const core = state.model?.internalModel?.coreModel
   if (!core) return null
   const canvas = localCanvas()
@@ -609,6 +621,7 @@ function faceCenterLocal() {
   let sumX = 0
   let sumY = 0
   let n = 0
+  const points = []
   for (let i = 0; i < count; i++) {
     const partId = core.getPartId?.(core.getDrawableParentPartIndex?.(i))
     if (!QMARK_TRACK_PARTS.has(partId)) continue
@@ -619,10 +632,33 @@ function faceCenterLocal() {
       const p = rawToLocal(positions[v * 2], positions[v * 2 + 1], canvas)
       sumX += p.x
       sumY += p.y
+      points.push(p)
       n++
     }
   }
-  return n > 0 ? { x: sumX / n, y: sumY / n } : null
+  if (n === 0) return null
+  const cx = sumX / n
+  const cy = sumY / n
+  let sxx = 0
+  let syy = 0
+  let sxy = 0
+  for (const p of points) {
+    const dx = p.x - cx
+    const dy = p.y - cy
+    sxx += dx * dx
+    syy += dy * dy
+    sxy += dx * dy
+  }
+  // 主方向 = 脸的横轴；atan2 半角公式给出 (−π/2, π/2] 内的朝向，不会有 π 跳变
+  const angle = 0.5 * Math.atan2(2 * sxy, sxx - syy)
+  return { x: cx, y: cy, angle }
+}
+
+/** 2D 旋转（局部坐标） */
+function rotateVec(x, y, angle) {
+  const c = Math.cos(angle)
+  const s = Math.sin(angle)
+  return { x: x * c - y * s, y: x * s + y * c }
 }
 
 function updateQuestionMarkPosition() {
@@ -634,12 +670,17 @@ function updateQuestionMarkPosition() {
     x: contentLocal.x + (QMARK_ANCHOR_U - QMARK_TOWARD_HER_U) * contentLocal.w,
     y: contentLocal.y + QMARK_ANCHOR_V * contentLocal.h,
   }
-  // 每帧拿脸中心（含呼吸/歪头的变形），问号 = 脸中心 + 固定局部偏移 → 跟着她动
-  const face = faceCenterLocal()
+  // 脸部中心 + 朝向；偏移量换算到**脸坐标系**里（offU 沿脸横轴、offV 沿脸纵轴）
+  const face = faceFrameLocal()
   if (face && qmarkFaceOffset === null) {
-    qmarkFaceOffset = { x: anchor.x - face.x, y: anchor.y - face.y }
+    const delta = rotateVec(anchor.x - face.x, anchor.y - face.y, -face.angle)
+    qmarkFaceOffset = { u: delta.x, v: delta.y }
   }
-  const target = face && qmarkFaceOffset ? { x: face.x + qmarkFaceOffset.x, y: face.y + qmarkFaceOffset.y } : anchor
+  let target = anchor
+  if (face && qmarkFaceOffset) {
+    const back = rotateVec(qmarkFaceOffset.u, qmarkFaceOffset.v, face.angle)
+    target = { x: face.x + back.x, y: face.y + back.y }
+  }
   const raw = model.toGlobal(target)
   // 平滑：滤掉帧间微抖（0.31px 那种），否则小图上看起来就是"一直在颤"
   if (!qmarkSmooth) qmarkSmooth = { x: raw.x, y: raw.y }
@@ -667,8 +708,18 @@ function updateQuestionMarkPosition() {
       const m = new DOMMatrix(getComputedStyle(inner).transform)
       return Math.round((Math.atan2(m.b, m.a) * 180) / Math.PI)
     })()
+    // 验证"协同"：脸的朝向变化时，问号相对脸的**距离**应该基本不变（偏移在脸坐标系里固定）
+    const rel = (() => {
+      if (!face) return null
+      const faceScreen = model.toGlobal({ x: face.x, y: face.y })
+      const dx = qmarkSmooth.x - faceScreen.x
+      const dy = qmarkSmooth.y - faceScreen.y
+      return { d: Math.hypot(dx, dy), a: (Math.atan2(dy, dx) * 180) / Math.PI }
+    })()
     state.log(
-      `问号 x=${qmarkSmooth.x.toFixed(1)} y=${qmarkSmooth.y.toFixed(1)} 角度=${angle}° 抖动=${qmarkTraceMaxDelta.toFixed(2)}px 脸中心=(${face ? face.x.toFixed(0) : '-'},${face ? face.y.toFixed(0) : '-'})`,
+      `问号 x=${qmarkSmooth.x.toFixed(1)} y=${qmarkSmooth.y.toFixed(1)} 角度=${angle}° 抖动=${qmarkTraceMaxDelta.toFixed(2)}px ` +
+        `脸中心=(${face ? face.x.toFixed(0) : '-'},${face ? face.y.toFixed(0) : '-'}) 脸朝向=${face ? ((face.angle * 180) / Math.PI).toFixed(1) : '-'}° ` +
+        `相对脸=${rel ? `${rel.d.toFixed(1)}px@${rel.a.toFixed(1)}°` : '-'}`,
     )
   }
   // 抖动量化：相邻帧之间**显示位置**的跳变（<0.5px 肉眼基本看不出来；>1px 会明显"颤"）

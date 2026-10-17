@@ -4851,7 +4851,11 @@ check('问号跟随她运动：位置每帧按**脸部部件实时位置**重算
   )
   assert.ok(/model\.toGlobal\(target\)/.test(live2d), '位置必须用 model.toGlobal 映射（自带镜像/缩放/位移）')
   // ⚠️ 关键：锚点必须跟着**脸部的实时变形**走 —— 她的呼吸/歪头是参数级变形，模型容器几乎不动
-  assert.ok(/QMARK_TRACK_PARTS/.test(live2d) && /function faceCenterLocal\(\)/.test(live2d), '必须按脸部部件算实时中心')
+  assert.ok(/QMARK_TRACK_PARTS/.test(live2d) && /function faceFrameLocal\(\)/.test(live2d), '必须按脸部部件算实时中心和朝向')
+  // ⚠️ 还要跟**朝向**：只跟平移的话，她一歪头问号就相对她移动（用户："终点有时候覆盖头发有时不会"）
+  assert.ok(/angle = 0\.5 \* Math\.atan2\(2 \* sxy, sxx - syy\)/.test(live2d), '朝向要按脸部顶点二阶矩算（不依赖参数名/符号）')
+  assert.ok(/function rotateVec\(/.test(live2d) && /rotateVec\(anchor\.x - face\.x, anchor\.y - face\.y, -face\.angle\)/.test(live2d), '偏移量必须换算到脸坐标系里')
+  assert.ok(/rotateVec\(qmarkFaceOffset\.u, qmarkFaceOffset\.v, face\.angle\)/.test(live2d), '每帧用当前朝向把偏移展开回去')
   assert.ok(/qmarkFaceOffset/.test(live2d), '问号 = 脸中心 + 固定局部偏移（这样才跟着她动）')
   assert.ok(/QMARK_ANCHOR_U/.test(live2d) && /QMARK_ANCHOR_V/.test(live2d), '锚点在模型局部坐标里要有常数')
   assert.ok(/QMARK_LOCAL_W|QMARK_LOCAL_H/.test(live2d), '尺寸也要按模型缩放同步（大小设置变化时不跳）')
