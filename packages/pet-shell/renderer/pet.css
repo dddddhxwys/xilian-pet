@@ -132,8 +132,10 @@ body {
 /* 右键临时弹的问号：用户 2026-10-12 要的编排 ——
    「先向左晃，停一下，然后向右晃，晃到终点后淡出」。
    时长 2.3s（< 问号显示 2.4s），forwards 保持在淡出后的终态。
-   ⚠️ 时间点按 2.3s 折算：左晃 0~0.37s，**停 0.37~1.24s（约 0.87s，用户要求"再长一点"）**，
-      右晃 1.24~1.93s，淡出 2.12~2.3s。 */
+   ⚠️ 时间点按 2.3s 折算：左晃 0~0.37s，**停 0.37~1.24s（约 0.87s）**，
+      右晃 1.24~1.93s，淡出 2.12~2.3s。
+   ⚠️ 幅度：左 -30° / 右 +12°（用户 2026-10-12："晃动的幅度再大一点"
+      → 原来是 -20° / +8°，现在 42° 摆幅）。 */
 #questionMark.flash .qmark-inner {
   animation: qmarkSwayOnce 2.3s ease-in-out forwards;
 }
@@ -144,28 +146,29 @@ body {
     opacity: 1;
   }
   16% {
-    transform: rotate(-20deg);
+    transform: rotate(-30deg);
     opacity: 1;
   }
   54% {
-    transform: rotate(-20deg);
+    transform: rotate(-30deg);
     opacity: 1;
   }
   84% {
-    transform: rotate(8deg);
+    transform: rotate(12deg);
     opacity: 1;
   }
   92% {
-    transform: rotate(8deg);
+    transform: rotate(12deg);
     opacity: 1;
   }
   100% {
-    transform: rotate(8deg);
+    transform: rotate(12deg);
     opacity: 0;
   }
 }
 
-/* 常驻提问状态（agent 在等你回答）：一直轻轻摇，不能淡出（否则用户看不到） */
+/* 常驻提问状态（agent 在等你回答）：一直轻轻摇，不能淡出（否则用户看不到）。
+   幅度与一次性编排同步（+10° ⇄ -30°），免得两种模式观感不一致。 */
 #questionMark.loop .qmark-inner {
   animation: qmarkSwayLoop 2.4s ease-in-out infinite;
 }
@@ -173,10 +176,10 @@ body {
 @keyframes qmarkSwayLoop {
   0%,
   100% {
-    transform: rotate(4deg);
+    transform: rotate(10deg);
   }
   50% {
-    transform: rotate(-20deg);
+    transform: rotate(-30deg);
   }
 }
 

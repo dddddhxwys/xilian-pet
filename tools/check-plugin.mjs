@@ -4818,8 +4818,8 @@ check('问号：朝她 / 跟着她动 / 左右各摇一次且幅度够（用户 
   const onceAngles = [...onceBlock.matchAll(/rotate\((-?[\d.]+)deg\)/g)].map((m) => Number(m[1]))
   assert.ok(onceAngles.length >= 3, 'qmarkSwayOnce 至少要有关键角度（起点/左/右）')
   // 先左晃（负角到最深）→ 停（连续两个相同负角）→ 右晃（正角）
-  assert.ok(Math.min(...onceAngles) <= -15, `先向左晃要有足够幅度，实际最深 ${Math.min(...onceAngles)}°`)
-  assert.ok(Math.max(...onceAngles) >= 0, `之后要向右晃（跨过直立方向），实际 ${onceAngles.join(',')}`)
+  assert.ok(Math.min(...onceAngles) <= -25, `先向左晃要有足够幅度（用户要求"再大一点"），实际最深 ${Math.min(...onceAngles)}°`)
+  assert.ok(Math.max(...onceAngles) >= 8, `之后要向右晃且幅度够（跨过直立方向），实际 ${onceAngles.join(',')}`)
   const negRuns = onceAngles.filter((a) => a === Math.min(...onceAngles)).length
   assert.ok(negRuns >= 2, '"停一下"必须体现为两个相同的最深左角关键帧')
   // 到终点后淡出：最后的关键帧 opacity = 0
