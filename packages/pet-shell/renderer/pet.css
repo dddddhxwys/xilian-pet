@@ -96,7 +96,7 @@ body {
 
 /* 镜像时替代模型问号的图片（从模型贴图抠出来的原版，字形不镜像）。
    结构：外层 #questionMark 由 live2d.js **每帧按模型问号画层定位**（translate3d 写中心点），
-   内层 .qmark-inner 负责**轻微自摇**（rotate）与显隐/淡出 —— 分开是为了避免两个 transform 打架。
+   内层 .qmark-inner 负责**摇摆**（rotate）与显隐/淡出 —— 分开是为了避免两个 transform 打架。
    ⚠️ 画在 canvas **之前**（下层）：她的头发摆过来时是"头发挡住问号"（自然遮挡）。
    ⚠️ 不要给图片加 scaleX(-1)：这张图存在的意义就是"字形不镜像"。 */
 #questionMark {
@@ -119,45 +119,70 @@ body {
   width: 100%;
   height: 100%;
   background: url(assets/question-mark.png) center / contain no-repeat;
-  /* 自摇（用户 2026-10-12："我要它自己摇啊！参照没有镜像时那样摇"）：
-     幅度要**小**、节奏要**慢** —— 非镜像时问号是跟着头部轻晃的，观感是"轻轻摆"，
-     不是之前那个 ±30° 的大摆（那个看起来像独立表演、很假）。
-     ±5°、3.2s 一个来回。位置仍由 live2d.js 每帧贴住模型问号画层（跟着她一起走）。 */
-  transform: rotate(-5deg);
-  transform-origin: 50% 55%;
-  animation: qmarkSway 3.2s ease-in-out infinite;
+  /* 圆心 = **尾巴那个点**（用户 2026-10-12："应该以尾部的点为圆心，而不是头部的弯"）：
+     原图 34×41，尾巴圆点在 (≈12, ≈37) → 35% / 90%。 */
+  transform: rotate(-6deg);
+  transform-origin: 35% 90%;
 }
 
-@keyframes qmarkSway {
-  0%,
-  100% {
-    transform: rotate(-5deg);
-  }
-  50% {
-    transform: rotate(5deg);
-  }
-}
-
-/* 右键临时弹的问号：自摇 + 最后 0.3s 淡出 */
+/* ── 右键一次性编排（用户 2026-10-12 指定）─────────────────────────────
+   「让问号先向左晃一次，然后顿一会，再向右晃，**几乎要晃回到原位的时候**消失」。
+   幅度加大（左 -20° / 右 +16°）、时长拉长（3.4s）。
+   时间轴：0~0.54s 向左晃到 -20°；0.54~1.5s 顿住；1.5~2.38s 向右到 +16°；
+   2.38~2.65s 停在右侧；2.65~3.0s **往左晃回来**（到 +2°，接近原位）；
+   3.0~3.3s 继续回到 0°（原位）并**淡出消失**；3.3~3.4s 保持不可见。 */
 #questionMark.flash .qmark-inner {
-  animation:
-    qmarkFadeOut 2.4s linear forwards,
-    qmarkSway 3.2s ease-in-out infinite;
+  animation: qmarkSwayOnce 3.4s ease-in-out forwards;
 }
 
-@keyframes qmarkFadeOut {
-  0%,
-  88% {
+@keyframes qmarkSwayOnce {
+  0% {
+    transform: rotate(0deg);
     opacity: 1;
   }
+  16% {
+    transform: rotate(-20deg);
+    opacity: 1;
+  }
+  44% {
+    transform: rotate(-20deg);
+    opacity: 1;
+  }
+  70% {
+    transform: rotate(16deg);
+    opacity: 1;
+  }
+  78% {
+    transform: rotate(16deg);
+    opacity: 1;
+  }
+  88% {
+    transform: rotate(2deg);
+    opacity: 1;
+  }
+  97% {
+    transform: rotate(0deg);
+    opacity: 0;
+  }
   100% {
+    transform: rotate(0deg);
     opacity: 0;
   }
 }
 
 /* 常驻提问状态（agent 在等你回答）：一直轻轻摇、不淡出 */
 #questionMark.loop .qmark-inner {
-  animation: qmarkSway 3.2s ease-in-out infinite;
+  animation: qmarkSwayLoop 4.5s ease-in-out infinite;
+}
+
+@keyframes qmarkSwayLoop {
+  0%,
+  100% {
+    transform: rotate(-10deg);
+  }
+  50% {
+    transform: rotate(10deg);
+  }
 }
 /* 气泡：和面板/设置窗同一套语言（珍珠白卡片、粉调阴影、圆角 14） */
 #bubble {

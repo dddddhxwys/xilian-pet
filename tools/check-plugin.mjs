@@ -4793,44 +4793,61 @@ check('问号镜像适配接线：setExpression 走纯函数 + DOM 问号用模�
   assert.ok(/setMirror[\s\S]{0,600}setExpression\(mapped\.expression/.test(live2d), 'setMirror 后要重放当前状态表情')
 })
 
-check('问号：轻微自摇（像非镜像那样）+ 追随她 + 右键淡出 / 常驻不淡出', () => {
+check('问号：左晃→顿→右晃→晃回来时消失（幅度更大、时间更长）+ 常驻轻摇', () => {
   const css = readFileSync(new URL('../packages/pet-shell/renderer/pet.css', import.meta.url), 'utf8')
   const block = css.match(/#questionMark\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
   const inner = css.match(/\.qmark-inner\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
   assert.ok(block.length > 0, '应能定位 #questionMark 规则')
   assert.ok(inner.length > 0, '应能定位 .qmark-inner 规则')
-  // 自摇：幅度要小、节奏要慢（用户：参照非镜像那样摇；之前 ±30° 太大像"独立表演"）
-  assert.ok(/animation:\s*qmarkSway\s+([\d.]+)s\s+ease-in-out\s+infinite/.test(inner), '.qmark-inner 必须有 qmarkSway 自摇');
-  const swayPeriod = Number(inner.match(/animation:\s*qmarkSway\s+([\d.]+)s/)?.[1])
-  assert.ok(swayPeriod >= 2.5, `自摇要慢（≥2.5s），实际 ${swayPeriod}s`)
-  const swayBlock = css.match(/@keyframes qmarkSway\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
-  const swayAngles = [...swayBlock.matchAll(/rotate\((-?[\d.]+)deg\)/g)].map((m) => Number(m[1]))
-  assert.ok(swayAngles.length >= 2, 'qmarkSway 至少要有关键角度')
-  const swayAmp = Math.max(...swayAngles) - Math.min(...swayAngles)
-  assert.ok(swayAmp >= 6, `自摇幅度不能太小（≥6°），实际 ${swayAmp}°`)
-  assert.ok(swayAmp <= 14, `自摇幅度要小（≤14°，像非镜像那样轻摆），实际 ${swayAmp}°`)
-  // 兜底位置：她头附近
+  // ① 一次性编排：先向左 → 顿一会 → 向右 → 晃回来的时候淡出
+  assert.ok(/@keyframes qmarkSwayOnce/.test(css), '必须有 qmarkSwayOnce（右键一次性编排）')
+  assert.ok(
+    /#questionMark\.flash\s+\.qmark-inner\s*\{[\s\S]{0,160}animation:\s*qmarkSwayOnce\s+([\d.]+)s[^;]*forwards/.test(css),
+    '#questionMark.flash 必须引用 qmarkSwayOnce 且 forwards',
+  )
+  const onceBlock = css.match(/@keyframes qmarkSwayOnce\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
+  const onceAngles = [...onceBlock.matchAll(/rotate\((-?[\d.]+)deg\)/g)].map((m) => Number(m[1]))
+  const onceOpacities = [...onceBlock.matchAll(/opacity:\s*([\d.]+)/g)].map((m) => Number(m[1]))
+  assert.ok(onceAngles.length >= 4, 'qmarkSwayOnce 至少要有 起点/左/右/回摆 四个角度')
+  const minAngle = Math.min(...onceAngles)
+  const maxAngle = Math.max(...onceAngles)
+  const amplitude = maxAngle - minAngle
+  // ② 幅度加大（用户："幅度调大"）：≥20°
+  assert.ok(minAngle <= -15, `向左晃要够明显（≤-15°），实际 ${minAngle}°`)
+  assert.ok(maxAngle >= 10, `向右晃要够明显（≥10°），实际 ${maxAngle}°`)
+  assert.ok(amplitude >= 20, `总幅度至少 20°（用户要求调大），实际 ${amplitude}°`)
+  // ③ 顿一下：最深左角出现两次（连续关键帧）
+  assert.equal(onceAngles.filter((a) => a === minAngle).length >= 2, true, '"顿一会"要体现为两个相同的最深左角关键帧')
+  // ④ 晃回来的时候消失：终点角度要**回向左侧**（不是停在最右），且 opacity=0
+  const lastAngle = onceAngles[onceAngles.length - 1]
+  // 用户 2026-10-12 更正："是几乎要晃回到原位的时候消失" —— 终点角度必须接近 0°（原位）
+  assert.ok(Math.abs(lastAngle) <= 3, `终点必须是"几乎回到原位"（|角度| ≤ 3°），实际 ${lastAngle}°`)
+  assert.ok(lastAngle < maxAngle, `终点必须在"晃回来"的路上（< 最右 ${maxAngle}°），实际 ${lastAngle}°`)
+  assert.equal(onceOpacities[onceOpacities.length - 1], 0, '终点必须淡出（opacity 0）')
+  assert.ok(onceOpacities.some((o) => o === 1), '淡出前必须是完全可见（opacity 1）')
+  // ⑤ 时长拉长（用户："时间调长"）：≥3s
+  const onceDuration = Number(css.match(/animation:\s*qmarkSwayOnce\s+([\d.]+)s/)?.[1])
+  assert.ok(onceDuration >= 3, `一次性编排时长至少 3s（用户要求调长），实际 ${onceDuration}s`)
+  // ⑥ 兜底位置：她头附近
   const fallback = block.match(/transform:\s*translate\(([\d.]+)%,\s*([\d.]+)%\)/)
   assert.ok(fallback, '#questionMark 必须有首帧兜底位置（translate 百分比）')
   const width = Number(block.match(/width:\s*([\d.]+)%/)?.[1])
   const centerPct = Number(fallback[1]) + width / 2
   assert.ok(centerPct >= 25 && centerPct <= 45, `问号中心 x 应在 25%~45%（离她别太远），实际 ${centerPct.toFixed(1)}%`)
-  // 右键：自摇 + 淡出；常驻提问：只摇、不淡出
-  assert.ok(/@keyframes qmarkFadeOut/.test(css), '必须有 qmarkFadeOut（右键问号淡出）')
-  assert.ok(
-    /#questionMark\.flash\s+\.qmark-inner\s*\{[\s\S]{0,200}animation:[\s\S]{0,200}qmarkFadeOut/.test(css),
-    '#questionMark.flash .qmark-inner 必须带 qmarkFadeOut',
-  )
+  // ⑦ 常驻提问状态：一直轻摇、不淡出
   const loopBlock = css.match(/#questionMark\.loop\s+\.qmark-inner\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
   assert.ok(loopBlock.length > 0, '必须有 .loop 规则')
-  assert.ok(/qmarkSway/.test(loopBlock), '常驻问号要继续摇')
+  assert.ok(/qmarkSwayLoop/.test(loopBlock), '常驻问号要继续摇')
   assert.equal(/opacity/.test(loopBlock), false, '常驻问号不能淡出')
-  // 淡出时长必须 ≤ 问号显示时长
+  assert.ok(/qmarkSwayLoop\s+([\d.]+)s\s+ease-in-out\s+infinite/.test(loopBlock), 'qmarkSwayLoop 必须无限循环')
+  // ⑧ 一次性编排时长必须 ≤ 问号显示时长（否则演不完就被隐藏）
   const petJs = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
   const flashMs = Number(petJs.match(/pokeExpression\('question',\s*(\d+)\)/)?.[1])
-  const fadeMs = Number(css.match(/@keyframes qmarkFadeOut\s*\{[\s\S]*?opacity:\s*0/)?.[0] ? css.match(/qmarkFadeOut\s+([\d.]+)s/)?.[1] : NaN) * 1000
-  assert.ok(flashMs >= 2000, `右键问号显示时长至少 2000ms，实际 ${flashMs}ms`)
-  assert.ok(Number.isFinite(fadeMs) && fadeMs <= flashMs, `淡出动画时长（${fadeMs}ms）必须 ≤ 显示时长（${flashMs}ms）`)
+  assert.ok(flashMs >= 3000, `右键问号显示时长至少 3000ms（时间调长），实际 ${flashMs}ms`)
+  assert.ok(
+    Number.isFinite(onceDuration) && onceDuration * 1000 <= flashMs,
+    `编排时长（${onceDuration}s）必须 ≤ 显示时长（${flashMs}ms）`,
+  )
 })
 
 check('问号贴住「模型里问号位置上的画层」：每帧跟着她的骨骼/物理一起动', () => {
