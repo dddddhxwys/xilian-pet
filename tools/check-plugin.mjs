@@ -4820,9 +4820,11 @@ check('问号：左晃→顿→右晃→晃回来时消失（幅度更大、时�
   assert.equal(onceAngles.filter((a) => a === minAngle).length >= 2, true, '"顿一会"要体现为两个相同的最深左角关键帧')
   // ④ 晃回来的时候消失：终点角度要**回向左侧**（不是停在最右），且 opacity=0
   const lastAngle = onceAngles[onceAngles.length - 1]
-  // 用户 2026-10-12 更正："是几乎要晃回到原位的时候消失" —— 终点角度必须接近 0°（原位）
-  assert.ok(Math.abs(lastAngle) <= 3, `终点必须是"几乎回到原位"（|角度| ≤ 3°），实际 ${lastAngle}°`)
-  assert.ok(lastAngle < maxAngle, `终点必须在"晃回来"的路上（< 最右 ${maxAngle}°），实际 ${lastAngle}°`)
+  // 用户 2026-10-12 更正："右晃完之后还会稍微向左晃一次才会消失" → 右晃之后**不许再左摆**
+  // 终点必须仍在右侧（≥10°），并且最后两个角度不能往左退超过 4°
+  assert.ok(lastAngle >= 10, `终点必须停在右侧（≥10°），不许再往左摆，实际 ${lastAngle}°`)
+  const prevAngle = onceAngles[onceAngles.length - 2]
+  assert.ok(prevAngle - lastAngle <= 4, `收尾只允许极小回落（≤4°），实际 ${prevAngle - lastAngle}°`)
   assert.equal(onceOpacities[onceOpacities.length - 1], 0, '终点必须淡出（opacity 0）')
   assert.ok(onceOpacities.some((o) => o === 1), '淡出前必须是完全可见（opacity 1）')
   // ⑤ 时长拉长（用户："时间调长"）：≥3s
