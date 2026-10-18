@@ -63,8 +63,8 @@ const HEIGHT = Number(process.env.PET_HEIGHT ?? 300)
 /** 设置窗尺寸（阶段 2 只有「关于」，先给紧凑高度；阶段 4 接外观/行为后会加高） */
 const SETTINGS_WIDTH = 376
 /** 阶段 4：外观一节（大小 / 不透明度 / 左右翻转 / 自动朝向）→ 208 → 252 → 300 → 384；
-   *  再加「行为 · 点击互动」一节 → 436（实测内容溢出 50px，384+50=434，取 436 留 2px 余量） */
-const SETTINGS_HEIGHT = 436
+   *  「行为」一节：点击互动 → 436；再加「气泡提示」一行 → 476（每行约 40px） */
+const SETTINGS_HEIGHT = 476
 /** 设置小窗：关闭即销毁（下次重开重新读设置） */
 let settingsWin = null
 /** 托盘：整个进程一个 */
@@ -1491,6 +1491,16 @@ app.whenReady().then(async () => {
       win.webContents.send('pet:mirror', effectiveMirrorState())
       win.webContents.send('pet:relayout')
       sendBehavior(win, '启动')
+    }
+    // 调试用（PET_FORCE_BUBBLE=1）：启动几秒后发一条气泡。
+    // 用途：验证「行为 · 气泡提示」开关的生效路径（气泡只在菜单派活/打断后才会出现，
+    // 走 UI 自动化去派活既麻烦又可能真打扰 DSH，所以留这条纯本地注入的探针）。
+    if (process.env.PET_FORCE_BUBBLE === '1' && !win.isDestroyed()) {
+      setTimeout(() => {
+        if (win.isDestroyed()) return
+        win.webContents.send('pet:bubble', '调试气泡：桌宠在线')
+        log('调试：已注入一条测试气泡（PET_FORCE_BUBBLE=1）')
+      }, 1500)
     }
   })
   ipcMain.on('pet:move-by', (_event, dx, dy) => {

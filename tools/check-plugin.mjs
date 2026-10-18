@@ -4936,13 +4936,34 @@ check('点击互动开关：主进程推送 + 渲染端守卫 + 拖拽不受影�
 check('设置窗「行为」一节：控件存在 / 按 behavior 分组写盘 / 窗口高度不溢出', () => {
   const html = readFileSync(new URL('../packages/pet-shell/renderer/settings.html', import.meta.url), 'utf8')
   assert.ok(/id="clickInteraction"/.test(html), '设置窗要有 #clickInteraction 开关')
+  assert.ok(/id="bubbleTip"/.test(html), '设置窗要有 #bubbleTip 开关（气泡提示）')
   assert.ok(/<div class="sec">行为<\/div>/.test(html), '要有「行为」分组标题')
   const js = readFileSync(new URL('../packages/pet-shell/renderer/settings.js', import.meta.url), 'utf8')
   assert.ok(/wireToggle\(clickInteractionEl, 'behavior', 'clickInteraction'/.test(js), '要按 behavior 分组写盘（不能写进 appearance）')
+  assert.ok(/wireToggle\(bubbleTipEl, 'behavior', 'bubble'/.test(js), '气泡开关也要按 behavior 分组写盘')
   assert.ok(/state\.settings\?\.behavior/.test(js), 'paint 要回填 behavior 状态')
   const main = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
   const height = Number(main.match(/const SETTINGS_HEIGHT = (\d+)/)?.[1])
-  assert.ok(height >= 436, `加「行为」一节后窗口高度至少 436（实测内容需要 434），实际 ${height}`)
+  assert.ok(height >= 476, `加「行为 · 气泡提示」后窗口高度至少 476（实测每行≈40px），实际 ${height}`)
+})
+
+check('气泡开关：渲染端守卫 + 调试注入通道 + 设置窗回填', () => {
+  const pet = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+  // showBubble 必须在**显示之前**守卫（关掉后连 DOM 都不该动）
+  const fn = pet.match(/function showBubble\(text\) \{[\s\S]*?\n\}/)?.[0] ?? ''
+  assert.ok(fn.length > 0, '应能定位 showBubble()')
+  const guardIdx = fn.indexOf('behavior.bubble === false')
+  const showIdx = fn.indexOf('bubble.hidden = false')
+  assert.ok(guardIdx > 0, 'showBubble 里必须有 behavior.bubble === false 守卫')
+  assert.ok(guardIdx < showIdx, '守卫必须在显示之前（不能先弹再隐藏）')
+  assert.ok(/\[气泡\]/.test(fn), '关闭/显示都要留日志（排查"点了没反应"）')
+  // 调试注入：主进程 PET_FORCE_BUBBLE=1 发一条本地气泡，供 E2E 验证（不碰 DSH）
+  const main = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+  assert.ok(/PET_FORCE_BUBBLE/.test(main), '必须有 PET_FORCE_BUBBLE 调试注入（E2E 用）')
+  assert.ok(/send\('pet:bubble', '调试气泡/.test(main), '注入要真正走 pet:bubble 通道')
+  // 设置窗回填
+  const js = readFileSync(new URL('../packages/pet-shell/renderer/settings.js', import.meta.url), 'utf8')
+  assert.ok(/bubbleTipEl\.checked = bubble === true/.test(js), 'paint 要回填气泡开关')
 })
 
 check('问号不颤动：合成层定位 / 尺寸不每帧重写 / 只跟踪脸基座 / 位置平滑', () => {

@@ -471,12 +471,18 @@ function setState(state) {
 
 function showBubble(text) {
   if (typeof text !== 'string' || text.trim() === '') return
+  // 行为开关：气泡提示关掉后不弹（设置窗「行为 · 气泡提示」）
+  if (behavior.bubble === false) {
+    api.log(`[气泡] 已关闭 → 不显示：「${text.slice(0, 30)}」`)
+    return
+  }
   bubbleText.textContent = text
   bubble.hidden = false
   clearTimeout(bubbleTimer)
   bubbleTimer = setTimeout(() => {
     bubble.hidden = true
   }, 6000)
+  api.log(`[气泡] 显示：${text.slice(0, 30)}`)
 }
 
 // ── A7 主动提醒（通知条）已**整体删除** ─────────────────────────────

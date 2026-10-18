@@ -10,6 +10,7 @@ const opacityValEl = document.getElementById('opacityVal')
 const mirrorEl = document.getElementById('mirror')
 const autoFaceEl = document.getElementById('autoFace')
 const clickInteractionEl = document.getElementById('clickInteraction')
+const bubbleTipEl = document.getElementById('bubbleTip')
 const noteEl = document.getElementById('note')
 const noteDefault = noteEl.textContent
 
@@ -33,8 +34,9 @@ function paint(state) {
   autoFaceEl.checked = autoFace === true
   // 自动朝向开着时，手动翻转会被覆盖 —— 界面上说清楚，避免"点了没反应"
   mirrorEl.closest('.row').classList.toggle('muted', autoFaceEl.checked)
-  const { clickInteraction = true } = state.settings?.behavior ?? {}
+  const { clickInteraction = true, bubble = true } = state.settings?.behavior ?? {}
   clickInteractionEl.checked = clickInteraction === true
+  bubbleTipEl.checked = bubble === true
 }
 
 /** 顶部提示条，1.6s 后恢复原文 */
@@ -95,6 +97,9 @@ wireToggle(clickInteractionEl, 'behavior', 'clickInteraction', () =>
       ? '点击互动已开启（摸头/墨镜/秋千）'
       : '点击互动已关闭（她仍可拖动，右键面板照常）',
   ),
+)
+wireToggle(bubbleTipEl, 'behavior', 'bubble', () =>
+  flashNote(bubbleTipEl.checked ? '气泡提示已开启' : '气泡提示已关闭（她仍会动，只是不弹字）'),
 )
 
 document.getElementById('reset').addEventListener('click', async () => {
