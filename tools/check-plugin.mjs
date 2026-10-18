@@ -4816,15 +4816,25 @@ check('问号：左晃→顿→右晃→晃回来时消失（幅度更大、时�
   assert.ok(minAngle <= -15, `向左晃要够明显（≤-15°），实际 ${minAngle}°`)
   assert.ok(maxAngle >= 10, `向右晃要够明显（≥10°），实际 ${maxAngle}°`)
   assert.ok(amplitude >= 20, `总幅度至少 20°（用户要求调大），实际 ${amplitude}°`)
-  // ③ 顿一下：最深左角出现两次（连续关键帧）
-  assert.equal(onceAngles.filter((a) => a === minAngle).length >= 2, true, '"顿一会"要体现为两个相同的最深左角关键帧')
-  // ④ 晃回来的时候消失：终点角度要**回向左侧**（不是停在最右），且 opacity=0
+  // ③ 顿一下，而且**要够长**（用户："中间停顿的时间延长一下"）：按百分比×总时长算出来 ≥1.2s
+  const stops = [...onceBlock.matchAll(/(\d+)%\s*\{[^}]*rotate\((-?[\d.]+)deg\)/g)].map((m) => ({
+    pct: Number(m[1]),
+    angle: Number(m[2]),
+  }))
+  const zeroAt = stops.filter((s) => s.angle === minAngle).map((s) => s.pct)
+  assert.ok(zeroAt.length >= 2, '"顿一会"要体现为两个相同的最深左角关键帧')
+  const onceDurationEarly = Number(css.match(/animation:\s*qmarkSwayOnce\s+([\d.]+)s/)?.[1])
+  const pauseSec = ((zeroAt[zeroAt.length - 1] - zeroAt[0]) / 100) * onceDurationEarly
+  assert.ok(pauseSec >= 1.2, `中间停顿要够长（≥1.2s，用户要求延长），实际 ${pauseSec.toFixed(2)}s`)
+  // ④ 右晃之后**不许停顿**（只有一个最右角关键帧），随后立刻往回荡并淡出
+  const rightAt = stops.filter((s) => s.angle === maxAngle)
+  assert.equal(rightAt.length, 1, '右侧不许停顿（最右角只应出现一次）')
   const lastAngle = onceAngles[onceAngles.length - 1]
-  // 用户 2026-10-12 更正："右晃完之后还会稍微向左晃一次才会消失" → 右晃之后**不许再左摆**
-  // 终点必须仍在右侧（≥10°），并且最后两个角度不能往左退超过 4°
-  assert.ok(lastAngle >= 10, `终点必须停在右侧（≥10°），不许再往左摆，实际 ${lastAngle}°`)
   const prevAngle = onceAngles[onceAngles.length - 2]
-  assert.ok(prevAngle - lastAngle <= 4, `收尾只允许极小回落（≤4°），实际 ${prevAngle - lastAngle}°`)
+  // "晃回来后立刻淡出"：终点要往左回一点（< 最右），但也不能继续大幅左摆（≥0°）
+  assert.ok(lastAngle < maxAngle, `终点必须在回摆途中（< 最右 ${maxAngle}°），实际 ${lastAngle}°`)
+  assert.ok(lastAngle >= 0, `回摆途中就淡出，不许继续左摆过原位，实际 ${lastAngle}°`)
+  assert.ok(prevAngle > lastAngle, '收尾必须是连续向左回摆（不是停在右侧）')
   assert.equal(onceOpacities[onceOpacities.length - 1], 0, '终点必须淡出（opacity 0）')
   assert.ok(onceOpacities.some((o) => o === 1), '淡出前必须是完全可见（opacity 1）')
   // ⑤ 时长拉长（用户："时间调长"）：≥3s

@@ -126,13 +126,13 @@ body {
 }
 
 /* ── 右键一次性编排（用户 2026-10-12 定稿）─────────────────────────────
-   「先向左晃一次，然后顿一会，再向右晃；右晃完就消失 —— 不要再往左晃一次」。
-   幅度：左 -20° / 右 +16°（总 36°），时长 3.4s。
-   时间轴：0~0.54s 左晃到 -20°；0.54~1.5s 顿住；1.5~2.38s 右晃到 +16°；
-   2.38~2.9s 停在右侧；2.9~3.4s **在右侧原地淡出**（只回落 2°，不会出现第二次左晃）。
-   早期版本让它在"晃回原位"时消失，用户看到的是"右晃完又左晃一下"，所以改成右侧收住。 */
+   「先向左晃一次，然后**顿久一点**，再向右晃；**右侧不停顿**，晃回来就立刻淡出」。
+   幅度：左 -20° / 右 +16°（总 36°），时长 3.6s。
+   时间轴：0~0.5s 左晃到 -20°；**0.5~2.1s 顿住（约 1.6s，用户要求延长）**；
+   2.1~3.0s 右晃到 +16°；**3.0~3.6s 立刻往回晃并淡出**（到 +6° 时已经看不见，
+   不会像上一版那样在右侧停住再消失，也不会出现明显的第二次左摆）。 */
 #questionMark.flash .qmark-inner {
-  animation: qmarkSwayOnce 3.4s ease-in-out forwards;
+  animation: qmarkSwayOnce 3.6s ease-in-out forwards;
 }
 
 @keyframes qmarkSwayOnce {
@@ -140,24 +140,24 @@ body {
     transform: rotate(0deg);
     opacity: 1;
   }
-  16% {
+  14% {
     transform: rotate(-20deg);
     opacity: 1;
   }
-  44% {
+  58% {
     transform: rotate(-20deg);
     opacity: 1;
   }
-  70% {
+  84% {
     transform: rotate(16deg);
     opacity: 1;
   }
-  86% {
-    transform: rotate(16deg);
-    opacity: 1;
+  92% {
+    transform: rotate(11deg);
+    opacity: 0.45;
   }
   100% {
-    transform: rotate(14deg);
+    transform: rotate(6deg);
     opacity: 0;
   }
 }

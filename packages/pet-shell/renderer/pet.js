@@ -429,7 +429,7 @@ window.addEventListener('mouseup', (event) => {
 window.addEventListener('contextmenu', (event) => {
   event.preventDefault()
   if (!overOpaquePixel(event.clientX, event.clientY)) return
-  live2d?.pokeExpression('question', 3600) // "你想干嘛？"
+  live2d?.pokeExpression('question', 3900) // "你想干嘛？"
   openPanel()
 })
 
@@ -743,7 +743,7 @@ async function startLive2D() {
     setTimeout(() => {
       api.log('调试模式：自动弹出操作面板')
       // 和真实右键路径保持一致（否则拍不到 poke 的效果）
-      live2d?.pokeExpression('question', 3600)
+      live2d?.pokeExpression('question', 3900)
       openPanel()
     }, 2500)
   }
