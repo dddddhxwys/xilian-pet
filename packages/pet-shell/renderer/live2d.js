@@ -508,6 +508,10 @@ function setExpression(name) {
  */
 let questionFlashUntil = 0
 let questionFlashTimer = null
+/** 镜像问号现在该不该显示（供每帧强制 Param6 用） */
+function questionMarkVisible() {
+  return mirrorMode && (Date.now() < questionFlashUntil || state.currentState === 'question')
+}
 /**
  * 同步 DOM 问号的显隐与**动画模式**。
  *
@@ -696,12 +700,83 @@ function calibrateQuestionGlyph() {
     const w = maxX - minX
     const h = maxY - minY
     const inside = predicted.x >= minX && predicted.x <= maxX && predicted.y >= minY && predicted.y <= maxY
-    const near = Math.hypot(cx - predicted.x, cy - predicted.y) < 250
+    const near = Math.hypot(cx - predicted.x, cy - predicted.y) < 500
     if (inside || near) {
       const part = core.getPartId?.(core.getDrawableParentPartIndex?.(i)) ?? '?'
-      candidates.push({ index: i, part, cx: Math.round(cx), cy: Math.round(cy), w: Math.round(w), h: Math.round(h), inside })
+      candidates.push({
+        index: i,
+        part,
+        cx: Math.round(cx),
+        cy: Math.round(cy),
+        w: Math.round(w),
+        h: Math.round(h),
+        inside,
+        opacity: +(core.getDrawableOpacity?.(i) ?? 1).toFixed(2),
+      })
     }
   }
+  // 诊断：把"屏幕上实际看到的问号中心"反算回模型局部坐标，再列出附近的画层。
+  //   镜像时模型问号被画在**镜像那一侧**（实测屏幕 CSS ≈ (70.4,152)，来自放大截图的像素定位），
+  //   用它反查可以避开"设计位置估算误差"的问题。
+  let observedCandidates = []
+  try {
+    const obs = state.model.toLocal({ x: 70.4, y: 152 })
+    if (obs && Number.isFinite(obs.x)) {
+      const obsRadius = 260
+      for (let i = 0; i < count; i++) {
+        const positions = core.getDrawableVertexPositions?.(i)
+        const vertexCount = core.getDrawableVertexCount?.(i) ?? 0
+        if (!positions || vertexCount < 3) continue
+        let minX = Infinity
+        let minY = Infinity
+        let maxX = -Infinity
+        let maxY = -Infinity
+        for (let v = 0; v < vertexCount; v++) {
+          const p = rawToLocal(positions[v * 2], positions[v * 2 + 1], canvas)
+          if (p.x < minX) minX = p.x
+          if (p.y < minY) minY = p.y
+          if (p.x > maxX) maxX = p.x
+          if (p.y > maxY) maxY = p.y
+        }
+        const cx = (minX + maxX) / 2
+        const cy = (minY + maxY) / 2
+        const inside = obs.x >= minX && obs.x <= maxX && obs.y >= minY && obs.y <= maxY
+        if (inside || Math.hypot(cx - obs.x, cy - obs.y) < obsRadius) {
+          const part = core.getPartId?.(core.getDrawableParentPartIndex?.(i)) ?? '?'
+          observedCandidates.push({
+            index: i,
+            part,
+            cx: Math.round(cx),
+            cy: Math.round(cy),
+            w: Math.round(maxX - minX),
+            h: Math.round(maxY - minY),
+            inside,
+            opacity: +(core.getDrawableOpacity?.(i) ?? 1).toFixed(2),
+          })
+        }
+      }
+      state.log(
+        `[qmark] 屏幕点(70.4,152) → 局部 (${obs.x.toFixed(0)},${obs.y.toFixed(0)})，附近画层：` +
+          observedCandidates
+            .map(
+              (c) =>
+                `#${c.index}[${c.part}]@(${c.cx},${c.cy}) ${(c.w * 0.07).toFixed(1)}x${(c.h * 0.07).toFixed(1)}CSS op=${c.opacity}${c.inside ? ' 含点' : ''}`,
+            )
+            .join(' | '),
+      )
+    }
+  } catch (error) {
+    state.log(`[qmark] 反查失败：${error.message}`)
+  }
+  state.log(
+    `[qmark] 候选画层（预测 (${predicted.x.toFixed(0)},${predicted.y.toFixed(0)}))：` +
+      candidates
+        .map(
+          (c) =>
+            `#${c.index}[${c.part}]@(${c.cx},${c.cy}) ${(c.w * 0.07).toFixed(1)}x${(c.h * 0.07).toFixed(1)}CSS op=${c.opacity}${c.inside ? ' 含点' : ''}`,
+        )
+        .join(' | '),
+  )
   // 取"尺寸最小 + 离预测点最近"的那个（问号是一张小图）
   candidates.sort(
     (a, b) =>
@@ -863,6 +938,8 @@ function updateQuestionMarkPosition() {
   let target = null
   if (glyph && glyphCalib.localOffset) {
     target = { x: glyph.x + glyphCalib.localOffset.x, y: glyph.y + glyphCalib.localOffset.y }
+    // 往她那边靠一点（之前用户说过"离她太远"）：镜像下 local 变小 → 屏幕 x 变大
+    target.x -= QMARK_TOWARD_HER_U * contentLocal.w
   }
   // ── 兜底：脸中心 + 脸坐标系偏移（校准没成功时还能正常显示）─────────────
   const face = faceFrameLocal()
@@ -1470,6 +1547,12 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, handD
     applyState()
     // 一次性找出"模型自带问号"的画层（之后每帧读它们的实时位置，DOM 问号贴过去）
     calibrateQuestionGlyph()
+    // ⚠️ 镜像时必须把**模型自己的问号**盖掉（Param6 = 0）：
+    //    只把表情换成 reset **不够** —— 状态动作 Scene2 自己会把 Param6 写成 1（实测：
+    //    截图上一直有两个问号叠着，就是这个原因）。动作在 beforeModelUpdate 之前跑完，
+    //    所以这里写 0 才是"最后一步"，能压过动作。
+    //    不显示 DOM 问号时不动它，让状态/表情自己管。
+    if (mirrorMode && questionMarkVisible()) setParams({ Param6: 0, Param8: 0 })
     // 镜像问号是 DOM 元素，位置必须**每帧**按模型变换重算，才能跟着她呼吸/动作一起动
     updateQuestionMarkPosition()
     samplerSample(model.internalModel.coreModel)

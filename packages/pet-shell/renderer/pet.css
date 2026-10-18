@@ -95,12 +95,9 @@ body {
 /* （未读 +N 汇总背板 #badge 已随"未读功能去除"一并删除，2026-10-05） */
 
 /* 镜像时替代模型问号的图片（从模型贴图抠出来的原版，字形不镜像）。
-   结构：外层 #questionMark 由 live2d.js **每帧按模型变换定位**（translate3d 写中心点），
-   内层 .qmark-inner 只做"左右摇"的动画 —— 分开是为了避免动画的 transform
-   和定位互相覆盖（2026-10-12 用户："问号并没有随昔涟一起运动"）。
-   ⚠️ 不要再给 #questionMark 设 z-index / 别把它排到 canvas 后面：它现在是
-      **画在 canvas 前面（下层）** —— 她的头发摆过来就是"头发挡住问号"，自然的前后关系，
-      而不是问号盖在头发上（用户反馈的"终点有时覆盖到头发"）。
+   结构：外层 #questionMark 由 live2d.js **每帧按模型问号画层定位**（translate3d 写中心点），
+   内层 .qmark-inner 负责**轻微自摇**（rotate）与显隐/淡出 —— 分开是为了避免两个 transform 打架。
+   ⚠️ 画在 canvas **之前**（下层）：她的头发摆过来时是"头发挡住问号"（自然遮挡）。
    ⚠️ 不要给图片加 scaleX(-1)：这张图存在的意义就是"字形不镜像"。 */
 #questionMark {
   position: absolute;
@@ -122,16 +119,30 @@ body {
   width: 100%;
   height: 100%;
   background: url(assets/question-mark.png) center / contain no-repeat;
-  /* ⚠️ 2026-10-12 大改：问号**不再有自己独立的摇摆动画**。
-     用户原话："就像没有镜像之前那样摆动" —— 非镜像时它就是模型里的一张图，
-     只跟着她的身体动，不会自己转。现在位置由 live2d.js 每帧贴到"模型里问号位置附近的画层"上，
-     所以这里保持静止（不再 rotate / 不再 translate），只由 class 控制出现与淡出。 */
-  transform: none;
+  /* 自摇（用户 2026-10-12："我要它自己摇啊！参照没有镜像时那样摇"）：
+     幅度要**小**、节奏要**慢** —— 非镜像时问号是跟着头部轻晃的，观感是"轻轻摆"，
+     不是之前那个 ±30° 的大摆（那个看起来像独立表演、很假）。
+     ±5°、3.2s 一个来回。位置仍由 live2d.js 每帧贴住模型问号画层（跟着她一起走）。 */
+  transform: rotate(-5deg);
+  transform-origin: 50% 55%;
+  animation: qmarkSway 3.2s ease-in-out infinite;
 }
 
-/* 右键临时弹的问号：出现 → 跟着她动 → 最后 0.3s 淡出（用户要求的"淡出"保留） */
+@keyframes qmarkSway {
+  0%,
+  100% {
+    transform: rotate(-5deg);
+  }
+  50% {
+    transform: rotate(5deg);
+  }
+}
+
+/* 右键临时弹的问号：自摇 + 最后 0.3s 淡出 */
 #questionMark.flash .qmark-inner {
-  animation: qmarkFadeOut 2.4s linear forwards;
+  animation:
+    qmarkFadeOut 2.4s linear forwards,
+    qmarkSway 3.2s ease-in-out infinite;
 }
 
 @keyframes qmarkFadeOut {
@@ -144,9 +155,9 @@ body {
   }
 }
 
-/* 常驻提问状态（agent 在等你回答）：一直显示、不淡出 */
+/* 常驻提问状态（agent 在等你回答）：一直轻轻摇、不淡出 */
 #questionMark.loop .qmark-inner {
-  animation: none;
+  animation: qmarkSway 3.2s ease-in-out infinite;
 }
 /* 气泡：和面板/设置窗同一套语言（珍珠白卡片、粉调阴影、圆角 14） */
 #bubble {

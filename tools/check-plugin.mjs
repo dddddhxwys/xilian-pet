@@ -4793,41 +4793,44 @@ check('问号镜像适配接线：setExpression 走纯函数 + DOM 问号用模�
   assert.ok(/setMirror[\s\S]{0,600}setExpression\(mapped\.expression/.test(live2d), 'setMirror 后要重放当前状态表情')
 })
 
-check('问号：不再自己摇（像非镜像那样贴着她动），只保留淡出 + 兜底位置', () => {
+check('问号：轻微自摇（像非镜像那样）+ 追随她 + 右键淡出 / 常驻不淡出', () => {
   const css = readFileSync(new URL('../packages/pet-shell/renderer/pet.css', import.meta.url), 'utf8')
   const block = css.match(/#questionMark\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
   const inner = css.match(/\.qmark-inner\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
   assert.ok(block.length > 0, '应能定位 #questionMark 规则')
   assert.ok(inner.length > 0, '应能定位 .qmark-inner 规则')
-  // ⚠️ 用户 2026-10-12："就像没有镜像之前那样摆动" —— 非镜像时它只是模型里的一张图，
-  //    不自己旋转/平移。所以 .qmark-inner 必须静止（transform: none），且没有任何 rotate keyframes。
-  assert.ok(/transform:\s*none/.test(inner), '.qmark-inner 必须静止（transform: none）')
-  assert.equal(/@keyframes[^{]*\{[^}]*rotate\(/.test(css), false, '不许再有 rotate keyframes（问号不再自己摇）')
-  assert.equal(/@keyframes[^{]*\{[^}]*translate\(/.test(css), false, '不许再有 translate keyframes（问号不再自己晃）')
-  // 兜底位置：她头附近（首帧 JS 还没定位时）
+  // 自摇：幅度要小、节奏要慢（用户：参照非镜像那样摇；之前 ±30° 太大像"独立表演"）
+  assert.ok(/animation:\s*qmarkSway\s+([\d.]+)s\s+ease-in-out\s+infinite/.test(inner), '.qmark-inner 必须有 qmarkSway 自摇');
+  const swayPeriod = Number(inner.match(/animation:\s*qmarkSway\s+([\d.]+)s/)?.[1])
+  assert.ok(swayPeriod >= 2.5, `自摇要慢（≥2.5s），实际 ${swayPeriod}s`)
+  const swayBlock = css.match(/@keyframes qmarkSway\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
+  const swayAngles = [...swayBlock.matchAll(/rotate\((-?[\d.]+)deg\)/g)].map((m) => Number(m[1]))
+  assert.ok(swayAngles.length >= 2, 'qmarkSway 至少要有关键角度')
+  const swayAmp = Math.max(...swayAngles) - Math.min(...swayAngles)
+  assert.ok(swayAmp >= 6, `自摇幅度不能太小（≥6°），实际 ${swayAmp}°`)
+  assert.ok(swayAmp <= 14, `自摇幅度要小（≤14°，像非镜像那样轻摆），实际 ${swayAmp}°`)
+  // 兜底位置：她头附近
   const fallback = block.match(/transform:\s*translate\(([\d.]+)%,\s*([\d.]+)%\)/)
   assert.ok(fallback, '#questionMark 必须有首帧兜底位置（translate 百分比）')
   const width = Number(block.match(/width:\s*([\d.]+)%/)?.[1])
   const centerPct = Number(fallback[1]) + width / 2
   assert.ok(centerPct >= 25 && centerPct <= 45, `问号中心 x 应在 25%~45%（离她别太远），实际 ${centerPct.toFixed(1)}%`)
-  // 右键：只淡出（用户要的"淡出"保留）；常驻提问：不淡出、也不动
+  // 右键：自摇 + 淡出；常驻提问：只摇、不淡出
   assert.ok(/@keyframes qmarkFadeOut/.test(css), '必须有 qmarkFadeOut（右键问号淡出）')
   assert.ok(
-    /#questionMark\.flash\s+\.qmark-inner\s*\{[\s\S]{0,120}animation:\s*qmarkFadeOut\s+([\d.]+)s/.test(css),
-    '#questionMark.flash .qmark-inner 必须引用 qmarkFadeOut',
+    /#questionMark\.flash\s+\.qmark-inner\s*\{[\s\S]{0,200}animation:[\s\S]{0,200}qmarkFadeOut/.test(css),
+    '#questionMark.flash .qmark-inner 必须带 qmarkFadeOut',
   )
   const loopBlock = css.match(/#questionMark\.loop\s+\.qmark-inner\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
   assert.ok(loopBlock.length > 0, '必须有 .loop 规则')
-  assert.ok(/animation:\s*none/.test(loopBlock), '常驻问号必须 animation: none（不能淡出、不能摇）')
+  assert.ok(/qmarkSway/.test(loopBlock), '常驻问号要继续摇')
+  assert.equal(/opacity/.test(loopBlock), false, '常驻问号不能淡出')
   // 淡出时长必须 ≤ 问号显示时长
   const petJs = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
   const flashMs = Number(petJs.match(/pokeExpression\('question',\s*(\d+)\)/)?.[1])
-  const fadeMs = Number(css.match(/animation:\s*qmarkFadeOut\s+([\d.]+)s/)?.[1]) * 1000
+  const fadeMs = Number(css.match(/@keyframes qmarkFadeOut\s*\{[\s\S]*?opacity:\s*0/)?.[0] ? css.match(/qmarkFadeOut\s+([\d.]+)s/)?.[1] : NaN) * 1000
   assert.ok(flashMs >= 2000, `右键问号显示时长至少 2000ms，实际 ${flashMs}ms`)
-  assert.ok(
-    Number.isFinite(fadeMs) && fadeMs <= flashMs,
-    `淡出动画时长（${fadeMs}ms）必须 ≤ 显示时长（${flashMs}ms）`,
-  )
+  assert.ok(Number.isFinite(fadeMs) && fadeMs <= flashMs, `淡出动画时长（${fadeMs}ms）必须 ≤ 显示时长（${flashMs}ms）`)
 })
 
 check('问号贴住「模型里问号位置上的画层」：每帧跟着她的骨骼/物理一起动', () => {
@@ -4835,7 +4838,7 @@ check('问号贴住「模型里问号位置上的画层」：每帧跟着她的�
   assert.ok(/function updateQuestionMarkPosition\(\)/.test(live2d), '必须有 updateQuestionMarkPosition()')
   // 每帧（beforeModelUpdate 钩子里）都要重算，否则她动的时候问号会"钉"在原地
   assert.ok(
-    /on\('beforeModelUpdate',[\s\S]{0,260}updateQuestionMarkPosition\(\)/.test(live2d),
+    /on\('beforeModelUpdate',[\s\S]{0,900}updateQuestionMarkPosition\(\)/.test(live2d),
     'beforeModelUpdate（每帧）里必须调用 updateQuestionMarkPosition()',
   )
   assert.ok(/model\.toGlobal\(target\)/.test(live2d), '位置必须用 model.toGlobal 映射（自带镜像/缩放/位移）')
