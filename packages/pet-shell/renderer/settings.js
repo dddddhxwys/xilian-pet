@@ -11,6 +11,7 @@ const mirrorEl = document.getElementById('mirror')
 const autoFaceEl = document.getElementById('autoFace')
 const clickInteractionEl = document.getElementById('clickInteraction')
 const bubbleTipEl = document.getElementById('bubbleTip')
+const approvalViaPetEl = document.getElementById('approvalViaPet')
 const noteEl = document.getElementById('note')
 const noteDefault = noteEl.textContent
 
@@ -34,9 +35,10 @@ function paint(state) {
   autoFaceEl.checked = autoFace === true
   // 自动朝向开着时，手动翻转会被覆盖 —— 界面上说清楚，避免"点了没反应"
   mirrorEl.closest('.row').classList.toggle('muted', autoFaceEl.checked)
-  const { clickInteraction = true, bubble = true } = state.settings?.behavior ?? {}
+  const { clickInteraction = true, bubble = true, approvalViaPet = true } = state.settings?.behavior ?? {}
   clickInteractionEl.checked = clickInteraction === true
   bubbleTipEl.checked = bubble === true
+  approvalViaPetEl.checked = approvalViaPet === true
 }
 
 /** 顶部提示条，1.6s 后恢复原文 */
@@ -100,6 +102,14 @@ wireToggle(clickInteractionEl, 'behavior', 'clickInteraction', () =>
 )
 wireToggle(bubbleTipEl, 'behavior', 'bubble', () =>
   flashNote(bubbleTipEl.checked ? '气泡提示已开启' : '气泡提示已关闭（她仍会动，只是不弹字）'),
+)
+// ⚠️ 这一项生效在**插件**（DSH 启动时读一次），所以必须提示"重启 DSH"
+wireToggle(approvalViaPetEl, 'behavior', 'approvalViaPet', () =>
+  flashNote(
+    approvalViaPetEl.checked
+      ? '已保存：审批交给桌宠（⚠️ 重启 DSH 后生效）'
+      : '已保存：审批交回 DSH 界面（⚠️ 重启 DSH 后生效）',
+  ),
 )
 
 document.getElementById('reset').addEventListener('click', async () => {

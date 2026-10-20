@@ -108,6 +108,8 @@ export function requiredInRelease(options = {}) {
     'tools/find-node.cmd',
     'package.json',
     'packages/pet-plugin/index.js',
+    // 审批开关来源解析（插件 import 它；漏了就是插件启动直接失败）
+    'packages/pet-plugin/approval-config.js',
     'packages/pet-plugin/cordis.patch.yml',
     'packages/pet-shell/main.js',
     'packages/pet-shell/dsh-discovery.js',

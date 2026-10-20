@@ -16,8 +16,11 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+import { parsePetSettings, petSettingsPath, resolveApprovalViaPet } from './approval-config.js'
 
 import {
   activityLabel,
@@ -421,8 +424,27 @@ export function apply(ctx, config = {}) {
   // 审批都静默走 GUI —— 朋友测试"审批走桌宠"就是这样失败的，而他那边看不出任何异常。
   // 改默认值**是安全的**：桌宠没连上时下面的 handler 会 `return next()` 立刻交棒，
   // 行为与没开时完全一致（自测钉住了这条）。
+  //
+  // ⚠️ 2026-10-12 起，开关的**界面**在桌宠设置窗（「行为 · 审批由桌宠同意」）：
+  //    插件与外壳是两个进程，插件只在 apply()（= DSH 启动）时读一次外壳的设置文件，
+  //    所以**改完要重启 DSH**。profile 里若显式写了 `approval.viaPet`，仍以 profile 为准。
   const approvalConfig = config.approval ?? {}
-  const approvalViaPet = approvalConfig.viaPet !== false
+  const petSettings = (() => {
+    try {
+      return parsePetSettings(readFileSync(petSettingsPath(dirname(fileURLToPath(import.meta.url))), 'utf8'))
+    } catch {
+      return null // 文件不存在 / 无权限：当没配过，走默认
+    }
+  })()
+  const approvalResolution = resolveApprovalViaPet(config, petSettings)
+  const approvalViaPet = approvalResolution.value
+  const approvalSourceLabel =
+    approvalResolution.source === 'plugin-config'
+      ? 'profile 显式配置'
+      : approvalResolution.source === 'settings-window'
+        ? '桌宠设置窗（改完需重启 DSH）'
+        : '默认值'
+  warn(`[审批] 是否由桌宠决定：${approvalViaPet ? '是' : '否'}（来源：${approvalSourceLabel}）`)
   const approvalTimeoutMs = Math.max(
     1_000,
     Math.min(300_000, Number.isFinite(approvalConfig.timeoutMs) ? approvalConfig.timeoutMs : 60_000),

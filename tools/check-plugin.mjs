@@ -139,6 +139,7 @@ import {
   snapshot,
   spendBySession,
 } from '../packages/pet-plugin/reducer.js'
+import { parsePetSettings, petSettingsPath, resolveApprovalViaPet } from '../packages/pet-plugin/approval-config.js'
 // ⚠️ `../packages/pet-plugin/reminders.js` 已按用户要求**整体删除**（2026-10-11：
 //    "取消这个通知条功能"）→ 连同它的 24 项断言一起删掉。**不要重新 import 它。**
 //    取而代之的是下面「[13] 通知条已整体移除」那一组**防回归**断言。
@@ -4982,6 +4983,55 @@ check('问号不颤动：合成层定位 / 尺寸不每帧重写 / 只跟踪脸�
   )
   const css = readFileSync(new URL('../packages/pet-shell/renderer/pet.css', import.meta.url), 'utf8')
   assert.ok(/#questionMark\s*\{[^}]*will-change:\s*transform/s.test(css), '#questionMark 要 will-change: transform（提示合成层）')
+})
+
+check('审批由桌宠同意：来源优先级（profile > 设置窗 > 默认）+ 坏文件不炸 + 设置窗带重启提示', () => {
+  // ① 纯函数：来源优先级
+  assert.deepEqual(resolveApprovalViaPet({ approval: { viaPet: true } }, { behavior: { approvalViaPet: false } }), {
+    value: true,
+    source: 'plugin-config',
+  }, 'profile 显式配置最高优先')
+  assert.deepEqual(resolveApprovalViaPet({ approval: { viaPet: false } }, { behavior: { approvalViaPet: true } }), {
+    value: false,
+    source: 'plugin-config',
+  }, 'profile 显式 false 也要压过设置窗')
+  assert.deepEqual(resolveApprovalViaPet({}, { behavior: { approvalViaPet: false } }), {
+    value: false,
+    source: 'settings-window',
+  }, '没写 profile 时听设置窗')
+  assert.deepEqual(resolveApprovalViaPet({}, null), { value: true, source: 'default' }, '都没配 → 默认开（opt-out）')
+  assert.deepEqual(resolveApprovalViaPet({ approval: { viaPet: 'false' } }, null), { value: true, source: 'default' }, '类型不对的配置要忽略，不能当 false')
+  // ② 坏文件 / BOM / 空文件都不能让插件崩（BOM 是踩过的坑）
+  assert.deepEqual(parsePetSettings('\uFEFF{"behavior":{"approvalViaPet":false}}'), { behavior: { approvalViaPet: false } }, 'BOM 要能解析')
+  assert.equal(parsePetSettings('not json'), null, '坏文件 → null（走默认，不炸）')
+  assert.equal(parsePetSettings(''), null, '空文件 → null')
+  assert.equal(parsePetSettings('  '), null, '纯空白 → null')
+  assert.equal(parsePetSettings(null), null, '非字符串 → null')
+  // ③ 设置文件路径：插件目录 → 外壳的 .state/settings.json
+  assert.equal(
+    petSettingsPath(join(sep, 'repo', 'packages', 'pet-plugin')),
+    join(sep, 'repo', 'packages', 'pet-shell', '.state', 'settings.json'),
+    '设置文件路径必须指向 packages/pet-shell/.state/settings.json',
+  )
+  // ④ 插件接线：读设置文件 + 用纯函数 + 日志里写清来源
+  const index = readFileSync(new URL('../packages/pet-plugin/index.js', import.meta.url), 'utf8')
+  assert.ok(/from '\.\/approval-config\.js'/.test(index), '插件必须 import approval-config.js')
+  assert.ok(/readFileSync\(petSettingsPath\(/.test(index), '插件必须读外壳的设置文件')
+  assert.ok(/resolveApprovalViaPet\(config, petSettings\)/.test(index), '插件必须用纯函数决定是否接管审批')
+  assert.ok(/来源：\$\{approvalSourceLabel\}/.test(index), '启动日志要写清来源（排查"为什么没过桌宠"）')
+  // ⑤ 设置窗：开关 + "需重启 DSH"提示 + 分组写盘 + 高度
+  const html = readFileSync(new URL('../packages/pet-shell/renderer/settings.html', import.meta.url), 'utf8')
+  assert.ok(/id="approvalViaPet"/.test(html), '设置窗要有 #approvalViaPet 开关')
+  assert.ok(/改动需重启 DSH/.test(html), '界面上必须明确写"改动需重启 DSH"')
+  const js = readFileSync(new URL('../packages/pet-shell/renderer/settings.js', import.meta.url), 'utf8')
+  assert.ok(/wireToggle\(approvalViaPetEl, 'behavior', 'approvalViaPet'/.test(js), '要按 behavior 分组写盘')
+  assert.ok(/重启 DSH 后生效/.test(js), '保存后的提示也要提醒重启 DSH')
+  const main = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+  const height = Number(main.match(/const SETTINGS_HEIGHT = (\d+)/)?.[1])
+  assert.ok(height >= 516, `加这一行后设置窗高度至少 516，实际 ${height}`)
+  // ⑥ 发行包必须带上新模块（漏了就是"插件启动直接 import 失败"）
+  const release = readFileSync(new URL('../tools/lib/release-files.mjs', import.meta.url), 'utf8')
+  assert.ok(/packages\/pet-plugin\/approval-config\.js/.test(release), '发行包必需清单要加 approval-config.js')
 })
 
 console.log(`\n${'─'.repeat(56)}`)
