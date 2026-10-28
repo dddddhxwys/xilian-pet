@@ -428,10 +428,16 @@ export function apply(ctx, config = {}) {
   // ⚠️ 2026-10-12 起，开关的**界面**在桌宠设置窗（「行为 · 审批由桌宠同意」）：
   //    插件与外壳是两个进程，插件只在 apply()（= DSH 启动）时读一次外壳的设置文件，
   //    所以**改完要重启 DSH**。profile 里若显式写了 `approval.viaPet`，仍以 profile 为准。
+  //
+  // ⚠️ 2026-10-28 实机事故：profile 里写死 `viaPet: true` 的人，设置窗开关永远不生效
+  //    （优先级更高）。包内默认 patch 已不再写它；这里也保留"显式配置最高优先"的语义。
+  //
+  // `PET_SETTINGS_PATH` 是**测试/排障**用的覆盖（自测要隔离真实设置文件，否则跑测试会读用户当前开关）。
   const approvalConfig = config.approval ?? {}
+  const petSettingsFile = process.env.PET_SETTINGS_PATH || petSettingsPath(dirname(fileURLToPath(import.meta.url)))
   const petSettings = (() => {
     try {
-      return parsePetSettings(readFileSync(petSettingsPath(dirname(fileURLToPath(import.meta.url))), 'utf8'))
+      return parsePetSettings(readFileSync(petSettingsFile, 'utf8'))
     } catch {
       return null // 文件不存在 / 无权限：当没配过，走默认
     }

@@ -14,7 +14,7 @@
 import http from 'node:http'
 import { EventEmitter } from 'node:events'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { inflateRawSync } from 'node:zlib'
@@ -799,6 +799,10 @@ const mockAgentGetter = (sessionId) => (sessionId === 'known' ? fakeAgent : unde
 const stubCreateUserMessage = (input) => ({ ...input, id: 'msg-test-1', role: 'user' })
 
 const { ctx, routes, listeners, warnings } = createMockCtx({ agents: mockAgentGetter })
+// ⚠️ 自测隔离：插件会读 `packages/pet-shell/.state/settings.json`（用户在设置窗里的开关）。
+//    不隔离的话，测试结果会随"你此刻开没开审批/气泡"而变（2026-10-28 实测：用户关掉审批后
+//    两条老断言直接挂了）。这里指向一个不存在的路径 = 干净的"新装"环境。
+process.env.PET_SETTINGS_PATH = join(process.cwd(), '.cache', '_no-such-settings.json')
 const dispose = apply(ctx, {
   pathPrefix: '/xilian-pet',
   minHoldMs: 0,
@@ -5043,7 +5047,9 @@ check('审批由桌宠同意：来源优先级（profile > 设置窗 > 默认）
   // ④ 插件接线：读设置文件 + 用纯函数 + 日志里写清来源
   const index = readFileSync(new URL('../packages/pet-plugin/index.js', import.meta.url), 'utf8')
   assert.ok(/from '\.\/approval-config\.js'/.test(index), '插件必须 import approval-config.js')
-  assert.ok(/readFileSync\(petSettingsPath\(/.test(index), '插件必须读外壳的设置文件')
+  assert.ok(/readFileSync\(petSettingsFile, 'utf8'\)/.test(index), '插件必须读外壳的设置文件')
+  assert.ok(/petSettingsPath\(dirname\(fileURLToPath\(import\.meta\.url\)\)\)/.test(index), '默认路径必须是 packages/pet-shell/.state/settings.json')
+  assert.ok(/process\.env\.PET_SETTINGS_PATH \|\|/.test(index), '要支持 PET_SETTINGS_PATH 覆盖（自测隔离/排障用）')
   assert.ok(/resolveApprovalViaPet\(config, petSettings\)/.test(index), '插件必须用纯函数决定是否接管审批')
   assert.ok(/来源：\$\{approvalSourceLabel\}/.test(index), '启动日志要写清来源（排查"为什么没过桌宠"）')
   // ⑤ 设置窗：开关 + "需重启 DSH"提示 + 分组写盘 + 高度
@@ -5059,6 +5065,11 @@ check('审批由桌宠同意：来源优先级（profile > 设置窗 > 默认）
   // ⑥ 发行包必须带上新模块（漏了就是"插件启动直接 import 失败"）
   const release = readFileSync(new URL('../tools/lib/release-files.mjs', import.meta.url), 'utf8')
   assert.ok(/packages\/pet-plugin\/approval-config\.js/.test(release), '发行包必需清单要加 approval-config.js')
+  // ⑦ ⚠️ 包内默认 patch **不能写死 viaPet** —— 写了它，设置窗开关就被"优先级"焊死
+  //    （2026-10-28 实机事故：用户在设置窗关掉，但 profile 写着 viaPet:true → 一直是 true）
+  const patch = readFileSync(new URL('../packages/pet-plugin/cordis.patch.yml', import.meta.url), 'utf8')
+  assert.equal(/viaPet:\s*(true|false)/.test(patch), false, '包内 patch 不能写 viaPet（会把设置窗开关焊死）')
+  assert.ok(/timeoutMs:\s*60000/.test(patch), 'timeoutMs 仍要保留在 patch 里')
 })
 
 check('DSH 换端口后自动重连：断线 → 重新发现 → 切地址重建 SSE（不再永久"未连接"）', () => {
@@ -5086,6 +5097,52 @@ check('DSH 换端口后自动重连：断线 → 重新发现 → 切地址重�
   assert.ok(/DSH 地址变化/.test(rediscover), '切换要留日志（排查关键）')
   // ⑤ 首次启动没有 launcher 地址时，立刻做一轮发现
   assert.ok(/if \(!DSH_URL_FROM_ENV && !initialDiscoveryDone\)/.test(main), '没有 env 地址时启动要立刻发现')
+})
+
+check('审批开关**真的**改变插件行为：设置窗写 false 就不注册应答者（apply 时读一次）', () => {
+  // 2026-10-28 实机事故的回归护栏：profile 曾写死 viaPet:true，设置窗关掉也不生效。
+  // 这里用 PET_SETTINGS_PATH 指向临时设置文件，直接验"设置窗的值 → 插件行为"。
+  const file = join(process.cwd(), '.cache', `_test-settings-${process.pid}.json`)
+  const prev = process.env.PET_SETTINGS_PATH
+  const writeSettings = (viaPet) =>
+    writeFileSync(file, JSON.stringify({ version: 1, behavior: { clickInteraction: true, bubble: true, approvalViaPet: viaPet } }), 'utf8')
+  try {
+    // ① 关掉：不注册 approval/request 应答者，日志写明"否 / 来源设置窗"
+    process.env.PET_SETTINGS_PATH = file
+    writeSettings(false)
+    const off = createMockCtx({ agents: () => undefined })
+    const offTeardown = apply(off.ctx, { pathPrefix: '/xilian-pet', createUserMessage: stubCreateUserMessage })
+    try {
+      assert.equal(off.listeners.get('approval/request')?.length ?? 0, 0, '设置窗关掉时**不该**注册审批应答者')
+      assert.ok(
+        off.warnings.some((w) => w.includes('[审批]') && w.includes('否') && w.includes('桌宠设置窗')),
+        `日志应报"否（来源：桌宠设置窗）"，实际：${off.warnings.filter((w) => w.includes('[审批]')).join(' | ') || '(无)'}`,
+      )
+    } finally {
+      offTeardown()
+    }
+    // ② 打开（对照）：注册应答者，日志"是 / 来源设置窗"
+    writeSettings(true)
+    const on = createMockCtx({ agents: () => undefined })
+    const onTeardown = apply(on.ctx, { pathPrefix: '/xilian-pet', createUserMessage: stubCreateUserMessage })
+    try {
+      assert.equal(on.listeners.get('approval/request')?.length ?? 0, 1, '设置窗打开时应注册审批应答者')
+      assert.ok(
+        on.warnings.some((w) => w.includes('[审批]') && w.includes('是') && w.includes('桌宠设置窗')),
+        `日志应报"是（来源：桌宠设置窗）"，实际：${on.warnings.filter((w) => w.includes('[审批]')).join(' | ') || '(无)'}`,
+      )
+    } finally {
+      onTeardown()
+    }
+  } finally {
+    if (prev === undefined) delete process.env.PET_SETTINGS_PATH
+    else process.env.PET_SETTINGS_PATH = prev
+    try {
+      rmSync(file, { force: true })
+    } catch {
+      /* ignore */
+    }
+  }
 })
 
 console.log(`\n${'─'.repeat(56)}`)

@@ -42,6 +42,11 @@
         # 2026-10-06：默认由**关**改成**开**。原来 opt-in，结果凡是从手写 patch
         # 那条路装出来的人（config 里没有 approval 键）审批都静默走 GUI —— 朋友实测
         # 报的就是"审批没走桌宠"。写 false 即可完全关掉。
+        #
+        # ⚠️ 2026-10-28：**这里刻意不再写 `viaPet`**。取值优先级是
+        #    profile 显式 viaPet > 桌宠设置窗「审批由桌宠同意」> 默认 true；
+        #    以前这里写死 true，等于把设置窗的开关**焊死**（用户关掉也不生效）。
+        #    现在只留 `timeoutMs`，开关交给设置窗；（想强制覆盖的人仍可在这里显式写 viaPet）。
         approval:
-          viaPet: true # 写 false 可完全关掉
+          timeoutMs: 60000 # 超时后交棒给 GUI（5s~300s）
           timeoutMs: 60000 # 超时后交棒给 GUI（5s~300s）
