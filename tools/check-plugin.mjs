@@ -17,7 +17,107 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { inflateRawSync } from 'node:zlib'
+import { inflateRawSync, inflateSync } from 'node:zlib'
+
+/**
+ * 最小 PNG 解码（只支持 8-bit RGBA，够解我们的 34×41 素材）。
+ * 用途：问号朝向这种"视觉属性"必须用像素说话，不能靠注释/肉眼。
+ */
+function decodePngRgba(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 8 || bytes[0] !== 0x89) return null
+  let pos = 8
+  let width = 0
+  let height = 0
+  let bitDepth = 0
+  let colorType = 0
+  const idat = []
+  while (pos + 8 <= bytes.length) {
+    const len = bytes.readUInt32BE(pos)
+    const type = bytes.toString('latin1', pos + 4, pos + 8)
+    const data = bytes.subarray(pos + 8, pos + 8 + len)
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0)
+      height = data.readUInt32BE(4)
+      bitDepth = data[8]
+      colorType = data[9]
+    } else if (type === 'IDAT') idat.push(data)
+    else if (type === 'IEND') break
+    pos += 12 + len
+  }
+  if (bitDepth !== 8 || colorType !== 6 || width === 0 || height === 0) return null
+  const raw = inflateSync(Buffer.concat(idat))
+  const bpp = 4
+  const stride = width * bpp
+  const out = Buffer.alloc(height * stride)
+  let p = 0
+  for (let y = 0; y < height; y += 1) {
+    const filter = raw[p]
+    p += 1
+    const row = raw.subarray(p, p + stride)
+    p += stride
+    const cur = out.subarray(y * stride, (y + 1) * stride)
+    const prev = y > 0 ? out.subarray((y - 1) * stride, y * stride) : null
+    for (let x = 0; x < stride; x += 1) {
+      const a = x >= bpp ? cur[x - bpp] : 0
+      const b = prev === null ? 0 : prev[x]
+      const c = prev !== null && x >= bpp ? prev[x - bpp] : 0
+      let v = row[x]
+      if (filter === 1) v += a
+      else if (filter === 2) v += b
+      else if (filter === 3) v += (a + b) >> 1
+      else if (filter === 4) {
+        const pa = Math.abs(b - c)
+        const pb = Math.abs(a - c)
+        const pc = Math.abs(a + b - 2 * c)
+        v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c
+      }
+      cur[x] = v & 0xff
+    }
+  }
+  return { width, height, data: out }
+}
+
+/** 问号朝向指标：上碗质量的横向重心 / 下方圆点的横向重心（占宽度的百分比） */
+function glyphOrientation(png) {
+  const { width, height, data } = png
+  let minX = width
+  let maxX = -1
+  let minY = height
+  let maxY = -1
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (data[(y * width + x) * 4 + 3] > 40) {
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+      }
+    }
+  }
+  if (maxX < 0) return { topComX: 0, bottomComX: 0 }
+  const w = maxX - minX + 1
+  const h = maxY - minY + 1
+  const topEnd = minY + Math.floor(h * 0.55)
+  const bottomStart = minY + Math.floor(h * 0.75)
+  let topSum = 0
+  let topN = 0
+  let botSum = 0
+  let botN = 0
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      if (data[(y * width + x) * 4 + 3] <= 40) continue
+      const rel = (x - minX) / w
+      if (y < topEnd) {
+        topSum += rel
+        topN += 1
+      } else if (y >= bottomStart) {
+        botSum += rel
+        botN += 1
+      }
+    }
+  }
+  return { topComX: topN === 0 ? 0 : (100 * topSum) / topN, bottomComX: botN === 0 ? 0 : (100 * botSum) / botN }
+}
 
 import { apply, inject as pluginInject } from '../packages/pet-plugin/index.js'
 import {
@@ -4821,6 +4921,14 @@ check('问号镜像适配接线：setExpression 走纯函数 + DOM 问号用模�
   assert.equal(/id="questionMark"[^>]*>[^<\s]/.test(html), false, 'index.html 里 #questionMark 不应再有文字内容')
   const asset = readFileSync(new URL('../packages/pet-shell/renderer/assets/question-mark.png', import.meta.url))
   assert.ok(asset.length > 500, 'question-mark.png 资源必须存在且非空')
+  // 2026-10-28 用户："让问号的那个缺口对着桌宠的头"。
+  // 镜像模式下她在问号**右边**，所以素材必须"缺口朝右"（= 上碗的质量偏左、下方圆点偏右）。
+  // 这里直接解 PNG 像素统计（不靠肉眼）：两种朝向的指标差异很大（实测 43.0/79.7 vs 52.5/15.7）。
+  const px = decodePngRgba(asset)
+  assert.ok(px, '必须能解出 question-mark.png 的像素（RGBA8）')
+  const metric = glyphOrientation(px)
+  assert.ok(metric.topComX < 47, `缺口要朝右（上碗质量应偏左，实测 ${metric.topComX.toFixed(1)}%，阈值 <47）`)
+  assert.ok(metric.bottomComX > 70, `圆点要偏右（实测 ${metric.bottomComX.toFixed(1)}%，阈值 >70）`)
   // 切换镜像时要把当前状态的表情重新按新规则应用一次，否则问号状态会残留反问号
   assert.ok(/setMirror[\s\S]{0,600}setExpression\(mapped\.expression/.test(live2d), 'setMirror 后要重放当前状态表情')
 })
