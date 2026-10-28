@@ -5145,6 +5145,32 @@ check('审批开关**真的**改变插件行为：设置窗写 false 就不注�
   }
 })
 
+check('patch 文件不许有重复键（YAML 重复键会让整包补丁解析失败 → 插件整个不加载）', () => {
+  // 2026-10-28 实机事故：改包内 patch 时留了一条重复的 `timeoutMs`，
+  // DSH 重启后 `/xilian-pet/health` 直接 404（插件根本没 apply），排查半天才定位到 YAML。
+  // 这里按"缩进层级 + 键名"做重复检查（注释行跳过）。
+  const files = ['../packages/pet-plugin/cordis.patch.yml', '../../cordis.patch.yml']
+  let checkedAny = false
+  for (const rel of files) {
+    const url = new URL(rel, import.meta.url)
+    if (!existsSync(url)) continue
+    checkedAny = true
+    const text = readFileSync(url, 'utf8')
+    const seen = new Map()
+    const dup = []
+    text.split(/\r?\n/).forEach((line, i) => {
+      if (/^\s*#/.test(line)) return
+      const m = line.match(/^(\s+)([A-Za-z_][\w-]*):(\s|$)/)
+      if (!m) return
+      const key = `${m[1].length}|${m[2]}`
+      if (seen.has(key)) dup.push(`${m[2]}（第 ${seen.get(key) + 1} 与 ${i + 1} 行）`)
+      else seen.set(key, i)
+    })
+    assert.deepEqual(dup, [], `${rel} 存在重复键：${dup.join(', ')}`)
+  }
+  assert.equal(checkedAny, true, '一个 patch 文件都没找到，检查形同虚设')
+})
+
 console.log(`\n${'─'.repeat(56)}`)
 console.log(`通过 ${passed} 项，失败 ${failed} 项`)
 if (warnings.length > 0) console.log(`插件告警 ${warnings.length} 条：\n  ${warnings.slice(0, 5).join('\n  ')}`)

@@ -49,4 +49,3 @@
         #    现在只留 `timeoutMs`，开关交给设置窗；（想强制覆盖的人仍可在这里显式写 viaPet）。
         approval:
           timeoutMs: 60000 # 超时后交棒给 GUI（5s~300s）
-          timeoutMs: 60000 # 超时后交棒给 GUI（5s~300s）
