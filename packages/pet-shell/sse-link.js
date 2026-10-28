@@ -57,6 +57,8 @@ export function createSseLink({
 } = {}) {
   let request = null
   let connected = false
+  /** 是否已经向调用方报过"链路不可用"（初始就连不上时不会有 was=true 的转换，必须单独报一次） */
+  let reportedDown = false
   let retryMs = 1_000
   let retryTimer = null
   let retryPending = false
@@ -115,6 +117,15 @@ export function createSseLink({
     if (was) {
       log(`SSE 断开（${reason}）`)
       onLink({ connected: false, error: reason })
+      reportedDown = true
+    } else if (!reportedDown) {
+      // ⚠️ 初始就连不上（DSH 没开 / 端口变了）时 `connected` 从来没变过 true，
+      //    `was` 永远是 false —— 如果不在这里报一次，主进程就永远不知道"掉线了"，
+      //    也就不会去重新发现地址（2026-10-28 实机：DSH 换端口后桌宠永久"未连接"）。
+      //    只报**第一次**：后面每次重试失败不再刷屏，主进程自己会按 6s 节奏继续探。
+      log(`SSE 链路不可用（${reason}）→ 通知主进程重新发现 DSH`)
+      onLink({ connected: false, error: reason })
+      reportedDown = true
     }
     scheduleRetry()
   }
@@ -140,6 +151,7 @@ export function createSseLink({
 
       connected = true
       retryMs = 1_000
+      reportedDown = false // 连上了：下一次断开要重新通知
       lastDataAt = now()
       log(`SSE 已连接 ${url}`)
       onLink({ connected: true, url: String(url) })

@@ -12,6 +12,7 @@
  */
 
 import http from 'node:http'
+import { EventEmitter } from 'node:events'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -2674,6 +2675,32 @@ await checkAsync('SSE 自愈：掉线后必须自动重连（不需要用户重�
   }
 })
 
+await checkAsync('SSE 初始就连不上时**也要通知一次**（DSH 换端口后，主进程靠这个通知触发重新发现）', async () => {
+  // 假 httpGet：立刻 error（模拟端口上根本没服务）
+  const fakeGet = () => {
+    const req = new EventEmitter()
+    req.destroy = () => {}
+    setTimeout(() => req.emit('error', new Error('ECONNREFUSED selftest')), 10)
+    return req
+  }
+  const links = []
+  const link = createSseLink({
+    url: 'http://127.0.0.1:1/events',
+    onLink: (l) => links.push(l),
+    log: () => {},
+    httpGet: fakeGet,
+  })
+  try {
+    await waitFor(() => links.length > 0, 1500)
+    assert.equal(links[0].connected, false, '初始连不上必须报 connected:false（否则主进程永远不知道要换地址）')
+    // 只报第一次：重试失败不再刷屏
+    await new Promise((r) => setTimeout(r, 200))
+    assert.equal(links.length, 1, `初始失败只该通知一次，实际 ${links.length} 次`)
+  } finally {
+    link.close()
+  }
+})
+
 await checkAsync('SSE 看门狗：**心跳静默**超阈值也要判定掉线（半开连接唯一能抓住的手段）', async () => {
   // 服务端接受连接、发一次 ping，然后**永远沉默**（模拟半开：socket 不断但没数据）
   const server = http.createServer((req, res) => {
@@ -5032,6 +5059,33 @@ check('审批由桌宠同意：来源优先级（profile > 设置窗 > 默认）
   // ⑥ 发行包必须带上新模块（漏了就是"插件启动直接 import 失败"）
   const release = readFileSync(new URL('../tools/lib/release-files.mjs', import.meta.url), 'utf8')
   assert.ok(/packages\/pet-plugin\/approval-config\.js/.test(release), '发行包必需清单要加 approval-config.js')
+})
+
+check('DSH 换端口后自动重连：断线 → 重新发现 → 切地址重建 SSE（不再永久"未连接"）', () => {
+  const main = readFileSync(new URL('../packages/pet-shell/main.js', import.meta.url), 'utf8')
+  // ① 地址必须是可变的（原来 const + 写死 19387 → DSH 换端口后永远连不上）
+  assert.ok(/let DSH_URL = process\.env\.PET_DSH_URL \?\? DEFAULT_DSH_URL/.test(main), 'DSH_URL 必须是 let，且回退用 DEFAULT_DSH_URL（不写死端口）')
+  assert.equal(/const DSH_URL = /.test(main), false, '不能再用 const 固定地址')
+  // ② 依赖发现模块
+  assert.ok(
+    /import \{ DEFAULT_DSH_URL, parseListeningPorts, probePetHealth, resolveDshUrl \} from '\.\/dsh-discovery\.js'/.test(main),
+    'main 必须从 dsh-discovery 导入发现能力',
+  )
+  assert.ok(/listListeningPorts/.test(main) && /netstat -ano -p TCP/.test(main), '运行期发现要能枚举监听端口')
+  // ③ 断线时排期重新发现，连上时取消
+  assert.ok(/if \(link\.connected\) cancelRediscover\(\)/.test(main), '连上要取消重新发现定时器')
+  assert.ok(/else scheduleRediscover\(win\)/.test(main), '掉线要排期重新发现')
+  // ④ 重新发现逻辑：先确认当前地址真挂 + 不读旧 env + 切前必须探测通过 + 切后重建 SSE
+  const rediscover = main.match(/async function rediscoverDsh\(win\) \{[\s\S]*?\n\}/)?.[0] ?? ''
+  assert.ok(rediscover.length > 0, '必须有 rediscoverDsh()')
+  assert.ok(/probePetHealth\(DSH_URL/.test(rediscover), '要先确认当前地址是否真的连不上（避免抖动时乱切）')
+  assert.ok(/resolveDshUrl\(\{\}, ROUTE_PREFIX/.test(rediscover), '重新发现时不能信旧 env（PET_DSH_URL 可能是旧端口）')
+  assert.ok(/await probePetHealth\(found\.url/.test(rediscover), '切之前必须探测新地址可用')
+  assert.ok(/DSH_URL = found\.url/.test(rediscover), '必须更新 DSH_URL')
+  assert.ok(/startSse\(win\)/.test(rediscover), '切地址后要重建 SSE')
+  assert.ok(/DSH 地址变化/.test(rediscover), '切换要留日志（排查关键）')
+  // ⑤ 首次启动没有 launcher 地址时，立刻做一轮发现
+  assert.ok(/if \(!DSH_URL_FROM_ENV && !initialDiscoveryDone\)/.test(main), '没有 env 地址时启动要立刻发现')
 })
 
 console.log(`\n${'─'.repeat(56)}`)

@@ -12,11 +12,12 @@
 
 import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, protocol, screen } from 'electron'
 import { createHash } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
 import http from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'node:fs'
 import { contentBand, draggingExpired, hitTest } from './hit-test.js'
 import { createSseLink } from './sse-link.js'
+import { DEFAULT_DSH_URL, parseListeningPorts, probePetHealth, resolveDshUrl } from './dsh-discovery.js'
 import {
   OPACITY_MAX,
   OPACITY_MIN,
@@ -53,7 +54,17 @@ const APP_VERSION = (() => {
  */
 const TRAY_ICON_FILE = process.platform === 'win32' ? 'tray.ico' : 'tray.png'
 
-const DSH_URL = process.env.PET_DSH_URL ?? 'http://127.0.0.1:19387'
+/**
+ * 当前 DSH 地址。
+ *
+ * 来源优先级见 `dsh-discovery.js`：launcher 一般会通过 `PET_DSH_URL` 传进来。
+ * ⚠️ **必须在运行期可变**（`let`）：DSH 每次重启都可能换端口，桌宠如果一直对着旧地址重连，
+ *    就会永远显示"未连接"（2026-10-28 实测：DSH 换到 55514，桌宠还在 19387 上重试）。
+ *    现在断线后会自动重新发现并切过去（见 scheduleRediscover / rediscoverDsh）。
+ */
+let DSH_URL = process.env.PET_DSH_URL ?? DEFAULT_DSH_URL
+/** 启动时是否由 launcher 指定过地址（决定首次要不要立刻做一轮发现） */
+const DSH_URL_FROM_ENV = Boolean(process.env.PET_DSH_URL)
 const ROUTE_PREFIX = (process.env.PET_ROUTE_PREFIX ?? '/xilian-pet').replace(/\/+$/, '')
 const STATE_DIR = process.env.PET_STATE_DIR ?? join(here, '.state')
 const WIDTH = Number(process.env.PET_WIDTH ?? 260)
@@ -472,6 +483,9 @@ const FORCED_STATE = process.env.PET_FORCE_STATE ?? null
  *   · 非正常断开（宿主重启/进程消失/连接重置）→ 立刻判定掉线并重连
  *   · 心跳静默超阈值（半开连接）→ 看门狗兜底
  * 这里只负责"把帧翻译成窗口动作"。
+ *
+ * ⚠️ 另外负责**换地址**：DSH 重启会换端口，断线后要重新发现（见 rediscoverDsh）。
+ *    只靠 sse-link 对着旧端口重连，桌宠会永远显示"未连接"。
  */
 function startSse(win) {
   const url = new URL(`${ROUTE_PREFIX}/events`, DSH_URL)
@@ -479,7 +493,12 @@ function startSse(win) {
   sseLink = createSseLink({
     url,
     log,
-    onLink: (link) => pushLink(win, link),
+    onLink: (link) => {
+      pushLink(win, link)
+      // 掉线 → 定时重新发现 DSH（连上了就把定时器停掉）
+      if (link.connected) cancelRediscover()
+      else scheduleRediscover(win)
+    },
     onFrame: (frame) => {
       if (frame.type === 'snapshot') lastSnapshot = frame
       // ⚠️ 副作用**单独 try**：它出错绝不能把下面那句 send 带走。
@@ -494,10 +513,78 @@ function startSse(win) {
       if (FORCED_STATE !== null && (frame.type === 'state' || frame.type === 'snapshot')) {
         frame.state = FORCED_STATE
       }
-      // 这一句必须**无条件**执行 —— 它是桌宠活着的前提
+      // 这一句必须**无条件**执行 —— 它是桌宠活着的证据
       send(win, 'pet:frame', frame)
     },
   })
+  // 首次启动且没有 launcher 给的地址：立刻做一轮发现（不用等 6s 的定时器）
+  if (!DSH_URL_FROM_ENV && !initialDiscoveryDone) {
+    initialDiscoveryDone = true
+    scheduleRediscover(win, 0)
+  }
+}
+
+// ── DSH 地址的运行期重新发现（DSH 重启会换端口；桌宠不该因此"永久未连接"）──────
+let rediscoverTimer = null
+let rediscovering = false
+let initialDiscoveryDone = false
+/** 掉线后多久重新发现一次（秒级；sse-link 自己在高频重连，发现是慢动作） */
+const REDISCOVER_INTERVAL_MS = 6_000
+
+function cancelRediscover() {
+  if (rediscoverTimer !== null) {
+    clearTimeout(rediscoverTimer)
+    rediscoverTimer = null
+  }
+}
+
+function scheduleRediscover(win, delayMs = REDISCOVER_INTERVAL_MS) {
+  if (rediscoverTimer !== null) return
+  rediscoverTimer = setTimeout(() => {
+    rediscoverTimer = null
+    rediscoverDsh(win).catch((error) => log('重新发现 DSH 失败：', error?.message ?? error))
+  }, delayMs)
+}
+
+/** 本机 loopback 监听端口（netstat 枚举；agent 沙箱里可能 EPERM → 返回空，不抛） */
+function listListeningPorts() {
+  try {
+    const out = execSync('netstat -ano -p TCP', { encoding: 'utf8', timeout: 8000, windowsHide: true })
+    return parseListeningPorts(out)
+  } catch (error) {
+    log(`端口枚举失败（${error?.code ?? error?.message ?? error}）→ 本轮只能靠当前地址/默认端口`)
+    return []
+  }
+}
+
+/**
+ * 重新找 DSH：
+ *  1. 先确认当前地址是真挂了（避免网络抖动时乱切）；
+ *  2. 再走一遍发现（**不读旧 env** —— `PET_DSH_URL` 可能是启动时的旧端口）；
+ *  3. 找到且**探测通过**才切，切完重建 SSE；
+ *  4. 没找到 → 继续等下一轮（桌宠保持在线、只是未连接）。
+ */
+async function rediscoverDsh(win) {
+  if (rediscovering || win.isDestroyed()) return
+  rediscovering = true
+  try {
+    if (await probePetHealth(DSH_URL, ROUTE_PREFIX, 600)) return // 当前地址其实活着
+    const found = await resolveDshUrl({}, ROUTE_PREFIX, { listListeningPorts, probe: probePetHealth })
+    if (!found?.url || !(await probePetHealth(found.url, ROUTE_PREFIX, 600))) {
+      log(`重新发现 DSH：没找到在线的桌宠插件（当前 ${DSH_URL} 连不上）`)
+      scheduleRediscover(win)
+      return
+    }
+    if (found.url === DSH_URL) {
+      scheduleRediscover(win)
+      return
+    }
+    log(`DSH 地址变化 → ${DSH_URL} → ${found.url}（${found.source}）；重建 SSE 连接`)
+    DSH_URL = found.url
+    startSse(win)
+  } finally {
+    rediscovering = false
+  }
 }
 
 /** 启动自检：直接问插件的 /health，一眼看出插件到底装没装 */
