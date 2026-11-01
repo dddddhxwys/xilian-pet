@@ -107,6 +107,7 @@ export function requiredInRelease(options = {}) {
     // ⚠️ 三个 .cmd 全靠它找 Node —— 漏了它，包里三个入口全部跑不起来
     'tools/find-node.cmd',
     'package.json',
+    'packages/pet-plugin/package.json',
     'packages/pet-plugin/index.js',
     // 审批开关来源解析（插件 import 它；漏了就是插件启动直接失败）
     'packages/pet-plugin/approval-config.js',

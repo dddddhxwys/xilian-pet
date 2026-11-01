@@ -57,7 +57,8 @@ Electron 透明置顶窗（显示器）→ IPC → Live2D 渲染端；另有操�
 - 读 JSON/中文文本用 **Node**，不要用 PowerShell（按 GBK 解 UTF-8）。
 - 活体端点用**纯 HTTP**：`Invoke-RestMethod "$env:DSH_WEB_URL/xilian-pet/health"`
   （⚠️ **DSH 端口会变**：别写死 19387；从 DSH 终端启动时 `DSH_WEB_URL` 就是当前地址，
-  双击启动的桌宠由 `packages/pet-shell/dsh-discovery.js` 自动发现）。
+  双击启动的桌宠由 `packages/pet-shell/dsh-discovery.js` 自动发现；而且 **2026-10-28 起运行期也会自动重新发现** ——
+  断线后约 6 秒一轮，DSH 换端口后桌宠几秒内自愈，日志里能看到 `DSH 地址变化 → …`）。
 
 ## 5. 常用命令
 
