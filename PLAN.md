@@ -131,7 +131,7 @@ DSH Host 插件 (Node, 零外部依赖)
 >   为它单做一个设置页卡片，收益远小于"要维护一条 client bundle 构建链"的成本。
 > - **A3 → 重定义为「独立窗里出现宠物并待机动画」**，状态 **✅**。
 >   注意这条在独立窗路线下与 **A8 是同一件事的两半**：A3 看**内容**（模型渲染出来、待机动作在播），
->   A8 看**窗体**（透明、置顶、可拖动）。两者都有截图与参数采样证据（见 `README.md` §十）。
+>   A8 看**窗体**（透明、置顶、可拖动）。两者都有截图与参数采样证据（见 `docs/开发日志.md` §十「验证状态（诚实版）」）。
 
 ---
 
@@ -144,14 +144,14 @@ DSH Host 插件 (Node, 零外部依赖)
    → **2026-10-02 已结清**：**A1 ✅**（`/health` 正常）、**A2 砍掉**、
    **A3 ✅**（重定义后）、**A8 ✅**（可拖动、透明无边框）；
    **A9 仍待人工肉眼确认**（机制已重做并逐条核对日志，但"真的穿过去"只能你确认）。
-   状态以 `README.md` §十「验证状态（诚实版）」为准。
+   状态以 `docs/接手状态报告-2026-10-11.md` 为准（`docs/开发日志.md` §十 是历史版）。
 3. **事件层**：`session/event` + `agent/assistant-stream` 归一化 → `PetReducer` 纯函数 + 单测（Node 内置 `node --test`，零依赖）；跑通 A4/A5。
 4. **Live2D 渲染**：引入 Cubism Core + pixi + pixi-live2d-display，实现状态→动作/表情映射；命中测试 alpha 掩码；跑通 A9/A10。
    → **2026-10-02 变更：不再自研模型，改用现成授权模型。**
    经调研找到 **B站 @是依七哒** 的「秋千版」昔涟 Live2D 模型，作者要求**注明用途 + 不得收费**，已获授权。
    **原「A 档约稿」方案冻结**（`docs/Live2D约稿单.md` 转为暂缓备用，将来想换自研形象可直接启用）。
 
-   ⚠️ **技术选型被版本钉死**（实测，见 `README.md` 第六节）：
+   ⚠️ **技术选型被版本钉死**（实测，见 `docs/开发日志.md` §六「Live2D 渲染层」）：
 
    | 项 | 结论 |
    |---|---|
@@ -177,7 +177,7 @@ DSH Host 插件 (Node, 零外部依赖)
 | ~~本机 workspace ACL 异常（`SetNamedSecurityInfoW failed (Win32 5)`）~~ | ✅ **已解决** | — | 工作区已迁至 `C:\…\dsh-projects\xilian pet`，沙箱授权 ACE 正常。**注意 F: 旧路径仍无授权，搬回去即复现** |
 | **沙箱写边界 = 工作区 + TEMP** | ⚠️ **现存（高）** | `~/.dsh/profiles/desktop`（插件安装目标）与 pnpm store（`%LOCALAPPDATA%\pnpm`）写入均被拒 → **shell 里**装插件必失败，每步需提权 | 装插件走 **`plugin_manager` 工具**（在宿主进程内执行，不受 shell 沙箱约束，单次批准即可；2026-10-06 实测成功）；纯前端依赖实验用 `pnpm --store-dir .\.pnpm-store add …`；改 profile patch 用 `sandbox_permissions` 单次提权 |
 | **agent shell 内 Schannel TLS 全挂** | ⚠️ **现存（高）** | `curl` / PowerShell / `git` 默认后端的 HTTPS 全部失败（`SEC_E_NO_CREDENTIALS`）→ 任何靠 PS/curl 下载的脚本会静默失败 | 联网固定走 Node 系（npm/pnpm/`node fetch`）；git 加 `-c http.sslBackend=openssl`；网页抓取用 `web_fetch` |
-| **Electron / Chromium 无法在 agent shell 内启动** | ⚠️ **现存（高，2026-09-29 实测）** | Chromium 的 Mojo IPC 走**命名管道**，受限沙箱禁止创建 → `FATAL platform_channel.cc: Check failed: 拒绝访问 (0x5)`；`--no-sandbox` 也绕不过。**我无法自己运行宠物窗口做验证** | 启动脚本已内置探测与自动放宽（`--no-sandbox --disable-gpu`）；实机验证需提权单次执行，或由你在自己终端跑（见 `README.md` §3.5） |
+| **Electron / Chromium 无法在 agent shell 内启动** | ⚠️ **现存（高，2026-09-29 实测）** | Chromium 的 Mojo IPC 走**命名管道**，受限沙箱禁止创建 → `FATAL platform_channel.cc: Check failed: 拒绝访问 (0x5)`；`--no-sandbox` 也绕不过。**我无法自己运行宠物窗口做验证** | 启动脚本已内置探测与自动放宽（`--no-sandbox --disable-gpu`）；实机验证需提权单次执行，或由你在自己终端跑（见 `docs/开发日志.md` §三「沙箱与网络边界」） |
 | **Electron 二进制安装链路在本机是坏的** | ⚠️ **现存（中）** | postinstall 被 pnpm 拦；放行后 `install.js` 因缓存目录在工作区外而失败、改到工作区内仍空转；镜像速度差 130 倍（npmmirror 85 KB/s vs 华为云 11 MB/s） | 用 `tools/fetch-electron.mjs`（镜像探测 + 8 路分段并行 + 纯 JS 解压）；`tools/probe-mirrors.mjs` 可复测 |
 | **`github.com` / `raw.githubusercontent.com` 不可达** | ⚠️ **现存（中）** | GitHub 源码 clone、raw 链接抓取失败 | 走 npm registry、`codeload.github.com` tarball 或镜像 |
 | **没有可编辑的 DSH 源码树 → `dev:web` HMR 重建链不可用** | ⚠️ **现存（中）** | 自研插件改代码后无法自动热重载，需重新安装；官方的"改一行就重载"循环拿不到 | 先决定是否需要一份 DSH 源码 checkout；不需要就接受"改→重装"循环 |
@@ -187,7 +187,7 @@ DSH Host 插件 (Node, 零外部依赖)
 | **路径含空格 + 用户名非 ASCII** | ⚠️ **现存（低-中）** | 少数 CLI / node-gyp / 打包器对 `xilian pet`（空格）与 `怒C大伟出奇迹`（中文）处理不当 | 脚本路径一律加引号 + `path.resolve`；构建异常时优先怀疑路径，用纯 ASCII 短路径复测。`LongPathsEnabled=1` 已开，长路径无忧 |
 | 当前 profile 是 `desktop` 而非文档常见的 `web` | 保留 | 静态资源路由细节需按 desktop profile 校准 | 以 `DSH_PROFILE_DIR` / `cordis.patch.yml` 实际内容为准（profile 内 `nodeLinker: hoisted`、`autoInstallPeers: false`，peer 不会自动补装） |
 | ~~角色/模型版权~~ | ✅ **已按官方条款核实（2026-09-30）** | 曾误判为"不得公开分发" | 依《崩坏：星穹铁道》同人衍生作品创作指引 **V3.0**（2025-07-15）三、Q1 A1：**非商业性质的个人使用可以制作"并发布"衍生内容**。须遵守：① 同步放置指定法律声明；② 严格非商业（不收费/不销售/不做周边）；③ 不得暗示官方关联；④ 不得使用未公开素材；⑤ 须为二次独创。**已落地为仓库根 `NOTICE.md`**。另有两条**不适用**于本项目：二（三）维权范围针对"提取+销售"，我们不销售；四 Q4 禁止的是**该游戏的插件/mod**，我们的 DSH 插件与该游戏无关（文档措辞须避免被误读） |
-| 素材是否入库 | ⚠️ **2026-10-06 规则反转** | — | 原来的 36 MB **自研素材导出包**（含绿幕版与历史版）是"约稿自研形象"路线的产物，**该路线已放弃**（改用现成授权模型）。**现行规则（2026-10-06）**：**模型与插件图标都入库** —— `assets/live2d/Cyrene/`（1.38 MB，**经作者授权**）与 `packages/pet-plugin/icon.webp`（**社区图片、作者不明**）；其余第三方素材（委托素材包、`*.wpk`/`*.lpk`、`Cyrene.zip`、含角色截图）仍不入库。版权与署名见 `NOTICE.md` 与 `README.md` §九「素材与版权约束」 |
+| 素材是否入库 | ⚠️ **2026-10-06 规则反转** | — | 原来的 36 MB **自研素材导出包**（含绿幕版与历史版）是"约稿自研形象"路线的产物，**该路线已放弃**（改用现成授权模型）。**现行规则（2026-10-06）**：**模型与插件图标都入库** —— `assets/live2d/Cyrene/`（1.38 MB，**经作者授权**）与 `packages/pet-plugin/icon.webp`（**社区图片、作者不明**）；其余第三方素材（委托素材包、`*.wpk`/`*.lpk`、`Cyrene.zip`、含角色截图）仍不入库。版权与署名见 `NOTICE.md` 与 `README.md`「许可证与第三方素材」 |
 | Live2D SDK 体积与渲染开销 | 保留 | 影响低配机器与"轻量"定位 | 限帧渲染、页面隐藏暂停、可降级静态头像 |
 | ~~角色名不一致~~ | ✅ **已统一为「昔涟」（2026-09-30）** | — | 全仓 24 处中文显示文本已改名。ASCII 标识（目录 `xilian pet`、插件 id `@local/xilian-pet-plugin`、仓库名 `xilian-pet`）**无需改动** —— "西莲"与"昔涟"拼音同为 `xilian` |
 | 第三方插件 = 宿主进程执行权 | 保留 | 沙箱不是安全边界（#1441/#451/#250 至今 open）；`cordis.patch.yml` 允许 `!!js` 表达式 = 配置期代码执行 | 装前跑 `@shaoshi/dshscan` + 看 socket.dev；带 ⚠️ 的包先审源码；改 patch 前先备份（备份已放在 `chajian/backup/`）；**拒绝 `!!js`** |

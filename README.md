@@ -177,6 +177,7 @@
 | 把它做成官方可安装 bundle 的完整交接 | [docs/交接给插件开发模式.md](docs/交接给插件开发模式.md) |
 | 接手复核报告（验证到什么程度、哪些没做）| [docs/接手复核报告.md](docs/接手复核报告.md) |
 | 怎么测 | [docs/测试指引.md](docs/测试指引.md) |
+| **镜像问号想更歪/更直** | `packages/pet-shell/renderer/pet.css` 的 `--qmark-tilt`（当前 **20deg**；改完重启桌宠，来龙去脉见接手报告 §4.33） |
 
 自测（改任何东西都要跑，目前 257 项；**以 `node tools/check-plugin.mjs` 实际输出为准**）：
 
