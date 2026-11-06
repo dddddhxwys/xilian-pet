@@ -121,8 +121,11 @@ body {
   background: url(assets/question-mark.png) center / contain no-repeat;
   /* 圆心 = **尾巴那个点**（用户 2026-10-12："应该以尾部的点为圆心，而不是头部的弯"）。
      ⚠️ 2026-10-28 按用户要求把素材**水平翻转**（"缺口对着桌宠的头"）后，尾巴圆点从左侧
-     跑到右侧（实测圆心 x ≈ 87%）—— 所以这里跟着改成 87% / 90%。 */
-  transform: rotate(-6deg);
+     跑到右侧（实测圆心 x ≈ 87%）—— 所以这里跟着改成 87% / 90%。
+     问号的**整体倾斜**（初始姿态）由 --qmark-tilt 控制，下面两个动画都是"基准 ± 偏移"：
+     正值 = 顺时针 = 问号顶部（弯曲的头部）朝她那一侧倾。 */
+  --qmark-tilt: 30deg;
+  transform: rotate(var(--qmark-tilt));
   transform-origin: 87% 90%;
 }
 
@@ -131,34 +134,38 @@ body {
    幅度：左 -20° / 右 +16°（总 36°），时长 3.6s。
    时间轴：0~0.5s 左晃到 -20°；**0.5~2.1s 顿住（约 1.6s，用户要求延长）**；
    2.1~3.0s 右晃到 +16°；**3.0~3.6s 立刻往回晃并淡出**（到 +6° 时已经看不见，
-   不会像上一版那样在右侧停住再消失，也不会出现明显的第二次左摆）。 */
+   不会像上一版那样在右侧停住再消失，也不会出现明显的第二次左摆）。
+
+   ⚠️ 2026-11-06 用户："问号的初始姿态不应该平行于角色的，而应该是**头部（弯曲的曲线）指向桌宠**"。
+   所以现在所有角度都是 **相对基准倾斜角** 的偏移：基准角 = `.qmark-inner` 上的 `--qmark-tilt`
+   （正值 = 顺时针 = 问号顶部朝她那一侧倾）。改"整体倾斜"只动这一个变量，摇摆编排保持不变。 */
 #questionMark.flash .qmark-inner {
   animation: qmarkSwayOnce 3.6s ease-in-out forwards;
 }
 
 @keyframes qmarkSwayOnce {
   0% {
-    transform: rotate(0deg);
+    transform: rotate(var(--qmark-tilt));
     opacity: 1;
   }
   14% {
-    transform: rotate(-20deg);
+    transform: rotate(calc(var(--qmark-tilt) - 20deg));
     opacity: 1;
   }
   58% {
-    transform: rotate(-20deg);
+    transform: rotate(calc(var(--qmark-tilt) - 20deg));
     opacity: 1;
   }
   84% {
-    transform: rotate(16deg);
+    transform: rotate(calc(var(--qmark-tilt) + 16deg));
     opacity: 1;
   }
   92% {
-    transform: rotate(11deg);
+    transform: rotate(calc(var(--qmark-tilt) + 11deg));
     opacity: 0.45;
   }
   100% {
-    transform: rotate(6deg);
+    transform: rotate(calc(var(--qmark-tilt) + 6deg));
     opacity: 0;
   }
 }
@@ -171,10 +178,10 @@ body {
 @keyframes qmarkSwayLoop {
   0%,
   100% {
-    transform: rotate(-10deg);
+    transform: rotate(calc(var(--qmark-tilt) - 10deg));
   }
   50% {
-    transform: rotate(10deg);
+    transform: rotate(calc(var(--qmark-tilt) + 10deg));
   }
 }
 /* 气泡：和面板/设置窗同一套语言（珍珠白卡片、粉调阴影、圆角 14） */

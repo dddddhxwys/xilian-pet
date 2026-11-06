@@ -4939,14 +4939,30 @@ check('问号：左晃→顿→右晃→晃回来时消失（幅度更大、时�
   const inner = css.match(/\.qmark-inner\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
   assert.ok(block.length > 0, '应能定位 #questionMark 规则')
   assert.ok(inner.length > 0, '应能定位 .qmark-inner 规则')
-  // ① 一次性编排：先向左 → 顿一会 → 向右 → 晃回来的时候淡出
+  // ① 基准倾斜（2026-11-06 用户："初始姿态不应该平行于角色，而应该是弯曲的头部指向她"）：
+  //    正值 = 顺时针 = 问号顶部朝她那一侧倾；所有关键帧都是"基准 ± 偏移"。
+  const tilt = Number(inner.match(/--qmark-tilt:\s*(-?[\d.]+)deg/)?.[1])
+  assert.ok(Number.isFinite(tilt), '必须有 --qmark-tilt（问号整体倾斜角）')
+  assert.ok(tilt > 0, `基准倾斜必须是正向（顶部弯头朝她），实际 ${tilt}deg`)
+  assert.ok(/transform:\s*rotate\(var\(--qmark-tilt\)\)/.test(inner), '.qmark-inner 的静态 transform 必须用基准倾斜')
+  // 一次性编排：先向左 → 顿一会 → 向右 → 晃回来的时候淡出
   assert.ok(/@keyframes qmarkSwayOnce/.test(css), '必须有 qmarkSwayOnce（右键一次性编排）')
   assert.ok(
     /#questionMark\.flash\s+\.qmark-inner\s*\{[\s\S]{0,160}animation:\s*qmarkSwayOnce\s+([\d.]+)s[^;]*forwards/.test(css),
     '#questionMark.flash 必须引用 qmarkSwayOnce 且 forwards',
   )
   const onceBlock = css.match(/@keyframes qmarkSwayOnce\s*\{[\s\S]*?\n\}/)?.[0] ?? ''
-  const onceAngles = [...onceBlock.matchAll(/rotate\((-?[\d.]+)deg\)/g)].map((m) => Number(m[1]))
+  assert.ok(onceBlock.length > 0, '应能定位 qmarkSwayOnce 关键帧')
+  // 关键帧必须写成相对基准的 calc(...)；出现绝对角度 = 改基准时摇摆就失效（回归护栏）
+  assert.equal(
+    /rotate\(\s*-?[\d.]+deg\s*\)/.test(onceBlock),
+    false,
+    '关键帧角度必须相对 --qmark-tilt（不许写绝对角度，否则改基准倾斜就失效）',
+  )
+  const REL_ROT = /rotate\(\s*(?:calc\(var\(--qmark-tilt\)\s*([+-])\s*([\d.]+)deg\)|(var\(--qmark-tilt\)))\s*\)/g
+  const relAnglesOf = (text) =>
+    [...text.matchAll(REL_ROT)].map((m) => (m[1] ? (m[1] === '-' ? -1 : 1) * Number(m[2]) : 0))
+  const onceAngles = relAnglesOf(onceBlock)
   const onceOpacities = [...onceBlock.matchAll(/opacity:\s*([\d.]+)/g)].map((m) => Number(m[1]))
   assert.ok(onceAngles.length >= 4, 'qmarkSwayOnce 至少要有 起点/左/右/回摆 四个角度')
   const minAngle = Math.min(...onceAngles)
@@ -4957,10 +4973,12 @@ check('问号：左晃→顿→右晃→晃回来时消失（幅度更大、时�
   assert.ok(maxAngle >= 10, `向右晃要够明显（≥10°），实际 ${maxAngle}°`)
   assert.ok(amplitude >= 20, `总幅度至少 20°（用户要求调大），实际 ${amplitude}°`)
   // ③ 顿一下，而且**要够长**（用户："中间停顿的时间延长一下"）：按百分比×总时长算出来 ≥1.2s
-  const stops = [...onceBlock.matchAll(/(\d+)%\s*\{[^}]*rotate\((-?[\d.]+)deg\)/g)].map((m) => ({
-    pct: Number(m[1]),
-    angle: Number(m[2]),
-  }))
+  const stops = [...onceBlock.matchAll(/(\d+)%\s*\{([^}]*)\}/g)]
+    .map((m) => {
+      const rel = relAnglesOf(m[2])
+      return rel.length === 0 ? null : { pct: Number(m[1]), angle: rel[0] }
+    })
+    .filter(Boolean)
   const zeroAt = stops.filter((s) => s.angle === minAngle).map((s) => s.pct)
   assert.ok(zeroAt.length >= 2, '"顿一会"要体现为两个相同的最深左角关键帧')
   const onceDurationEarly = Number(css.match(/animation:\s*qmarkSwayOnce\s+([\d.]+)s/)?.[1])
