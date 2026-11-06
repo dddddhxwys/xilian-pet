@@ -191,6 +191,9 @@ node tools/package-release.mjs --with-model --with-electron   # 打包（含 Ele
 node tools/publish-release.mjs                                 # 发布（幂等，可重跑）
 ```
 
+> 发布/推送走 GitHub：**先 `git ls-remote origin` 自检**。连接超时或证书错误时
+> **先提醒用户挂代理（本机 Clash Verge）再重试**；仍不通就如实说"发布不可用"，**不要**改证书校验。
+
 ---
 
 ## 许可证与第三方素材

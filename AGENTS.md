@@ -52,8 +52,10 @@ Electron 透明置顶窗（显示器）→ IPC → Live2D 渲染端；另有操�
   （每次 `pwsh` 都是新进程）。**读**工作区外是允许的。
 - **Node 起子进程带管道 stdio → EPERM**（沙箱禁命名管道）→ 用 `stdio:'inherit'`，或交给 pwsh。
 - **Electron / Chromium 在 agent shell 里起不来**（Mojo 命名管道被拒）→ 实机验证必须由用户做。
-- 网络：`registry.npmmirror.com` 正常；**`github.com` 的 HTTPS 今天坏了**
-  （`UNABLE_TO_VERIFY_LEAF_SIGNATURE`，疑似代理）→ 发布脚本会失败。
+- 网络：`registry.npmmirror.com` / `api.github.com` 通常通；**`github.com:443` 经常不通**
+  （见过 TCP 超时、`UNABLE_TO_VERIFY_LEAF_SIGNATURE`、`SEC_E_NO_CREDENTIALS` 三种形态，会变）→
+  发布 / `git push` / `git ls-remote` 会失败。**连不上先别硬试：提醒用户「挂代理」（本机有 Clash Verge），
+  再对同一条命令重试一次**；仍不通就如实报「发布不可用」。**不许**改代码或全局配置去关证书校验。
 - 读 JSON/中文文本用 **Node**，不要用 PowerShell（按 GBK 解 UTF-8）。
 - 活体端点用**纯 HTTP**：`Invoke-RestMethod "$env:DSH_WEB_URL/xilian-pet/health"`
   （⚠️ **DSH 端口会变**：别写死 19387；从 DSH 终端启动时 `DSH_WEB_URL` 就是当前地址，
