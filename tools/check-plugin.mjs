@@ -4940,10 +4940,12 @@ check('问号：左晃→顿→右晃→晃回来时消失（幅度更大、时�
   assert.ok(block.length > 0, '应能定位 #questionMark 规则')
   assert.ok(inner.length > 0, '应能定位 .qmark-inner 规则')
   // ① 基准倾斜（2026-11-06 用户："初始姿态不应该平行于角色，而应该是弯曲的头部指向她"）：
-  //    正值 = 顺时针 = 问号顶部朝她那一侧倾；所有关键帧都是"基准 ± 偏移"。
+  //    具体角度/方向由用户实拍定（试过 +30°，2026-11-06 改为 **-10°**）；这里只锁三件事：
+  //    a) 存在且非 0（= 不平行）；b) 所有关键帧都是"基准 ± 偏移"（改基准不会破坏摇摆）；c) 静态 transform 用基准。
   const tilt = Number(inner.match(/--qmark-tilt:\s*(-?[\d.]+)deg/)?.[1])
   assert.ok(Number.isFinite(tilt), '必须有 --qmark-tilt（问号整体倾斜角）')
-  assert.ok(tilt > 0, `基准倾斜必须是正向（顶部弯头朝她），实际 ${tilt}deg`)
+  assert.notEqual(tilt, 0, `初始姿态不能是 0°（用户要求"不平行于角色"），实际 ${tilt}deg`)
+  assert.ok(Math.abs(tilt) <= 60, `基准倾斜别夸张（|tilt| ≤ 60°），实际 ${tilt}deg`)
   assert.ok(/transform:\s*rotate\(var\(--qmark-tilt\)\)/.test(inner), '.qmark-inner 的静态 transform 必须用基准倾斜')
   // 一次性编排：先向左 → 顿一会 → 向右 → 晃回来的时候淡出
   assert.ok(/@keyframes qmarkSwayOnce/.test(css), '必须有 qmarkSwayOnce（右键一次性编排）')
