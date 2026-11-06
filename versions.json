@@ -1,25 +1,25 @@
 {
   "schema": 1,
-  "latest": "0.1.0",
-  "releasedAt": "2026-10-06",
-  "notes": "首个公开版本：官方 bundle 安装、模型与插件图标随包、发行包带版本号与 SHA256 校验和。",
+  "latest": "0.1.1",
+  "releasedAt": "2026-11-06",
+  "notes": "0.1.1：新增设置窗（大小 / 不透明度 / 左右翻转 / 自动朝向 / 点击互动 / 气泡提示 / 审批由桌宠同意）、DSH 换端口后自动重连、镜像问号缺口朝她且整体倾斜约 20°、珍珠白界面；full 包内置 Electron。",
   "releaseUrl": "https://github.com/dddddhxwys/xilian-pet/releases",
   "assets": [
     {
-      "version": "0.1.0",
+      "version": "0.1.1",
       "flavor": "full-model",
-      "file": "xilian-pet-v0.1.0-full-model-20261011-1958.zip",
-      "size": 163460171,
-      "sha256": "8f8c06ac3766a28b48ed2bb1ae06d6c586a01ca54307a5809c444625a19e9460",
-      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.0/xilian-pet-v0.1.0-full-model-20261011-1958.zip"
+      "file": "xilian-pet-v0.1.1-full-model-20261106-1258.zip",
+      "size": 163623020,
+      "sha256": "c78d8c34eb9f7b31eaf9235f8c95130636d05cb8a9d560484c567f7fb46fc362",
+      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.1/xilian-pet-v0.1.1-full-model-20261106-1258.zip"
     },
     {
-      "version": "0.1.0",
+      "version": "0.1.1",
       "flavor": "slim-model",
-      "file": "xilian-pet-v0.1.0-slim-model-20261011-1958.zip",
-      "size": 1956897,
-      "sha256": "f3a82e621631740abf818e42baa5f82824dc9f88bc2b9169e927b0abf7c4fe3f",
-      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.0/xilian-pet-v0.1.0-slim-model-20261011-1958.zip"
+      "file": "xilian-pet-v0.1.1-slim-model-20261106-1258.zip",
+      "size": 2119746,
+      "sha256": "fe95652a4555f216bf7a3aafb9957b41e42857355c4310dc6b88262a7078bf3f",
+      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.1/xilian-pet-v0.1.1-slim-model-20261106-1258.zip"
     }
   ]
 }
