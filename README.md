@@ -1,230 +1,139 @@
-# 昔涟桌宠
+# 昔涟桌宠（开发向 README）
 
-贴在 Windows 桌面上的**昔涟（Cyrene）**：跟着 DSH 的状态冒气泡提示、能拖拽、能派活，
-还能**替你在桌面上完成审批** —— agent 要执行需要授权的操作时，她自己弹一个小窗，
-你点「允许」或「拒绝」。
+贴在 Windows 桌面上的**昔涟（Cyrene）**：DSH Host 插件（大脑）→ 同源 SSE → Electron 透明置顶窗（显示器）
+→ IPC → Live2D 渲染端；另有操作面板小窗、设置窗与审批小窗。
 
-她是 **DSH 的一个插件 + 一个桌面窗口外壳**。装完之后 DSH 的插件列表里会出现「昔涟桌宠」，
-而她就在你桌面上待机。
-
-🌐 **只想装来用的，看这个在线介绍页就好**：<https://dddddhxwys.github.io/xilian-pet/>
-（下载哪个包、三步装好、交互说明、常见问题都在那儿；本 README 更偏开发向。）
+> **这份 README 是给开发 / 维护者的。** 普通用户（下载、安装、使用、FAQ）请看
+> [Releases 的发布说明](https://github.com/dddddhxwys/xilian-pet/releases) 或
+> [在线介绍页](https://ddddddhxwys.github.io/xilian-pet/)。
+> **用户向内容不再写回本文件**（约定见 §7）。
 
 > 非官方同人作品，与米哈游无关联、未获其授权，**不用于任何商业用途**。
 > 发行包内含第三方素材，**不在 MIT 覆盖范围内** —— 详见 [NOTICE.md](NOTICE.md)。
 
 ---
 
-## 快速开始
+## 1. 架构（一分钟版）
 
-### 1. 下载
-
-去 [Releases](https://github.com/dddddhxwys/xilian-pet/releases) 下载：
-
-| 文件 | 大小 | 什么时候用 |
-|---|---|---|
-| `xilian-pet-…-slim-model-….zip` | **约 1.8 MB** | **通常选这个**。装的时候自动下载 Electron（约 150 MB），需要网络能访问华为云镜像 |
-| `xilian-pet-…-full-model-….zip` | **约 156 MB** | 上面那个装到一半报「下载失败」时用这个 —— 里面**已经含 Electron**，不需要下载任何东西 |
-
-两个包内容一样（都含模型与插件图标），区别只是 Electron 是「装的时候下」还是「包里带着」。
-
-### 2. 解压
-
-解压到一个**新文件夹**，路径用纯英文，例如 `C:\xilian-pet`。
-
-> ⚠️ **不要在压缩包窗口里直接双击里面的文件**。Windows 只会把那一个文件解到临时目录，
-> 必然报 `Cannot find module`。先「全部解压缩」。
-
-### 3. 安装 → 重启 DSH → 启动她
-
-```text
-双击  安装.cmd     →  等它跑完（可能要几分钟）
-重启  DSH
-双击  start-pet.cmd  →  她出现了
-退出  按 Ctrl+Shift+Q（或托盘右键 → 退出）
+```
+┌──────────────────┐   SSE: /xilian-pet/events    ┌─────────────────────┐
+│  DSH 本体         │ ──────────────────────────▶ │  pet-shell（外壳）    │
+│  Host 插件        │ ◀────────────────────────── │  Electron 透明置顶窗   │
+│  /xilian-pet/*    │  POST /approval /prompt      │  Live2D + 命中掩码     │
+└──────────────────┘  /interrupt /focus           └─────────────────────┘
 ```
 
-安装器会先把窗口清空、显示一段英文说明 —— **那段之后窗口一直空着是正常的**：
-所有输出都写进同目录的 `install-log.txt`，跑完才一次性回显。**别关窗口。**
+| 层 | 目录 | 职责 | 关键点 |
+|---|---|---|---|
+| **Host 插件** | `packages/pet-plugin/` | 注册 `/xilian-pet/*` 路由；把 DSH 会话事件归一化后推给外壳；接管 `approval/request`（`prepend` 抢在转发给 GUI 的桥之前，答不了就交棒）；`reducer.js` 是纯状态机 | 零依赖、零构建；**唯一状态源**；改动需**重启 DSH** |
+| **外壳** | `packages/pet-shell/` | SSE 订阅与断线重连；`pet://` 协议；透明置顶窗与窗口/构图持久化；光标轮询命中测试；设置读写；面板/设置/审批三个小窗 | 连不上 DSH 也能独立显示与互动；改动需**重启桌宠** |
+| **渲染端** | `packages/pet-shell/renderer/` | `pet.js`（普通脚本，交互/气泡/面板桥）/ `live2d.js`（**ES 模块**，模型与动作）/ `motion-policy.js`（动作策略）/ `hit-math.js`（命中）/ `mirror-math.js` / `peak-time.js`+`holidays.js`（峰谷判定） | 改渲染端不用重启 DSH |
+| **工具** | `tools/` | 自测、打包、发布、安装器、模型修复、镜像探测等 | 见 §3/§5 |
 
-装完桌面上会多一个 **「昔涟」快捷方式**（图标是从委托素材里裁的「探头」立绘，透明底）——
-以后双击它就行，不用每次翻文件夹。⚠️ 手动建快捷方式的话，图标可能是一张白纸：
-那是因为 Windows **不认含中文的图标路径**（详见下面「不好用」一节）。
+数据流三条要点：
 
-### 4. 确认装好了（可选，10 秒）
+- 插件是**唯一状态源**；外壳只消费 SSE，不自己编状态。
+- 外壳**连不上 DSH 也能跑**（显示/互动照常），并会**运行期自动重新发现** DSH 端口（约 6 秒一轮）。
+- 审批：插件抢到 `approval/request` → 推送审批帧 → 外壳弹小窗 → 用户点允许/拒绝 → `POST /approval`。
 
-装完重启 DSH 后，打开 `http://<DSH 的地址>/xilian-pet/health`（**端口会变**：从 DSH 终端里可以用
-`$env:DSH_WEB_URL`，双击启动时桌宠会自己发现并连上，见下）；
-也可以直接看 `packages/pet-shell/.state/pet.log` 里的 `DSH 地址变化 → …` 或 `SSE 已连接`。
+## 2. 目录
 
-应该返回一行 JSON，其中 `"ok":true`、`"code":28`。看到这个就说明插件真的活了。
-（`code` 是插件的**代码版本**，每改一次插件就 +1；它的作用是让你确认"重启后到底加载的是不是新代码"。）
-
----
-
-## 平时怎么用
-
-| 操作 | 效果 |
+| 路径 | 说明 |
 |---|---|
-| **左键点她** | **分区互动**（三个区，部件级判定）<br>· 点**脸** → 戴**墨镜**（2 秒自动摘）<br>· 点**头顶**（头饰 / 头发 / 背饰）→ **摸头反应**（舒服地闭上眼 + 轻轻歪头）<br>· 点**两侧秋千翅膀** → **弹她一下**<br>· 3 秒内点秋千超过 5 次 → **出晕** |
-| 按住拖动 | 换位置，**位置会自动记住** |
-| **右键点她** | 弹出**操作面板**（独立小窗）：派活目标、**派活 / 打断**、本次会话用量、缓存命中、**插件连接状态**；右上角 **⚙** 打开设置窗 |
-| 鼠标移到透明处 | 鼠标**穿过去**，不挡住下面的窗口 |
-| **托盘图标**（任务栏右下角） | **左键** = 显示 / 隐藏她；**右键**菜单 = 显示她 / 隐藏她、设置…、回到她身边、退出 |
-| `Ctrl+Shift+H` | 显示 / 隐藏她（和托盘那个是同一件事） |
-| `Ctrl+Shift+Q` | 退出 |
+| `packages/pet-plugin/` | Host 插件（`index.js` 路由/接线、`reducer.js` 状态机、`approval-config.js` 审批开关、`cordis.patch.yml` 包内默认配置） |
+| `packages/pet-shell/` | Electron 主进程（`main.js`）、`sse-link.js`、`dsh-discovery.js`、`hit-test.js`、`settings.js`、`window-placement.js`、`tray-model.js`、`launcher-icon.ico` |
+| `packages/pet-shell/renderer/` | 渲染端页面与脚本（`index.html`/`pet.js`/`live2d.js`/`menu.*`/`settings.*`/`approval.*`/`tokens.css`） |
+| `tools/` | `check-plugin.mjs`（自测，**269 项**，不需要 DSH）、`package-release.mjs`、`publish-release.mjs`、`bump-version.mjs`、`setup.mjs`、`install-plugin.mjs`、`fetch-electron.mjs`、`lib/`（纯逻辑，可单测：`release-files` / `update-check` / `release-publish` / `desktop-shortcut` / `zip-writer` / `patch-edit`） |
+| `docs/` | 接手状态报告（**权威现状**）、开发日志、测试指引、交接文档、复核报告 |
+| `dist-release/` | 打包产物（zip + `.sha256` + `RELEASE-NOTES.md`）—— **整个目录 gitignore**，不随仓库分发 |
+| `assets/live2d/Cyrene/` | 第三方 Live2D 模型（经作者授权，唯一入库的第三方素材之一） |
+| `packages/pet-shell/.state/` | 运行时产物（`pet.log`、`settings.json`、`user-data/`、截图）—— **gitignore**，排障先看这里 |
+| `*.cmd` | 发行用入口：`start-pet.cmd`（起桌宠）、`安装.cmd`（安装器）、`检查更新.cmd` |
 
-**设置窗**（面板右上角 ⚙ 或托盘「设置…」）里能改：
+## 3. 改什么 → 怎么生效（实测，别猜）
 
-- **外观**：大小（0.6–1.6 拉杆）、不透明度（30%–100%）、左右翻转、自动朝向（跟随鼠标）
-- **行为**：点击互动（关掉后拖拽/右键照常）、气泡提示、**审批由桌宠同意**
-  （⚠️ 这一项改完**要重启 DSH** 才生效，界面上有提示——原因见下面「审批」）
-
-> 点身体 / 手 / 腿 / 裙摆等**没有配区的部件 → 什么都不做**（刻意如此：行为可预测、不会误触）。
-> **双击她也不做任何事** —— 面板只有右键这一条路（用户明确要求去掉"双击唤起面板"）。
-> 她会说话的地方是**状态气泡**（派活/打断的结果、DSH 活动摘要），不是点出来的。
-
-**审批**默认开启。**她没启动时审批完全不受影响** —— 会立刻交给 DSH 原本的界面处理，
-不会把审批卡住。
-
-- 想关掉：设置窗「行为 · 审批由桌宠同意」关掉 → **重启 DSH**（插件只在启动时读取这个开关）。
-- 高级用法：在 profile 配置里显式写 `approval: { viaPet: false }` 会**覆盖**设置窗（优先级：profile > 设置窗 > 默认开）。
-
-**检查更新**：双击 `检查更新.cmd`。注意 **「检查失败」不等于「已是最新」** ——
-它会把每个来源各自怎么失败列出来。
-
----
-
-## 装不上 / 不好用？先看这里
-
-这几条都是**实机踩出来的**，按出现频率排序。
-
-### 「安装窗口一直空着，是不是死了？」
-
-不是。安装器的设计是**输出全进 `install-log.txt`，跑完才回显**。
-打开同目录的 `install-log.txt`：
-
-- **有内容 / 还在变长** → 正在跑（很可能在下 Electron，约 150 MB），**让它跑完**
-- 几分钟一动不动 → 卡住了，把 `install-log.txt` 发出来
-
-想看进度就盯那个文件的大小/修改时间，或在资源管理器里按 F5 刷新。
-
-### 「报 Cannot find module …\Temp\…zip…\packages\…」
-
-**你在压缩包里直接双击了文件。** Windows 只把那一个文件解到临时目录再运行，
-包里的其它文件根本不在那儿。解法：**先全部解压缩**，再从解压出来的文件夹里双击。
-
-### 「桌面没有「昔涟」快捷方式 / 快捷方式图标是一张白纸」
-
-安装器的第 ⑦ 步会做两件事：把启动图标复制到 `C:\Users\Public\XilianPet\xilian-peek.ico`
-（**必须是纯 ASCII 路径**），再用它建桌面的「昔涟」快捷方式。
-
-- **没有快捷方式** → 安装日志里搜 `桌面快捷方式`：要么是 `%PUBLIC%` 不可写（日志会说明），
-  要么这一步失败了（`bad` 会给出手动建法）。
-- **图标是白纸** → Windows 解析快捷方式图标时，`IconLocation` **只要含中文就失败**
-  （2026-11-08 实测：同一个 .ico 放 `C:\Users\Public` 正常、放仓库中文路径就变通用图标）。
-  解法：重跑 `安装.cmd`（它会重建快捷方式并指向 ASCII 路径），或手动把 shortcut 属性的
-  「图标」改成上面那个 `.ico`。
-
-### 「报找不到 Node runtime」
-
-安装器会自己找 Node，顺序是：包内 `node\` → `~/.dsh/dsh-runtimes\*` →
-**DSH 安装目录**（Windows 装 DSH 时会自己带一个 Node）→ PATH。
-
-都不行时它会打印**具体找过哪些位置**。最常见的补救：**启动一次 DSH 并真正让它干点活**
-（它会在首次使用时解包运行时），然后重跑安装；或者自己装一个 Node。
-
-### 「装完了，但 DSH 插件列表里没有卡片 / `/health` 报 404」
-
-两种情况：
-
-1. **安装器走了"免安装直挂"模式**（没找到 DSH 的命令行工具时）—— 插件能用，
-   但**列表里不会显示**。重跑 `安装.cmd`，或按下面的"手动装"来一次。
-2. **没重启 DSH** —— 插件代码不会被热重载，必须重启。
-
-手动装（推荐，也是安装器的默认路径）：
+| 改了什么 | 生效方式 | 怎么确认 |
+|---|---|---|
+| `packages/pet-plugin/*.js` | **重启 DSH**（`hmr.root` 实测**无效**，ESM 缓存不失效） | `/health` 的 **`code` 变大**（别看 `uptimeMs`） |
+| `packages/pet-shell/**`、`renderer/**` | **重启桌宠**（`Ctrl+Shift+Q` → `start-pet.cmd`） | `packages/pet-shell/.state/pet.log` 的**构建指纹**（每个文件 sha1 前 6 位） |
+| profile 的 `cordis.patch.yml` | 会让插件重新 `apply()`，**但加载的仍是旧模块** | 同上：**只看 `code`** |
 
 ```powershell
-# 用 DSH 自己的 CLI 完成官方安装（写依赖 + 登记进插件列表）
-& "<DSH 安装目录>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "<本仓库>\packages\pet-plugin"
+node tools/check-plugin.mjs                              # 自测（269 项；不需要 DSH）
+Invoke-RestMethod "$env:DSH_WEB_URL/xilian-pet/health"   # 活体；端口会变，别写死
+.\start-pet.cmd                                          # 起桌宠（Ctrl+Shift+Q 退出）
 ```
 
-### 「审批没有走桌宠」
+- `code` = `CODE_REVISION`（**插件代码版本**）：每改一次插件就 +1，用来确认"重启后到底加载的是不是新代码"。
+  当前 **28**；自测当前 **269**（数字会变，**以实际输出为准**）。
+- 本机环境（2026-11 实测）：Windows 11 25H2、DSH **0.2.1-rc.5**（`F:\dsh`）、Electron **44.5.1**、node 24。
+  环境事实/边界/网络/沙箱限制见 [docs/开发日志.md](docs/开发日志.md) §一/§三；接手先看
+  [docs/接手状态报告-2026-10-11.md](docs/接手状态报告-2026-10-11.md) §0.1。
 
-先确认三件事（打开 `/health` 看）：
+## 4. 验证纪律（本项目最大的风险是"以为验证过了"）
 
-| 看什么 | 应该是 |
-|---|---|
-| `"code"` | `28`（旧包更小；`code` 是插件代码版本，每改一次 +1）|
-| `"config": { … "approvalViaPet": true }` | `true`（**生效后**的值；如果这里 `false`，说明设置窗关掉了它，或 profile 显式写了 `viaPet: false`）|
-| `"subscribers"` | `≥ 1` —— **她没连上时审批按设计立刻交给 DSH 界面**，看起来就像"没走桌宠" |
+- 任何"已修复 / 已验证"都要附**可复现的证据**（命令 + 输出 / 文件 + 行号 / 截图）；拿不到就写"未验证"。
+- **绿色不算证据**：新逻辑要配**变异测试**（把逻辑改坏，断言必须变红）。
+- **禁止用源码正则断言代替行为断言**；"静态护栏 vs 行为断言"的现状盘点见报告 **§9.5**。
+- 改任何东西都跑 `node tools/check-plugin.mjs`；发版前再跑 `node tools/bump-version.mjs --check`。
 
-改过设置窗这个开关？**必须重启 DSH** 才会生效（插件只在 `apply()` 时读取一次）。
+## 5. 打包与发布
 
-### 「她说自己退出了 / 状态不动了」
-
-看 `/health` 的 `subscribers`：是 `0` 就说明外壳没连上，重新双击 `start-pet.cmd`。
-
----
-
-## 它是怎么工作的（一分钟版）
-
-```
-┌───────────────┐   SSE: /xilian-pet/events    ┌────────────────────┐
-│  DSH(本体)     │ ───────────────────────────▶ │  pet-shell(外壳)    │
-│  Host 插件     │ ◀─────────────────────────── │  Electron 透明窗口   │
-│  /xilian-pet/* │   POST: /xilian-pet/approval │  Live2D 渲染        │
-└───────────────┘                              └────────────────────┘
+```powershell
+node tools/bump-version.mjs --check                            # 三处 package.json 是否一致
+node tools/bump-version.mjs 0.2.1                              # 一处改、三处同步
+node tools/package-release.mjs --with-model --with-electron    # 产出 dist-release/*.zip + *.sha256 + versions.json
+node tools/publish-release.mjs --dry-run                       # 先看要传什么
+node tools/publish-release.mjs                                 # 建/复用 tag + 上传资产（幂等，可重跑）
 ```
 
-- **Host 插件**（`packages/pet-plugin/`）：注册 `/xilian-pet/*` 路由、把 DSH 事件推给外壳、
-  接管 `approval/request`（`prepend` 抢在"转发给 GUI 的桥"前面，桌宠答不了就交棒）。
-- **外壳**（`packages/pet-shell/`）：Electron 无边框透明窗口 + Live2D 渲染 +
-  点击/拖拽/右键面板，连不上 DSH 也能独立显示与互动。
+- **产物**：`dist-release/xilian-pet-v<版本>-<形态>-<时间戳>.zip`（+ 同名 `.sha256`），包内 `VERSION.txt`。
+- **`versions.json` 受版本控制**，由打包脚本写（含 sha256，手抄必然对不上）；**打完包记得提交**。
+- **用户向发布说明的唯一来源**：`dist-release/RELEASE-NOTES.md` —— 发布时作为 **GitHub Release 正文**
+  （安装/使用/FAQ/许可证摘要都在里面，随每个版本更新）。
+- ⚠️ **已知缺口（发布前必做）**：`versions.json` 会保留历史版本条目，而 `publish-release` 把 `assets`
+  **全量**当成本次要传的文件 → 发布前要把 assets 手工裁到只剩当前版本两条并补 `notes`。
+  来龙去脉见报告 **§9.12 / §9.13**（同一个坑踩过两次）。
+- 网络：发布/推送前先 `git ls-remote origin` 自检；连不上先**提醒用户挂代理**、或给 git 加
+  `-c http.sslBackend=openssl`，**不要**关证书校验。
+- 发布后核对：GitHub API 里每个资产的 `digest`（sha256）应与本地 `.sha256` 逐字一致；再从 Release
+  真下一个包复算一次，别只看"上传成功"。
 
----
-
-## 自己改 / 想更深入
+## 6. 接手 / 深入
 
 | 想看什么 | 去哪 |
 |---|---|
-| **接手 / 换对话先看这个**（现状、已完成、待办、怎么验）| [docs/接手状态报告-2026-10-11.md](docs/接手状态报告-2026-10-11.md)（§0.1 接手速览） |
-| **开发日志**：环境事实、边界、架构、踩过的坑、实机证据、验证状态（诚实版）| [docs/开发日志.md](docs/开发日志.md) |
-| 把它做成官方可安装 bundle 的完整交接 | [docs/交接给插件开发模式.md](docs/交接给插件开发模式.md) |
-| 接手复核报告（验证到什么程度、哪些没做）| [docs/接手复核报告.md](docs/接手复核报告.md) |
-| 怎么测 | [docs/测试指引.md](docs/测试指引.md) |
-| **镜像问号想更歪/更直** | `packages/pet-shell/renderer/pet.css` 的 `--qmark-tilt`（当前 **20deg**；改完重启桌宠，来龙去脉见接手报告 §4.33） |
+| **进门须知 / 硬红线 / 本机边界** | [AGENTS.md](AGENTS.md) |
+| **权威现状**（已完成、待办、风险、发布记录） | [docs/接手状态报告-2026-10-11.md](docs/接手状态报告-2026-10-11.md)（§0.1 速览、§9 风险与发布） |
+| 环境事实 / 架构细节 / 踩坑 / 实机证据 | [docs/开发日志.md](docs/开发日志.md) |
+| 给测试者的验收清单（用户向） | [docs/测试指引.md](docs/测试指引.md) |
+| 官方 bundle 安装的完整交接 | [docs/交接给插件开发模式.md](docs/交接给插件开发模式.md) |
+| 历史复核（验证到什么程度、哪些没做） | [docs/接手复核报告.md](docs/接手复核报告.md) |
+| 调某个视觉参数（例：镜像问号倾斜） | `renderer/pet.css` 的 `--qmark-tilt`（当前 20deg，改完重启桌宠；来龙去脉见报告 §4.33） |
 
-自测（改任何东西都要跑，目前 269 项；**以 `node tools/check-plugin.mjs` 实际输出为准**）：
+## 7. 用户向内容放哪（约定，别搬回 README）
 
-```powershell
-node tools/check-plugin.mjs
-```
+| 内容 | 位置 |
+|---|---|
+| 下载哪个包 / 安装三步 / 怎么用 / FAQ / 版本说明 | **`dist-release/RELEASE-NOTES.md`** → 作为 GitHub Release 正文 |
+| 同一份内容的网页版 | [`docs/index.html`](docs/index.html) → GitHub Pages |
+| 给测试者的逐项验收 | [docs/测试指引.md](docs/测试指引.md) |
 
-打包与发版（一条命令走完：打包 → 更新 `versions.json` → 传到 GitHub Releases）：
+README 只做**开发入口**：架构、怎么跑、怎么验证、怎么打包发布、接手链接。
 
-```powershell
-node tools/package-release.mjs --with-model --with-electron   # 打包（含 Electron）
-node tools/publish-release.mjs                                 # 发布（幂等，可重跑）
-```
+## 8. 硬红线（摘要，全文见 [AGENTS.md](AGENTS.md)）
 
-> 发布/推送走 GitHub：**先 `git ls-remote origin` 自检**。连接超时或证书错误时
-> **先提醒用户挂代理（本机 Clash Verge）再重试**；仍不通就如实说"发布不可用"，**不要**改证书校验。
+- **`.cmd` 只能有 ASCII**（注释也算）；**不许用 PowerShell 写含中文的源码**（用 edit/write 工具）。
+- 订阅 **waterfall** 事件必须 `return next()`（漏过一次，整个 profile 的工具调用全废）。
+- 改 profile `cordis.patch.yml` **前先备份**；**拒绝 `!!js`**（配置期代码执行）。
+- **素材与署名不许动**：模型（@是依七哒 授权）、插件图标（作者不明）、派生素材（问号图 / 启动图标）、
+  角色权利归米哈游；`LICENSE` 必须保持纯 MIT 正文。
+- **禁止源码正则断言代替行为断言**（坐标 bug 就是这么被锁死的）。
 
----
-
-## 许可证与第三方素材
+## 9. 许可证与第三方素材
 
 **代码与文档**按 **MIT** 发布 —— 见 [`LICENSE`](LICENSE)（版权归 `dddddhxwys`）。
-
-**发行包里的第三方素材不在 MIT 覆盖范围内**：
-
-- **Live2D 模型**（`assets/live2d/Cyrene/`）：由模型作者授权在本项目中使用，不是我们的作品，
-  也不随 MIT 转授。**请勿单独提取再分发。**
-- **插件图标**（`packages/pet-plugin/icon.webp`）：来自网络社区的图片，**作者不明**。
-  如果你是作者并希望调整署名或移除，请提 issue。
-- **角色「昔涟」及其美术形象的权利属于米哈游（miHoYo）**。本项目是非官方同人作品，
-  与米哈游无关联、未获其授权、**不用于任何商业用途**。
-- 依赖项的许可证见各自的 `LICENSE`（Electron / pixi.js / Live2D Cubism Core）。
-
+**发行包里的第三方素材不在 MIT 覆盖范围内**：Live2D 模型（作者授权，勿单独提取再分发）、
+插件图标（社区图，作者不明）、启动图标（由委托素材裁切的派生素材，仅用于桌面快捷方式）、
+角色「昔涟」及其美术形象（权利归米哈游）。
 完整声明见 [NOTICE.md](NOTICE.md)。
