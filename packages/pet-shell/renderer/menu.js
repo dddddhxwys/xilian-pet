@@ -1,6 +1,14 @@
 // 独立菜单小窗 = 桌宠的操作面板。
-// 只做三件事：显示数据、把选择发回主进程、管好输入框的键盘行为。
+// 只做三件事：显示数据、把选择发回主进程、管好输入框的键盘行为
+// （外加第四件：画头部的峰谷胶囊）。
 // 真正的动作（派活/打断）由主进程执行（它有 postControl），见 main.js。
+//
+// ⚠️ 本文件是 **ES 模块**（menu.html 里是 type="module"），因为峰谷判定要 import 纯函数模块 ——
+//    判定逻辑放 peak-time.js 才能被 tools/check-plugin.mjs 直接测（本仓库的老规矩：
+//    观感靠实机、逻辑靠断言）。CSP 是 `script-src 'self'`，同目录 import 不用改 CSP。
+import { HOLIDAYS } from './holidays.js'
+import { buildHolidaySet, beijingParts, peakStatus } from './peak-time.js'
+
 const api = window.xilianMenu
 
 const targetEl = document.getElementById('target')
@@ -11,10 +19,53 @@ const hintEl = document.getElementById('hint')
 const tokensEl = document.getElementById('tokens')
 const cacheEl = document.getElementById('cache')
 const linkStateEl = document.getElementById('linkState')
+// 峰谷胶囊（头部的 span#peak），数据不是主进程给的，是本机时间算的
+const peakEl = document.getElementById('peak')
+const peakTextEl = document.getElementById('peakText')
+const holidaySet = buildHolidaySet(HOLIDAYS)
 
 let selectedSessionId = null
 let sessionRows = []
 let hintTimer = null
+let lastPeak = null
+
+const hhmm = (minutesOfDay) =>
+  `${String(Math.floor(minutesOfDay / 60)).padStart(2, '0')}:${String(minutesOfDay % 60).padStart(2, '0')}`
+
+/**
+ * 峰谷胶囊：此刻是 DeepSeek 的峰价还是空闲价 + 距离下次切换还有多久。
+ *
+ * 判定/倒计时全在 peak-time.js（纯函数，有自测），这里只负责画和打日志。
+ * 文案刻意只有「峰/闲 · N 后切换」两种长度，因为胶囊在头部行里，宽度有限
+ * （面板 300px：头像 24 + 名字 + 胶囊 + ⚙ 22，胶囊最多 ~158px）。
+ */
+function renderPeak() {
+  const status = peakStatus(Date.now(), holidaySet)
+  peakEl.dataset.peak = status.peak ? 'on' : 'off'
+  peakTextEl.textContent =
+    status.countdown === '' ? status.label : `${status.label} · ${status.countdown} 后切换`
+
+  const price = status.peak ? '高峰时段（单价是空闲时段的 2 倍）' : '空闲时段（单价是高峰的一半）'
+  const lines = [
+    `DeepSeek ${price}`,
+    '规则：北京时间 周一至周五（不含法定节假日）9:00-12:00、14:00-18:00 为高峰，其余为空闲',
+  ]
+  if (status.nextAt !== null) {
+    const p = beijingParts(status.nextAt)
+    lines.push(`下次切换：${p.dateKey} ${hhmm(p.minutes)}（${status.peak ? '转空闲' : '转高峰'}）`)
+  }
+  if (!status.covered) lines.push(`⚠️ 节假日表没有 ${status.year} 年，暂按"周一至周五"判断`)
+  peakEl.title = lines.join('\n')
+
+  // 只在翻转时打日志：pet.log 里能对上"到底几点变的"，不用猜
+  if (lastPeak !== status.peak) {
+    console.log(`峰谷：${status.label}${status.countdown === '' ? '' : `（${status.countdown} 后切换）`}`)
+    lastPeak = status.peak
+  }
+  if (!status.covered) {
+    console.warn(`峰谷：节假日表没有 ${status.year} 年，暂按"周一至周五"判断 —— 该更新 renderer/holidays.js 了`)
+  }
+}
 
 /** 大数字用人话显示：2.85 亿 比 285000000 好读得多 */
 function formatTokens(n) {
@@ -203,3 +254,15 @@ async function send() {
   showHint('正在派活…')
   await api.prompt({ text, sessionId: selectedSessionId })
 }
+
+// ── 峰谷胶囊什么时候重算 ─────────────────────────────────────────────
+// 面板窗口是**复用**的（main.js 失焦只 hide() 不销毁），所以两个时机都要管：
+//  · 每次重新弹出 → document.hidden 由 true 变 false → visibilitychange 里重算（否则会看到上次的旧值）
+//  · 面板一直开着跨过 9:00 / 12:00 / 14:00 / 18:00 → 30s 轮询兜住（隐藏时直接 return，开销可忽略）
+renderPeak()
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) renderPeak()
+})
+setInterval(() => {
+  if (!document.hidden) renderPeak()
+}, 30_000)

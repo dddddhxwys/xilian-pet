@@ -122,6 +122,13 @@ export function requiredInRelease(options = {}) {
     'packages/pet-shell/tray.ico',
     'packages/pet-shell/renderer/tokens.css',
     'packages/pet-shell/renderer/mirror-math.js',
+    // 峰谷胶囊：menu.js（模块）import 这两个 —— 漏了就是面板头部静默变空
+    'packages/pet-shell/renderer/peak-time.js',
+    'packages/pet-shell/renderer/holidays.js',
+    // 桌面快捷方式的启动图标 + 生成脚本（安装器第 ⑦ 步；漏了就是"装完没有桌面图标"）
+    'packages/pet-shell/launcher-icon.ico',
+    'tools/make-desktop-shortcut.ps1',
+    'tools/lib/desktop-shortcut.mjs',
     // 从模型贴图抠出来的原版问号（镜像时用；不是第三方新素材，见 NOTICE.md）
     'packages/pet-shell/renderer/assets/question-mark.png',
     'packages/pet-shell/renderer/settings.html',

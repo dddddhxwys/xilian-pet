@@ -12,7 +12,10 @@
       所以：底部那条输入条整个删掉，操作全搬到这里。
 
       内容：
-        · 头部 —— 项目图标 + 昔涟 + ⚙（面板里**只放这一个设置入口**，用户要求）
+        · 头部 —— 项目图标 + 昔涟 + 峰谷胶囊 + ⚙（面板里**只放这一个设置入口**，用户要求）
+          · 峰谷胶囊（2026-11-07 新增，用户要求）：判断此刻是 DeepSeek 的峰价还是空闲价。
+            放在头部行里而不是单独一行 —— 用户选的就是"塞进头部"，好处是**卡片高度不用改**
+            （面板高度 320 是定死的，展开会话列表时只剩 9px 余量，单独一行要 +34 才放得下）。
         · 派活目标 —— 最近 3 个会话，点一行切换（**只切换"派活发给谁"，不是切 DSH 界面**）
         · 多行输入（Enter 发送 / Shift+Enter 换行）
         · 派活 / 打断
@@ -36,6 +39,11 @@
       <div class="hd">
         <img class="avatar" src="../../../packages/pet-plugin/icon.webp" alt="" />
         <b>昔涟</b>
+        <!-- 峰谷胶囊：文案是「空闲 · 1 天 15 小时 后切换」，判定逻辑在 peak-time.js（可自测）。
+             初始文案故意写成中性的"峰谷"，避免脚本还没跑到时先谎报"空闲"。 -->
+        <span class="peakpill" id="peak" data-peak="off" title="">
+          <i></i><span id="peakText">峰谷</span>
+        </span>
         <button type="button" id="settingsBtn" class="gear" title="设置" aria-label="打开设置">⚙</button>
       </div>
 
@@ -67,6 +75,8 @@
 
       <div id="hint" class="hint" hidden></div>
     </div>
-    <script src="menu.js"></script>
+    <!-- type="module"：menu.js 要 import peak-time.js / holidays.js（同一目录，CSP script-src 'self' 放行）。
+         模块脚本是 defer 的，执行时机在 DOM 解析完之后 —— 和原来把 <script> 放 body 末尾等价。 -->
+    <script type="module" src="menu.js"></script>
   </body>
 </html>

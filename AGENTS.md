@@ -23,7 +23,7 @@ Electron 透明置顶窗（显示器）→ IPC → Live2D 渲染端；另有操�
 | `packages/pet-plugin/` | Host 插件（零依赖、零构建）：路由 + `reducer.js` 状态机（**主动提醒引擎 `reminders.js` 已于 2026-10-11 按用户要求整体删除**） |
 | `packages/pet-shell/` | Electron 主进程：SSE 订阅、`pet://` 协议、光标轮询命中测试、窗口/构图持久化 |
 | `packages/pet-shell/renderer/` | 渲染端：`pet.js`（普通脚本）/ `live2d.js`（**ES 模块**）/ `hit-math.js` / `motion-policy.js` |
-| `tools/check-plugin.mjs` | **自测，改任何东西都要跑**（当前 **257 项**，必须全绿；**数字会变，以实际输出为准**） |
+| `tools/check-plugin.mjs` | **自测，改任何东西都要跑**（当前 **269 项**，必须全绿；**数字会变，以实际输出为准**） |
 | `docs/`·`chajian/` | 文档与研究记录（**大多带历史包袱，先读接手状态报告**） |
 
 ## 2. "改什么 → 怎么生效"（实测，别猜）
@@ -44,6 +44,8 @@ Electron 透明置顶窗（显示器）→ IPC → Live2D 渲染端；另有操�
 - **素材与署名不许动**：`LICENSE`（必须纯 MIT 正文）、`NOTICE.md`（模型作者 @是依七哒 的署名必须保留）。
   入库的第三方素材只有两处：`assets/live2d/Cyrene/` 与 `packages/pet-plugin/icon.webp`
   （后者是**社区图、作者不明**，不许说成"自绘/原创/官方原画"）。
+  **派生素材**（来源是上面这些素材，做了裁切/缩放）另有两处：`renderer/assets/question-mark.png`、
+  `packages/pet-shell/launcher-icon.ico`（桌面快捷方式图标）——来历见 `NOTICE.md` 第三节。
 - **禁止用源码正则断言代替行为断言**（坐标 bug 就是这么被锁死的）。
 
 ## 4. 本机（Windows + DSH 沙箱）边界
@@ -57,6 +59,10 @@ Electron 透明置顶窗（显示器）→ IPC → Live2D 渲染端；另有操�
   发布 / `git push` / `git ls-remote` 会失败。**连不上先别硬试：提醒用户「挂代理」（本机有 Clash Verge），
   再对同一条命令重试一次**；仍不通就如实报「发布不可用」。**不许**改代码或全局配置去关证书校验。
 - 读 JSON/中文文本用 **Node**，不要用 PowerShell（按 GBK 解 UTF-8）。
+- **Windows 快捷方式的图标路径不能含中文**：`IconLocation` 里只要出现非 ASCII 字符，图标就画成
+  "白纸"（而 `LoadImage`/`ExtractIconEx` 读同一个 ico 却是好的，极易误判成"图标文件坏了"）。
+  图标必须落到纯 ASCII 目录 —— 本项目用 `%PUBLIC%\XilianPet\`，由安装器第 ⑦ 步负责
+  （`tools/lib/desktop-shortcut.mjs` 选落点 + `tools/make-desktop-shortcut.ps1` 写 `.lnk`）。
 - 活体端点用**纯 HTTP**：`Invoke-RestMethod "$env:DSH_WEB_URL/xilian-pet/health"`
   （⚠️ **DSH 端口会变**：别写死 19387；从 DSH 终端启动时 `DSH_WEB_URL` 就是当前地址，
   双击启动的桌宠由 `packages/pet-shell/dsh-discovery.js` 自动发现；而且 **2026-10-28 起运行期也会自动重新发现** ——
@@ -65,7 +71,7 @@ Electron 透明置顶窗（显示器）→ IPC → Live2D 渲染端；另有操�
 ## 5. 常用命令
 
 ```powershell
-node tools/check-plugin.mjs                    # 自测（257 项，必须全绿；不需要 DSH）
+node tools/check-plugin.mjs                    # 自测（269 项，必须全绿；不需要 DSH）
 Invoke-RestMethod "$env:DSH_WEB_URL/xilian-pet/health"   # 端口会变，别写死
 .\start-pet.cmd   /   .\start-pet.cmd --check  # 桌宠（Ctrl+Shift+Q 退出）
 node tools/package-release.mjs --with-model --with-electron

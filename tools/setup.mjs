@@ -28,6 +28,7 @@ import {
   ROW_ID,
 } from './lib/patch-edit.mjs'
 import { checkForUpdate, formatCheckResult, readLocalRelease } from './lib/update-check.mjs'
+import { planShortcut } from './lib/desktop-shortcut.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(here, '..')
@@ -490,6 +491,60 @@ if (DRY_RUN) {
 }
 line('')
 
+// ── ⑦ 桌面快捷方式（图标 = 探头立绘）──────────────────────────────────
+// 用户 2026-11-08 要求：双击桌面那个入口要有「探头」图标。两条约束都是实测出来的，别改回去：
+//  · `.cmd` **不能**带自定义图标 —— 图标只能挂在 `.lnk` 快捷方式上；
+//  · 快捷方式的 `IconLocation` **不能含中文**，否则 Windows 画成"白纸"图标
+//    （同一个 .ico 放 `C:\Users\Public` 正常、放中文路径就失败；`LoadImage` 读它却是好的，
+//      所以很容易误判成"图标文件坏了"）。
+// 做法：图标先复制到 `%PUBLIC%\XilianPet\`（机器无关、纯 ASCII），再让 PowerShell 调
+// Windows API 写 `.lnk`（Node 自己写不出合法的 .lnk）。路径规划在
+// `tools/lib/desktop-shortcut.mjs`，是纯函数、有自测。
+line('⑦ 桌面快捷方式（图标：探头）')
+const shortcut = planShortcut({ repoRoot: ROOT })
+if (!shortcut.ok) {
+  warn(
+    '跳过（找不到纯 ASCII 的图标落点）',
+    `  ${shortcut.reason}\n` +
+      '  手动建也行：右键 start-pet.cmd → 发送到 → 桌面快捷方式（图标会是 Windows 默认的）。',
+  )
+} else if (DRY_RUN) {
+  warn('（dry-run）实际执行时会：', `  复制图标 → ${shortcut.iconDest}\n  建快捷方式 → <桌面>\\${shortcut.linkName}`)
+} else if (!existsSync(shortcut.iconSource)) {
+  bad('发行包缺启动图标', `期望位置：${shortcut.iconSource}\n  发行包不完整？请重新解压。`)
+} else {
+  const psExe = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const code = run(
+    psExe,
+    [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      join(ROOT, 'tools', 'make-desktop-shortcut.ps1'),
+      '-SourceIcon',
+      shortcut.iconSource,
+      '-IconDest',
+      shortcut.iconDest,
+      '-Target',
+      shortcut.target,
+      '-LinkName',
+      shortcut.linkName,
+    ],
+    'tools/make-desktop-shortcut.ps1（复制图标 + 建桌面快捷方式）',
+  )
+  if (code === 0) {
+    ok('桌面快捷方式已就绪（双击它就能唤起她）', `  图标：${shortcut.iconDest}`)
+  } else {
+    bad(
+      '桌面快捷方式创建失败',
+      '  可以手动建：右键 start-pet.cmd → 发送到 → 桌面快捷方式，\n' +
+        `  再到快捷方式属性 →「更改图标」选：${shortcut.iconDest}`,
+    )
+  }
+}
+line('')
+
 // ── 汇总 ──────────────────────────────────────────────────────────
 line('─'.repeat(56))
 line(`结果：${counts.ok} 项就绪 · ${counts.warn} 项告警 · ${counts.fail} 项失败`)
@@ -515,7 +570,7 @@ line('  3. 退出：按 Ctrl+Shift+Q')
 if (counts.warn > 0) line('\n（上面有告警项，多数不影响运行 —— 比如缺模型时会显示占位形象。）')
 line('')
 
-// ── ⑦ 顺带看一眼有没有新版 ────────────────────────────────────────
+// ── ⑧ 顺带看一眼有没有新版 ────────────────────────────────────────
 // ⚠️ **失败必须完全静默**：本文件的输出会**整份写进 install-log.txt**，而那是用户出问题时
 //    发给开发者看的。里面冒出一句"检查更新失败"，会被**误读成安装失败** ——
 //    一个装饰性功能把安装流程的可信度毁掉，不值。所以用 quiet 模式：

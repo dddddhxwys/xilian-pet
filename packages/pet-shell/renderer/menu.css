@@ -107,6 +107,56 @@ body {
   border-color: var(--xl-accent-line);
 }
 
+/* ── 峰谷胶囊（2026-11-07）：判断此刻是 DeepSeek 的峰价还是空闲价 ────────────
+   塞在头部行里（19px 高，头部是 24px），所以**卡片高度不用改** —— 这是选这个方案的
+   唯一理由：面板高度 320 是 main.js 定死的，展开会话列表时只剩 9px 余量，
+   单独一行峰谷块要 +34px 才放得下（实测会裁 2px，见 docs 里的验证记录）。
+   配色语义：空闲 = 桌宠的绿（和"已连接"同色）；高峰 = 星光金（和审批态同一个"注意"）。
+   不用红色：峰价只是贵一倍，不是报错，红色会让面板看着像出了错。 */
+.peakpill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: 19px;
+  margin-left: auto;
+  padding: 0 7px;
+  max-width: 158px;
+  border: 1px solid var(--xl-line-2);
+  border-radius: var(--xl-radius-pill);
+  background: var(--xl-white);
+  font-size: var(--xl-fs-label);
+  line-height: 1;
+  color: var(--xl-text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  box-shadow: var(--xl-shadow-soft);
+}
+.peakpill i {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #5ba98b;
+}
+/* 文案再长也不许把 ⚙ 顶出卡片：超了就用省略号（挤到极限时） */
+.peakpill #peakText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.peakpill[data-peak="on"] {
+  border-color: rgba(217, 180, 94, 0.42);
+  color: #a97a22;
+}
+.peakpill[data-peak="on"] i {
+  background: var(--xl-gold);
+}
+/* 胶囊抢了 margin-left:auto 之后，⚙ 别再自己往右顶一遍（两者之间留头部 gap 的 7px） */
+.peakpill + .gear {
+  margin-left: 0;
+}
+
 .section-label {
   position: relative;
   flex: none;

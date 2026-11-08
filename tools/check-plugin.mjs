@@ -217,6 +217,18 @@ import {
   swingComboClick,
 } from '../packages/pet-shell/renderer/motion-policy.js'
 import {
+  BEIJING_UTC_OFFSET_MS,
+  PEAK_WINDOWS,
+  beijingParts,
+  buildHolidaySet,
+  describeCountdown,
+  isPeakAt,
+  nextSwitchAt,
+  peakStatus,
+} from '../packages/pet-shell/renderer/peak-time.js'
+import { HOLIDAYS } from '../packages/pet-shell/renderer/holidays.js'
+import { ICON_FILE, isAsciiPath, LINK_NAME, planShortcut } from '../tools/lib/desktop-shortcut.mjs'
+import {
   TURN_END_STATE,
   activityLabel,
   aggregate,
@@ -5297,6 +5309,224 @@ check('patch 文件不许有重复键（YAML 重复键会让整包补丁解析�
     assert.deepEqual(dup, [], `${rel} 存在重复键：${dup.join(', ')}`)
   }
   assert.equal(checkedAny, true, '一个 patch 文件都没找到，检查形同虚设')
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[22] 峰谷时段：面板头部胶囊（DeepSeek 峰价判定，纯函数）')
+//
+// 规则来源：官方定价页《模型 & 价格》——“北京时间周一至周五（不含中国法定节假日）
+// 9:00-12:00、14:00-18:00 为高峰时段；其余时段，包括周末及中国法定节假日全天均为空闲时段。”
+// 用户 2026-11-07 的口径里漏了“周一至周五”，这里按官方原文写断言（周六 10 点 = 空闲）。
+
+const HOL = buildHolidaySet(HOLIDAYS)
+const at = (iso) => new Date(iso).getTime()
+const isoOf = (ms) => new Date(ms).toISOString()
+
+check('峰谷判定：周一至周五 9-12 / 14-18 才是高峰，边界左闭右开', () => {
+  // 2026-11-09 是周一（今天 11-07 是周六，所以拿"下周一"当基准）
+  for (const [iso, expect] of [
+    ['2026-11-09T08:59:59+08:00', false],
+    ['2026-11-09T09:00:00+08:00', true], // 9:00 整已经是高峰
+    ['2026-11-09T11:59:59+08:00', true],
+    ['2026-11-09T12:00:00+08:00', false], // 12:00 整已经是空闲
+    ['2026-11-09T13:59:59+08:00', false],
+    ['2026-11-09T14:00:00+08:00', true],
+    ['2026-11-09T17:59:59+08:00', true],
+    ['2026-11-09T18:00:00+08:00', false], // 18:00 整已经是空闲
+    ['2026-11-09T23:30:00+08:00', false],
+  ]) {
+    assert.equal(isPeakAt(at(iso), HOL), expect, `${iso} 应${expect ? '' : '不'}算高峰`)
+  }
+  // 规则本身也锁住：改窗口/改时区偏移必须改到这里（否则自测红）
+  assert.deepEqual(PEAK_WINDOWS, [[540, 720], [840, 1080]], '高峰窗口就是 9-12、14-18（左闭右开）')
+  assert.equal(BEIJING_UTC_OFFSET_MS, 8 * 3600 * 1000, '规则说的是北京时间，不是宿主本地时间')
+})
+
+check('峰谷判定：周末、法定节假日、调休补班日一律空闲（对齐官方口径）', () => {
+  assert.equal(isPeakAt(at('2026-11-07T10:00:00+08:00'), HOL), false, '周六 10 点（就是今天这个时刻）必须空闲')
+  assert.equal(isPeakAt(at('2026-11-08T10:00:00+08:00'), HOL), false, '周日')
+  assert.equal(isPeakAt(at('2026-10-02T10:00:00+08:00'), HOL), false, '国庆（周五）全天空闲')
+  assert.equal(isPeakAt(at('2026-02-20T10:00:00+08:00'), HOL), false, '春节（周五）全天空闲')
+  assert.equal(isPeakAt(at('2027-06-09T10:00:00+08:00'), HOL), false, '2027 端午（周三）全天空闲')
+  // 官方写的是“周一至周五（不含法定节假日）”，所以**调休补班的周六仍然是空闲**
+  assert.equal(isPeakAt(at('2026-10-10T10:00:00+08:00'), HOL), false, '2026 调休补班的周六仍算空闲')
+  assert.equal(isPeakAt(at('2027-05-08T10:00:00+08:00'), HOL), false, '2027 调休补班的周六仍算空闲')
+})
+
+check('峰谷：下次切换点算对（跳过午休 / 周末 / 整段假期）', () => {
+  assert.equal(isoOf(nextSwitchAt(at('2026-11-09T08:00:00+08:00'), HOL)), isoOf(at('2026-11-09T09:00:00+08:00')))
+  assert.equal(isoOf(nextSwitchAt(at('2026-11-09T09:30:00+08:00'), HOL)), isoOf(at('2026-11-09T12:00:00+08:00')))
+  assert.equal(isoOf(nextSwitchAt(at('2026-11-09T12:30:00+08:00'), HOL)), isoOf(at('2026-11-09T14:00:00+08:00')))
+  assert.equal(isoOf(nextSwitchAt(at('2026-11-09T17:30:00+08:00'), HOL)), isoOf(at('2026-11-09T18:00:00+08:00')))
+  // 周五 18:00 之后 → 下周一 9:00
+  assert.equal(isoOf(nextSwitchAt(at('2026-11-13T18:30:00+08:00'), HOL)), isoOf(at('2026-11-16T09:00:00+08:00')))
+  // 国庆前夜（周三）→ 假期结束后的 10-08 9:00
+  assert.equal(isoOf(nextSwitchAt(at('2026-09-30T18:30:00+08:00'), HOL)), isoOf(at('2026-10-08T09:00:00+08:00')))
+  // 春节前一天（周六）→ 9 天假期结束后的 2-24 9:00
+  assert.equal(isoOf(nextSwitchAt(at('2026-02-14T12:00:00+08:00'), HOL)), isoOf(at('2026-02-24T09:00:00+08:00')))
+  const now = at('2026-11-09T10:00:00+08:00')
+  assert.ok(nextSwitchAt(now, HOL) > now, '下次切换必须在未来')
+})
+
+check('峰谷：胶囊文案（倒计时不带秒，够粗就够用）', () => {
+  assert.equal(describeCountdown(30 * 1000), '1 分钟')
+  assert.equal(describeCountdown(15 * 60 * 1000), '15 分钟')
+  assert.equal(describeCountdown(60 * 60 * 1000), '1 小时')
+  assert.equal(describeCountdown(90 * 60 * 1000), '1 小时 30 分')
+  assert.equal(describeCountdown(24 * 3600 * 1000), '1 天')
+  assert.equal(describeCountdown(26 * 3600 * 1000), '1 天 2 小时')
+  // peakStatus 要和两个底层函数一致（否则画出来的和算出来的会打架）
+  const s = peakStatus(at('2026-11-09T10:30:00+08:00'), HOL)
+  assert.equal(s.peak, true)
+  assert.equal(s.label, '高峰')
+  assert.equal(s.countdown, '1 小时 30 分')
+  assert.equal(s.nextAt, at('2026-11-09T12:00:00+08:00'))
+})
+
+check('峰谷：未录数据的年份要能报出来，并退回“周一至周五”判断', () => {
+  const s = peakStatus(at('2028-01-05T10:00:00+08:00'), HOL) // 周三，表里没有 2028
+  assert.equal(s.covered, false, '2028 年不在表里 → covered=false（渲染端据此打告警）')
+  assert.equal(s.peak, true, '没数据时退回“周一至周五”，不能直接崩/空着')
+  assert.equal(peakStatus(at('2026-11-09T10:00:00+08:00'), HOL).covered, true)
+})
+
+check('峰谷：节假日表覆盖 2026/2027，日期格式与往返换算都对', () => {
+  for (const year of [2026, 2027]) {
+    assert.ok(HOL.years.has(year), `节假日表必须覆盖 ${year}（官方通知已发布）`)
+  }
+  const all = Object.values(HOLIDAYS.years).flat()
+  assert.ok(all.length >= 60, `两年假期日期应 ≥60 条，实际 ${all.length}`)
+  for (const key of all) {
+    assert.match(key, /^\d{4}-\d{2}-\d{2}$/, `格式不对：${key}`)
+    // 往返一致 = beijingParts 的时区换算没把日期算错（宿主时区不同也不该变）
+    assert.equal(beijingParts(at(`${key}T12:00:00+08:00`)).dateKey, key)
+  }
+  // 抽查几段"周中也放假"的：这些正是最容易漏掉、一漏就会把峰价判错的
+  const offWeekdays = ['2026-02-16', '2026-02-20', '2026-10-01', '2026-10-07', '2027-02-08', '2027-10-07']
+  for (const key of offWeekdays) assert.ok(all.includes(key), `节假日表缺 ${key}`)
+  // 假期首尾也要在（春节 9 天 / 国庆 7 天）
+  for (const key of ['2026-02-15', '2026-02-23', '2027-02-05', '2027-02-13', '2027-10-01', '2027-10-07']) {
+    assert.ok(all.includes(key), `节假日表缺 ${key}`)
+  }
+})
+
+check('峰谷：北京时间换算与宿主时区无关（用 UTC 时间戳说话）', () => {
+  // 01:00Z = 北京 09:00 → 高峰；00:59:59Z = 北京 08:59:59 → 空闲。
+  // 如果实现里误用了「宿主本地时间」，在非 +08:00 的机器上这条会红。
+  assert.equal(isPeakAt(at('2026-11-09T01:00:00Z'), HOL), true)
+  assert.equal(isPeakAt(at('2026-11-09T00:59:59Z'), HOL), false)
+  assert.equal(isPeakAt(at('2026-11-09T04:00:00Z'), HOL), false) // 04:00Z = 北京 12:00 → 空闲
+  const p = beijingParts(0)
+  assert.equal(p.dateKey, '1970-01-01')
+  assert.equal(p.minutes, 8 * 60, 'epoch 在北京时间是 08:00')
+})
+
+check('峰谷胶囊接线：menu.html 有元素、是模块脚本、CSS 走 token、JS 会重算', () => {
+  const renderer = new URL('../packages/pet-shell/renderer/', import.meta.url)
+  const html = readFileSync(new URL('menu.html', renderer), 'utf8')
+  const css = readFileSync(new URL('menu.css', renderer), 'utf8')
+  const js = readFileSync(new URL('menu.js', renderer), 'utf8')
+
+  assert.ok(/id="peak"/.test(html), 'menu.html 缺 #peak（胶囊本体）')
+  assert.ok(/id="peakText"/.test(html), 'menu.html 缺 #peakText（文案节点）')
+  assert.ok(/type="module"[^>]*src="menu\.js"/.test(html), 'menu.js 必须是 type="module"（它要 import 纯函数模块）')
+  assert.ok(/\.peakpill\b/.test(css), 'menu.css 缺 .peakpill 样式')
+  assert.ok(/\.peakpill\[data-peak="on"\]/.test(css), '高峰/空闲必须用 data-peak 区分（和状态点同一套语义）')
+  assert.ok(/var\(--xl-fs-label\)/.test(css), '胶囊字号要走 token（换皮不脱钩）')
+  assert.ok(/import \{ HOLIDAYS \} from '\.\/holidays\.js'/.test(js), 'menu.js 要引节假日表')
+  assert.ok(/peakStatus\(/.test(js) && /renderPeak\(/.test(js), 'menu.js 要渲染峰谷状态')
+  assert.ok(/visibilitychange/.test(js), '面板是复用窗口：重新弹出时要重算（否则看到旧值）')
+  assert.ok(/setInterval\(/.test(js), '面板一直开着也要跨过 9:00/12:00/14:00/18:00 自动翻转')
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[23] 桌面快捷方式（图标落点必须纯 ASCII，否则 Windows 画白纸图标）')
+//
+// 2026-11-08 实测：同一个 .ico，放 C:\Users\Public 显示正常；放含中文的仓库路径 →
+// Windows 把快捷方式图标画成"白纸"（而 LoadImage/ExtractIconEx 读它是好的，极易误判）。
+// 所以图标必须复制到一个纯 ASCII 目录再让快捷方式指过去。
+
+check('快捷方式：图标落点只选纯 ASCII 目录，取不到就明确失败', () => {
+  assert.equal(isAsciiPath('C:\\Users\\Public\\XilianPet'), true)
+  assert.equal(isAsciiPath('C:\\Users\\张三\\XilianPet'), false)
+  assert.equal(isAsciiPath(''), false)
+  assert.equal(isAsciiPath(undefined), false)
+
+  const preferred = planShortcut({
+    repoRoot: 'C:\\repo',
+    env: { PUBLIC: 'C:\\Users\\Public', ProgramData: 'C:\\ProgramData' },
+  })
+  assert.equal(preferred.ok, true)
+  assert.equal(preferred.via, 'PUBLIC')
+  assert.equal(isAsciiPath(preferred.iconDest), true)
+  assert.equal(preferred.iconDest.endsWith(ICON_FILE), true)
+  assert.equal(preferred.linkName, LINK_NAME)
+
+  // %PUBLIC% 含中文 → 自动退到 %ProgramData%
+  const fallback = planShortcut({
+    repoRoot: 'C:\\repo',
+    env: { PUBLIC: 'D:\\用户\\Public', ProgramData: 'C:\\ProgramData' },
+  })
+  assert.equal(fallback.ok, true)
+  assert.equal(fallback.via, 'ProgramData')
+  assert.equal(isAsciiPath(fallback.iconDest), true)
+
+  // 两个都含中文 → 宁可不建快捷方式，也不要建一个白纸图标的快捷方式
+  const none = planShortcut({ repoRoot: 'C:\\repo', env: { PUBLIC: 'D:\\用户\\Public', ProgramData: 'D:\\数据' } })
+  assert.equal(none.ok, false)
+  assert.ok(String(none.reason).includes('ASCII'))
+})
+
+check('快捷方式：启动图标已入库，是合法的多尺寸 ICO（从小到大）', () => {
+  const bytes = readFileSync(new URL('../packages/pet-shell/launcher-icon.ico', import.meta.url))
+  assert.ok(bytes.length > 10000, `图标太小（${bytes.length} B），可能是占位或截断`)
+  assert.equal(bytes.readUInt16LE(0), 0, 'ICO 头 reserved 必须为 0')
+  assert.equal(bytes.readUInt16LE(2), 1, 'ICO 头 type 必须为 1')
+  const count = bytes.readUInt16LE(4)
+  assert.ok(count >= 6, `帧数应 ≥6，实际 ${count}`)
+  const dims = []
+  for (let i = 0; i < count; i += 1) {
+    const p = 6 + i * 16
+    const w = bytes[p] === 0 ? 256 : bytes[p]
+    const h = bytes[p + 1] === 0 ? 256 : bytes[p + 1]
+    const len = bytes.readUInt32LE(p + 8)
+    const off = bytes.readUInt32LE(p + 12)
+    assert.equal(w, h, `第 ${i} 帧不是正方形（${w}x${h}）`)
+    assert.ok(off + len <= bytes.length, `第 ${i} 帧越界`)
+    dims.push(w)
+  }
+  assert.ok(dims.includes(16), `应有 16px 帧，实际 ${dims.join('/')}`)
+  assert.ok(dims.includes(48), '应有 48px 帧（桌面默认尺寸）')
+  assert.ok(dims.includes(256), '应有 256px 帧')
+  assert.deepEqual(dims, [...dims].sort((a, b) => a - b), '帧必须从小到大（index 0 是最小尺寸）')
+})
+
+check('快捷方式：PowerShell 脚本必须纯 ASCII（PS 5.1 按 GBK 解 BOM-less .ps1）', () => {
+  const bytes = readFileSync(new URL('../tools/make-desktop-shortcut.ps1', import.meta.url))
+  const offenders = []
+  for (let i = 0; i < bytes.length; i += 1) if (bytes[i] > 0x7e) offenders.push(`${i}(${bytes[i]})`)
+  assert.deepEqual(offenders.slice(0, 5), [], `脚本里有非 ASCII 字节：${offenders.slice(0, 5).join(', ')}`)
+  const src = bytes.toString('utf8')
+  assert.ok(src.includes('[^\\x20-\\x7E]'), '脚本要自己复核 IconDest 是 ASCII（第二道闸）')
+  assert.ok(src.includes('IconLocation'), '脚本必须设置 IconLocation')
+  assert.ok(src.includes('readback mismatch'), '脚本必须回读校验（不信 Save() 的返回值）')
+  assert.ok(src.includes("GetFolderPath('Desktop')"), '桌面路径要走 GetFolderPath（OneDrive 重定向）')
+  assert.ok(src.includes('SHChangeNotify'), '写完要通知 shell 刷新图标')
+})
+
+check('快捷方式：安装器真的会建它，发行包必需清单三项齐全', () => {
+  const setup = readFileSync(new URL('../tools/setup.mjs', import.meta.url), 'utf8')
+  assert.ok(setup.includes('planShortcut({ repoRoot: ROOT })'), 'setup.mjs 要用 planShortcut 规划路径')
+  assert.ok(setup.includes('make-desktop-shortcut.ps1'), 'setup.mjs 要调用生成脚本')
+  const list = requiredInRelease({})
+  for (const rel of [
+    'packages/pet-shell/launcher-icon.ico',
+    'tools/make-desktop-shortcut.ps1',
+    'tools/lib/desktop-shortcut.mjs',
+  ]) {
+    assert.ok(list.includes(rel), `发行包必需清单缺 ${rel}`)
+  }
+  assert.equal(list.some((rel) => rel.startsWith('.cache/')), false, '必需清单不该引用 .cache（那里不会进包）')
 })
 
 console.log(`\n${'─'.repeat(56)}`)
