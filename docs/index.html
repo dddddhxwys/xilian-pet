@@ -85,7 +85,7 @@
           <table>
             <tr><th>文件</th><th>大小</th><th>什么时候用</th></tr>
             <tr>
-              <td><b>slim-model</b></td><td>约 1.8 MB</td>
+              <td><b>slim-model</b></td><td>约 2.2 MB</td>
               <td><b>通常选这个</b>。装的时候自动下载 Electron（约 150 MB），需要网络能访问华为云镜像</td>
             </tr>
             <tr>
@@ -109,7 +109,7 @@
               <br />窗口会先显示一段英文说明，然后<b>一直空着是正常的</b>：所有输出都写进同目录的 <code>install-log.txt</code>，跑完才一次性回显。如果要下 Electron 可能要几分钟，<b>别关窗口</b>。
             </li>
             <li>
-              <b>重启 DSH</b>，然后双击 <code>start-pet.cmd</code> —— 她就出现了。退出按 <code>Ctrl+Shift+Q</code>。
+              <b>重启 DSH</b>，然后双击 <code>start-pet.cmd</code>（或桌面上自动出现的 <b>「昔涟」快捷方式</b>）—— 她就出现了。退出按 <code>Ctrl+Shift+Q</code>。
             </li>
           </ol>
         </div>
@@ -133,7 +133,7 @@
             <tr><td>按住拖动</td><td>换位置，<b>位置会自动记住</b></td></tr>
             <tr>
               <td><b>右键点她</b></td>
-              <td>弹出<b>操作面板</b>（独立小窗）：派活目标、派活 / 打断、本次会话用量、缓存命中、插件连接状态</td>
+              <td>弹出<b>操作面板</b>（独立小窗）：头部显示<b>峰谷时段</b>（高峰 / 空闲 + 距下次切换）、派活目标、派活 / 打断、本次会话用量、缓存命中、插件连接状态</td>
             </tr>
             <tr><td>鼠标移到透明处</td><td>鼠标<b>穿过去</b>，不挡住下面的窗口</td></tr>
             <tr><td><code>Ctrl+Shift+Q</code></td><td>退出</td></tr>
@@ -153,7 +153,8 @@
             <tr><td>报 <code>Cannot find module …\Temp\…zip…</code></td><td>你在压缩包里双击了文件。先全部解压缩，再从解压出来的文件夹里双击</td></tr>
             <tr><td>报「找不到 Node runtime」</td><td>安装器会打印具体找过哪些位置。先启动一次 DSH 并让它真正干点活（它首次使用时会解包运行时），再重跑安装</td></tr>
             <tr><td>插件列表里没有卡片 / <code>/health</code> 报 404</td><td>① 没重启 DSH；② 安装器走了「免安装直挂」模式（能用，但列表里不显示）。重跑 <code>安装.cmd</code> 或手动用 DSH 的 CLI 装</td></tr>
-            <tr><td>审批没走桌宠</td><td>看 <code>http://127.0.0.1:&lt;端口&gt;/xilian-pet/health</code>（端口每次启动可能变，从 DSH 窗口地址栏看）：<code>code</code> 应是 28（v0.1.1 发行包；若装的是旧的 v0.1.0 则是 27）、<code>approvalViaPet</code> 应是 true、<code>subscribers</code> 应 ≥ 1（她没连上时审批按设计立刻交给 DSH 界面）</td></tr>
+            <tr><td>桌面没有「昔涟」快捷方式 / 图标是白纸</td><td>安装器第 ⑦ 步会建它。没有 → 在 <code>install-log.txt</code> 里搜「桌面快捷方式」；图标是白纸 → Windows 不认含中文的图标路径，重跑 <code>安装.cmd</code>（会把图标复制到 <code>C:\Users\Public\XilianPet\</code>），或手动把快捷方式图标指到那个 <code>.ico</code></td></tr>
+            <tr><td>审批没走桌宠</td><td>看 <code>http://127.0.0.1:&lt;端口&gt;/xilian-pet/health</code>（端口每次启动可能变，从 DSH 窗口地址栏看）：<code>code</code> 应是 28（v0.2.0 发行包；旧 v0.1.0 是 27，v0.1.1 也是 28）、<code>approvalViaPet</code> 应是 true、<code>subscribers</code> 应 ≥ 1（她没连上时审批按设计立刻交给 DSH 界面）</td></tr>
             <tr><td>她说自己退出了 / 状态不动</td><td><code>subscribers</code> 是 0 就说明外壳没连上，重新双击 <code>start-pet.cmd</code></td></tr>
           </table>
         </div>

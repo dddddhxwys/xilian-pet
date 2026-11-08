@@ -1,25 +1,25 @@
 {
   "schema": 1,
-  "latest": "0.1.1",
-  "releasedAt": "2026-11-06",
-  "notes": "0.1.1：新增设置窗（大小 / 不透明度 / 左右翻转 / 自动朝向 / 点击互动 / 气泡提示 / 审批由桌宠同意）、DSH 换端口后自动重连、镜像问号缺口朝她且整体倾斜约 20°、珍珠白界面；full 包内置 Electron。",
+  "latest": "0.2.0",
+  "releasedAt": "2026-11-08",
+  "notes": "0.2.0：新增操作面板「峰谷时段」胶囊（实时显示 DeepSeek 高峰/空闲 + 距下次切换，内置 2026/2027 法定节假日表）与桌面「昔涟」快捷方式（探头图标，安装器第 ⑦ 步自动创建）；自测 269 项。",
   "releaseUrl": "https://github.com/dddddhxwys/xilian-pet/releases",
   "assets": [
     {
-      "version": "0.1.1",
+      "version": "0.2.0",
       "flavor": "full-model",
-      "file": "xilian-pet-v0.1.1-full-model-20261106-1258.zip",
-      "size": 163623020,
-      "sha256": "c78d8c34eb9f7b31eaf9235f8c95130636d05cb8a9d560484c567f7fb46fc362",
-      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.1/xilian-pet-v0.1.1-full-model-20261106-1258.zip"
+      "file": "xilian-pet-v0.2.0-full-model-20261108-2119.zip",
+      "size": 163778039,
+      "sha256": "9848a59a1c61fb62c6c0b82b5690b222811e952671d14218a65eeabad2e9dc2e",
+      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.2.0/xilian-pet-v0.2.0-full-model-20261108-2119.zip"
     },
     {
-      "version": "0.1.1",
+      "version": "0.2.0",
       "flavor": "slim-model",
-      "file": "xilian-pet-v0.1.1-slim-model-20261106-1258.zip",
-      "size": 2119746,
-      "sha256": "fe95652a4555f216bf7a3aafb9957b41e42857355c4310dc6b88262a7078bf3f",
-      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.1.1/xilian-pet-v0.1.1-slim-model-20261106-1258.zip"
+      "file": "xilian-pet-v0.2.0-slim-model-20261108-2119.zip",
+      "size": 2274765,
+      "sha256": "c025359a1c0bef43932e9de43877e1aa31727681687ec7be57af5b6198efbb31",
+      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.2.0/xilian-pet-v0.2.0-slim-model-20261108-2119.zip"
     }
   ]
 }
