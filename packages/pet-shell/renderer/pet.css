@@ -190,6 +190,10 @@ body {
   top: 4px;
   left: 50%;
   transform: translateX(-50%);
+  /* ⚠️ 必须给 width:max-content：绝对定位 + left:50% 时，收缩宽度只有"右半边"（≈130px），
+     长句会在半屏处硬折行（2026-11-08 出气泡预览时实测：8 个汉字就被折成两行）。
+     max-content + max-width 才是"能撑多宽撑多宽，但不超过 232px"。 */
+  width: max-content;
   max-width: 232px;
   padding: 8px 11px;
   border-radius: 14px;
@@ -214,6 +218,94 @@ body {
   border-bottom: 0;
 }
 
+/* 气泡正文的行（2026-11-08 用户要求）：工作时每句话前面加一支倾斜的羽毛笔。
+   素材 `assets/bubble-quill.png` 是生成图裁切后**白底转透明 + 染成主题粉**的版本
+   （96px 3x，16px 显示也清楚）；`img-src 'self'` 放行同源图片（pet://app/assets/…）。
+   行高 1.45 × 12.5px ≈ 18px，所以笔往下挪 1px 让它的视觉中心和第一行文字对齐。 */
+#bubbleText .bline {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+#bubbleText .bline + .bline {
+  margin-top: 4px;
+}
+#bubbleText .bt {
+  min-width: 0;
+}
+#bubbleText .bq {
+  flex: none;
+  /* 2026-11-09：从"一只静态羽毛笔"换成「笔 + 笔迹」循环动画（结构见 bubble-lines.js 的
+     QUILL_ROW_HTML）。逻辑盒子仍是 40×30 = SVG viewBox（1:1，path 坐标可直接复用），
+     但**可见盒子宽 48** —— 笔走到曲线末端时，笔身会往右上伸出约 17px，
+     不留这点余量它就会压到后面的文字上（2026-11-09 出比较图时看出来并量过）。 */
+  position: relative;
+  width: 48px;
+  height: 30px;
+}
+#bubbleText .bq-ink {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 40px;
+  height: 30px;
+  overflow: visible;
+}
+/* 笔迹：pathLength=100 把长度归一化，dashoffset 100→0 就是"墨迹从无到有" */
+#bubbleText .bq-ink path {
+  fill: none;
+  stroke: var(--xl-accent-strong);
+  stroke-width: 1.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  animation: bqInk 2.8s linear infinite;
+}
+/* 羽毛笔：沿同一条 path 走（CSS motion path）；
+   offset-anchor 对准素材里的**笔尖**（约 14% / 86%），这样"运动的是笔尖"而不是笔的中心。
+   offset-rotate: 0deg —— 固定继承素材本身的 45° 倾斜，不跟着曲线甩，看起来更稳。
+   ⚠️ path 必须与 bubble-lines.js 里 QUILL_ROW_HTML 的 d 完全一致（有自测盯）。 */
+#bubbleText .bq-pen {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 20px;
+  height: 20px;
+  background: url(assets/bubble-quill.png) center / contain no-repeat;
+  offset-path: path("M4 26 C8 15 12 28 17 19 S26 9 31 21 S34 24 37 18");
+  offset-distance: 0%;
+  offset-rotate: 0deg;
+  offset-anchor: 14% 86%;
+  animation: bqPen 2.8s linear infinite;
+}
+/* 时间线：0→58% 画/写同步；58→70% 停一下；70→86% 淡出；86→100% 空转（用户看不到跳变） */
+@keyframes bqInk {
+  0% { stroke-dashoffset: 100; opacity: 1; }
+  58% { stroke-dashoffset: 0; opacity: 1; }
+  70% { stroke-dashoffset: 0; opacity: 1; }
+  86% { stroke-dashoffset: 0; opacity: 0; }
+  100% { stroke-dashoffset: 0; opacity: 0; }
+}
+@keyframes bqPen {
+  0% { offset-distance: 0%; opacity: 1; }
+  58% { offset-distance: 100%; opacity: 1; }
+  70% { offset-distance: 100%; opacity: 1; }
+  86% { offset-distance: 100%; opacity: 0; }
+  100% { offset-distance: 100%; opacity: 0; }
+}
+/* 系统开了"减少动态效果"就退回静态：墨迹画满、笔停在末端 */
+@media (prefers-reduced-motion: reduce) {
+  #bubbleText .bq-ink path {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+  #bubbleText .bq-pen {
+    animation: none;
+    offset-distance: 100%;
+  }
+}
+
 /* A7 通知条（#notice / #noticeDot / #noticeHint / noticePulse / body.has-notice）
    按用户要求于 2026-10-11 **整体删除**（"取消这个通知条功能"）——
    它只显示审批积压 / 久坐 / 花销三类主动提醒，删掉后气泡回到单层布局。 */
@@ -222,5 +314,77 @@ body {
    "把那个表示插件在线的小绿点整合到菜单里面去"）→ 见 menu.css 的 #linkState */
 
 /* 审批卡的样式已移到 approval.css（独立小窗）—— 画在本窗口必然遮住她。 */
+
+/* ── 自绘腮红（2026-11-12）────────────────────────────────────────────
+   模型自带的腮红（Part21）是单独一块贴图，边缘有颜色落差 → 缩小显示时能看到一条浅浅的分界线。
+   把它藏掉，改画两块柔边径向渐变：颜色中心浓、边缘渐隐到全透明，天然没有硬边。
+   位置/尺寸由 live2d.js 每帧按脸（Part18）包围盒写（和蚊香眼、问号同一套）。 */
+#blush {
+  position: absolute;
+  inset: 0;
+  z-index: 2; /* 在 canvas 之上、蚊香眼之下 */
+  pointer-events: none;
+}
+#blush .blush {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 145, 180, 0.42), rgba(255, 150, 185, 0.2) 55%, rgba(255, 160, 190, 0) 100%);
+  will-change: transform;
+}
+
+/* ── 蚊香眼（2026-11-09）：审批时盖在眼睛上的两块"蚊香"贴片 ─────────────────
+   模型里没有真正的螺旋瞳孔表情（`Param2「圈圈」` 是作者留的开关参数，不是这个效果），
+   所以自己叠：白色眼白 + 深色螺旋，螺旋自己转。
+   位置/尺寸由 live2d.js 每帧按 `Part14 左眼` / `Part16 右眼` 画层包围盒写入
+   （和 #questionMark 同一套"逐帧跟随模型画层"的做法）；这里只管长相与自转。 */
+#dizzyEyes {
+  position: absolute;
+  inset: 0;
+  z-index: 3; /* 在 canvas（z-index:1）之上；pointer-events:none 不挡点击 */
+  pointer-events: none;
+}
+#dizzyEyes .deye {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  opacity: 0; /* 由 JS 按 EyeOpen 写；先隐藏，避免首帧闪一下 */
+  will-change: transform, opacity;
+}
+#dizzyEyes svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+/* 2026-11-09 最终版：**没有白底、没有描边垫**。
+   触发时她的眼睛参数被压成闭合（只剩眼睑皮肤），所以这里只要画出"就是眼睛"的螺旋：
+   粗线（眼宽的 1/10 左右）、深褐、约 2.6 圈 —— 照 ACG 的圈圈眼画法。 */
+#dizzyEyes .dspiral {
+  fill: none;
+  stroke: #4a2f3d;
+  /* 40 单位的 viewBox 映射到约 45px 宽的眼贴片 → 3.2 单位 ≈ 3.6px，接近参考图的粗细 */
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transform-box: view-box;
+  transform-origin: 50% 50%;
+  animation: dizzySpin 1.9s linear infinite;
+}
+
+@keyframes dizzySpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* 系统开"减少动态效果"就不转（仍然显示圈圈眼） */
+@media (prefers-reduced-motion: reduce) {
+  #dizzyEyes .dspiral {
+    animation: none;
+  }
+}
 
 

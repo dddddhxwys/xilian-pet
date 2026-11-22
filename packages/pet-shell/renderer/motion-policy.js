@@ -62,10 +62,27 @@ const THINKING_ONLY = {
   ...Object.fromEntries(HAND_POSE_PARAMS.map((id) => [id, 0])),
 }
 
+/**
+ * 待审批的压制（2026-11-09 用户要求："触发时取消思考的动作，双手也放下，不放秋千绳上"）：
+ * 组 5 的姿势参数**全部压 0**（不思考、不抓绳、不叉腰、不指、不比招牌）、绳子道具不画。
+ * 留着组 6（秋千本体/摇摆）→ 她仍然轻轻荡，但两只手是放下的，不会去抓绳。
+ */
+export const HANDS_DOWN = {
+  Param9: 0,
+  Param16: 0,
+  ...Object.fromEntries(HAND_POSE_PARAMS.map((id) => [id, 0])),
+}
+
 /** 非 running 状态：把"思考的手"压回 0（秋千动作自己会把它推到 1，会多出一只手） */
 const THINKING_OFF = { Param9: 0 }
 
-/** 启动时先演一次的动作：**Scene[0]**（一只手放下巴 + 右手比嘘）。演完落待机。 */
+/**
+ * 启动时先演一次的动作：**Scene[0]**（比嘘：一只手放下巴 + 右手比嘘）。演完落待机。
+ *
+ * 2026-11-12 曾按用户要求改成「招牌」(2)；2026-11-16 用户："还是把启动和完成任务的动画换成之前那版吧"
+ *   → 开场回到 **比嘘(0)**（时长仍按用户后来定的 3.5 秒，见 live2d.js 的 INTRO_SPEED）。
+ *   提问保持现状（Scene[1] + 托腮）。
+ */
 export const INTRO_MOTION = 0
 
 export const STATE_MAP = {
@@ -92,24 +109,44 @@ export const STATE_MAP = {
     params: { Param9: 1 },
     force: THINKING_ONLY,
   },
-  // 待确认：闭眼笑 + 星光 + 惊喜特效（最能抓住注意力）。**只播一次**再回待机，
-  // 否则"等你确认"会一直闪星星，反而变成噪音。
-  // 特效刻意**留着**（keepEffect）：它表达的正是"还在等你"。
+  // 待确认（2026-11-09 用户要求：只出「蚊香眼」）：
+  //  - **不**播惊喜/星星（原来 expression:'surprise' + keepEffect 会把星光一直留着）；
+  //  - 不播"叉腰/比招牌"的一次性动作（原来 motion:1）→ 改成荡秋千（手放下也不会抓绳）；
+  //  - 双手放下：组 5 姿势参数全压 0；不画绳子道具；不想事情（HANDS_DOWN）；
+  //  - `dizzy: true` = 渲染端在眼睛上叠一对会转的蚊香（见 live2d.js 的 #dizzyEyes）。
+  //  刻意**不是**一次性动作：等她确认期间要一直晕着。
   approval: {
-    motion: 1,
-    durationMs: 4000,
-    once: true,
-    expression: 'surprise',
-    keepEffect: true,
-    force: THINKING_OFF,
+    motion: BASE_MOTION,
+    expression: 'reset',
+    dizzy: true,
+    force: HANDS_DOWN,
   },
-  // 提问：招牌姿势 + 张嘴 + 问号。**保持循环** —— 要一直等用户回答。
-  question: { motion: 2, expression: 'question', force: THINKING_OFF },
-  // 完成：闭眼笑 + 星光 + 开心。**只播一次**，然后回去荡秋千；
+  // 提问：**一手托腮** + 问号。**保持循环** —— 要一直等用户回答。
+  // 2026-11-16 用户："一手叉腰的效果一直没有实现过，算了，不做这个"
+  //   → 只保留托腮（Param9=1），叉腰参数不再使用。
+  question: {
+    motion: 1,
+    expression: 'question',
+    force: {
+      Param9: 1, // 手放下巴（托腮）
+      Param16: 0, // 绳子不画
+      // 2026-11-16 用户："把那个星星特效去了"
+      Param5: 0, // 星星特效关掉
+      Param7: 0, // 闪耀特效也一并关掉
+      Param10: 0,
+      Param11: 0,
+      Param12: 0,
+      Param13: 0,
+      Param14: 0,
+      Param17: 0,
+      Param18: 0,
+    },
+  },
+  // 完成：**招牌**（Scene[2]：一手抚胸、一手垂下，像行礼）。只播一次，然后回去荡秋千；
   // 注意桌宠状态仍是 done（未读背板继续显示），只是动作不再重复。
-  // 特效**演完就撤**（不设 keepEffect）—— 用户实测后明确要求：
-  //   "从叉腰切换成待机后笑眼不再留存"。
-  done: { motion: 1, durationMs: 4000, once: true, expression: 'happy', force: THINKING_OFF },
+  // 2026-11-17 用户："把完成的动画改成那个招牌"。
+  // 表情用 reset → 让动作自带的眼部曲线生效（叠 happy 会把眼睛改成闭眼笑、盖掉招牌的味道）。
+  done: { motion: 2, durationMs: 4000, once: true, expression: 'reset', force: THINKING_OFF },
   // ⚠️ 出错：模型**没有**"困扰/失败"这类参数，只能靠眉毛+眼睛手工凑（见 ERROR_FACE），
   //    动作沿用最平静的荡秋千，避免"出错还蹦得欢"的违和感
   error: { motion: BASE_MOTION, expression: 'reset', force: THINKING_OFF },

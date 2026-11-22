@@ -45,8 +45,6 @@ let interactive = null
 let dragging = false
 /** 拖拽期间给主进程续期的定时器（主进程有 6s 看门狗，见 main.js 的 DRAG_STALE_MS） */
 let dragRenewTimer = null
-let dragX = 0
-let dragY = 0
 let bubbleTimer = null
 let latestSessionId = undefined
 /** 用量视图：插件在状态帧里带（见 reducer 的 primaryTokens），右键时交给菜单小窗显示 */
@@ -57,7 +55,7 @@ let tokensView = null
  * - bubble=false：不显示气泡提示（下一项接）。
  * 默认全开（和 settings.js 的 DEFAULT_SETTINGS 一致）；主进程启动时会补发一次。
  */
-let behavior = { clickInteraction: true, bubble: true }
+let behavior = { clickInteraction: true, bubble: true, blush: true }
 
 // Live2D 是否成功接管。失败时保持 false → 用占位图 + 占位图的 alpha 掩码（验收项 A10 降级）
 let live2dActive = false
@@ -265,11 +263,13 @@ window.addEventListener(
       if (Math.abs(event.screenX - pressX) > CLICK_SLOP_PX || Math.abs(event.screenY - pressY) > CLICK_SLOP_PX) {
         movedFar = true
       }
-      const dx = event.screenX - dragX
-      const dy = event.screenY - dragY
-      dragX = event.screenX
-      dragY = event.screenY
-      if (dx !== 0 || dy !== 0) api.moveBy(dx, dy)
+      // ⚠️ 这里**刻意不自己算位移**（2026-11-22）：
+      //    原来用 event.screenX/screenY 求增量再交给主进程 setPosition，
+      //    在混合 DPI（笔记本内屏 + 外接屏缩放不同）下外接屏上会"不跟手"
+      //    —— 两个量不在同一坐标系，增量会累积成漂移。
+      //    现在位移完全由主进程用 DIP 的 getCursorScreenPoint + setPosition 绝对定位驱动；
+      //    这里只发一个"鼠标动了"的信号，让主进程借事件频率立刻更新（别被 16ms 轮询节流）。
+      api.dragTick?.()
       return
     }
     updateCursor(shouldBeInteractive(event.clientX, event.clientY))
@@ -305,8 +305,6 @@ window.addEventListener('mousedown', (event) => {
       api.setDragging(true)
     }, 2000)
   }
-  dragX = event.screenX
-  dragY = event.screenY
   pressX = event.screenX
   pressY = event.screenY
   // 诊断：拖拽链路很短但容易在某一步静默断掉（实测"松手无动作"就是这样），
@@ -469,20 +467,76 @@ function setState(state) {
  *    现在单击只做**分区互动**（点秋千 = 弹一下），没有"清未读"这层副作用 ✓
  */
 
-function showBubble(text) {
+/**
+ * 气泡正文：一行一个 `.bline`（工作时的气泡每行前面还有一支羽毛笔，见下面的 showActivityBubble）。
+ * 用 DOM 一行行搭，不用 innerHTML —— 文案之后可能来自别处，别把标签注入当默认。
+ */
+function setBubbleRows(text, { quill = false } = {}) {
+  const rows = String(text)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+  bubbleText.replaceChildren()
+  for (const line of rows) {
+    const row = document.createElement('div')
+    row.className = 'bline'
+    if (quill) {
+      const mark = document.createElement('span')
+      mark.className = 'bq'
+      // 「笔 + 笔迹」循环动画的 DOM 结构（纯 SVG/CSS，模板在 bubble-lines.js 里）。
+      // 拿到模板就插进去；拿不到（模块没加载）就退化成空的 .bq（气泡只剩文字，不会崩）。
+      const quillRow = window.XL_BUBBLE_LINES?.QUILL_ROW_HTML
+      if (typeof quillRow === 'string' && quillRow !== '') mark.innerHTML = quillRow // 静态常量，无用户输入
+      row.append(mark)
+    }
+    const span = document.createElement('span')
+    span.className = 'bt'
+    span.textContent = line
+    row.append(span)
+    bubbleText.append(row)
+  }
+}
+
+function showBubble(text, options = {}) {
   if (typeof text !== 'string' || text.trim() === '') return
   // 行为开关：气泡提示关掉后不弹（设置窗「行为 · 气泡提示」）
   if (behavior.bubble === false) {
     api.log(`[气泡] 已关闭 → 不显示：「${text.slice(0, 30)}」`)
     return
   }
-  bubbleText.textContent = text
+  setBubbleRows(text, options)
   bubble.hidden = false
   clearTimeout(bubbleTimer)
   bubbleTimer = setTimeout(() => {
     bubble.hidden = true
   }, 6000)
   api.log(`[气泡] 显示：${text.slice(0, 30)}`)
+}
+
+/**
+ * 「工作时」的气泡：用 `bubble-lines.js` 里那 6 句（用户 2026-11-08 给的文本）轮换，
+ * 每句前面加一支倾斜的羽毛笔。
+ *
+ * ⚠️ 轮换有**最小间隔**：活动帧（activity）可能连着来，没有节流就会在一秒内把 6 句刷完，
+ *    看起来像闪屏。间隔内重复显示当前这句（顺便把自动隐藏的计时器续上）。
+ * ⚠️ 模块没加载出来（理论上不会）就退回插件给的原文 —— 宁可少个图标，也别把状态说没了。
+ */
+let bubbleLineIndex = -1
+let bubbleLineAt = 0
+const BUBBLE_LINE_MIN_MS = 1200
+
+function showActivityBubble(originalText) {
+  const lines = window.XL_BUBBLE_LINES
+  if (lines === undefined || lines === null) {
+    showBubble(originalText)
+    return
+  }
+  const now = Date.now()
+  if (now - bubbleLineAt >= BUBBLE_LINE_MIN_MS) {
+    bubbleLineIndex = lines.nextBubbleLine(bubbleLineIndex).index
+    bubbleLineAt = now
+  }
+  showBubble(lines.BUBBLE_LINES[bubbleLineIndex] ?? originalText, { quill: true })
 }
 
 // ── A7 主动提醒（通知条）已**整体删除** ─────────────────────────────
@@ -525,8 +579,9 @@ api.onFrame((frame) => {
     // approval / approval-resolved 帧由**主进程**处理（handleApprovalFrame → 审批专用小窗），
     // 本窗口刻意不显示任何审批 UI：她头顶只有 ~87px 留白，放不下，必然遮住她。
     case 'activity':
-      // 活动摘要（"执行了命令""已完成分析"…）—— 气泡现在只显示这个，不显示 AI 正文
-      showBubble(frame.text)
+      // 活动摘要原本是「执行了命令」这类；按用户要求换成 6 句轮换文案 + 羽毛笔，
+      // 原文不再上屏（仍在插件侧、日志里可查）。实现见 showActivityBubble()。
+      showActivityBubble(frame.text)
       break
     case 'stream':
       // 老的逐字流：插件默认已不再推（bubbleMode: 'activity'），保留分支以防切回
@@ -772,6 +827,8 @@ async function startLive2D() {
     api.log(`Live2D 初始化失败：${error.message} → 回退占位形象`)
     live2dActive = false
   }
+  // 行为开关可能在 live2d 初始化之前就到了 → 这里补一次"腮红"设置（其余开关是渲染端自己用的）
+  if (live2dActive) live2d?.setBlushEnabled?.(behavior.blush !== false)
 
   // 主进程改完窗口尺寸（「大小」设置）会发 pet:relayout —— 直接重排，比等 resize 可靠
   api.onRelayout?.(() => {
@@ -801,8 +858,13 @@ async function startLive2D() {
 
   // 行为开关（阶段 4）：点击互动关掉后，左键点她**不演效果**，但拖拽和右键面板照常
   api.onBehavior?.((value) => {
+    const blushChanged = value?.blush !== undefined && value.blush !== behavior.blush
     behavior = { ...behavior, ...value }
-    api.log(`行为开关已更新：点击互动 ${behavior.clickInteraction ? '开' : '关'}，气泡 ${behavior.bubble ? '开' : '关'}`)
+    // 腮红开关在渲染端生效：live2d 里同时管"自绘腮红"和"藏模型腮红"
+    if (blushChanged) live2d?.setBlushEnabled?.(behavior.blush !== false)
+    api.log(
+      `行为开关已更新：点击互动 ${behavior.clickInteraction ? '开' : '关'}，气泡 ${behavior.bubble ? '开' : '关'}，腮红 ${behavior.blush ? '开' : '关'}`,
+    )
   })
 
   // 兜底：无论成功失败，8 秒内一定要放行窗口显示，

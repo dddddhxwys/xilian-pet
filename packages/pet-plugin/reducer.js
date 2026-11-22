@@ -488,7 +488,13 @@ export function reducePetEvent(state, ev, now = 0) {
     return commit(state, { ...prev, tokenLast: undefined }, ev.sessionId, now)
   }
 
-  const target = EVENT_STATE[ev.kind]
+  // 2026-11-13：`ask_user_question` 这一步 = **她在向你提问** → 用 question 档
+  // （托腮 + 叉腰 + 问号）。
+  // ⚠️ 原来 question 档在 STATES/STATE_PRIORITY 里存在，但**没有任何事件会切到它**（死档），
+  //    实机表现：问用户问题时状态一直是 running，姿势永远不变（用户实测报的）。
+  const isAsking =
+    ev.kind === 'tool/call' && String(ev.data?.name ?? '').toLowerCase() === 'ask_user_question'
+  const target = isAsking ? 'question' : EVENT_STATE[ev.kind]
   if (target === undefined) return { state, frames: [] }
 
   const prev = sessionOf(state, ev.sessionId, now)

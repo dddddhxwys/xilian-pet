@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto'
 import { execFileSync, execSync } from 'node:child_process'
 import http from 'node:http'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'node:fs'
-import { contentBand, draggingExpired, hitTest } from './hit-test.js'
+import { contentBand, dragTarget, draggingExpired, grabOffset, hitTest } from './hit-test.js'
 import { createSseLink } from './sse-link.js'
 import { DEFAULT_DSH_URL, parseListeningPorts, probePetHealth, resolveDshUrl } from './dsh-discovery.js'
 import {
@@ -142,11 +142,13 @@ function sendMirror(win, reason) {
  */
 function sendBehavior(win, reason) {
   if (!win || win.isDestroyed()) return
-  const { clickInteraction, bubble } = settings.behavior
+  const { clickInteraction, bubble, blush } = settings.behavior
   if (!win.webContents.isDestroyed()) {
-    win.webContents.send('pet:behavior', { clickInteraction, bubble })
+    win.webContents.send('pet:behavior', { clickInteraction, bubble, blush })
   }
-  log(`行为开关：点击互动 ${clickInteraction ? '开' : '关'}，气泡 ${bubble ? '开' : '关'}（${reason}）`)
+  log(
+    `行为开关：点击互动 ${clickInteraction ? '开' : '关'}，气泡 ${bubble ? '开' : '关'}，腮红 ${blush ? '开' : '关'}（${reason}）`,
+  )
 }
 
 /**
@@ -700,6 +702,70 @@ let uiRects = []
 /** 拖拽中必须一直保持可交互：否则鼠标快速移出角色时窗口会"甩掉"拖拽 */
 let draggingNow = false
 /**
+ * 拖拽时"光标相对窗口左上角"的偏移（DIP，按下那一刻记一次）。
+ *
+ * ⚠️ 为什么位移改由**主进程**按绝对坐标驱动（2026-11-22 修混合 DPI 拖动 bug）：
+ *    原来用渲染端 `mousemove` 的 `event.screenX/screenY` 求增量，再 `setPosition(x+dx, y+dy)`。
+ *    笔记本内屏（跟手）+ 外接屏（不跟手）实测说明：这两个量**不在同一坐标系** ——
+ *    混合 DPI 下 `screenX/screenY` 会按页面/当前屏的缩放折算，而 `setPosition` 吃的是 DIP，
+ *    比例不一致时增量会累积成漂移（越拖越偏）。
+ *    现在改成每 16ms 用 `screen.getCursorScreenPoint()`（DIP）算 "光标 - 抓取偏移" 的**绝对位置**，
+ *    再 `setPosition()`；这两个 API 同一套 DIP 坐标系，任何缩放比下都自洽。
+ */
+let dragGrab = null
+/**
+ * 上一次由拖拽写入的窗口位置（不让判定依赖 `getPosition()` 的往返一致性）。
+ * 有些混合 DPI 机器上 `setPosition()` 与 `getPosition()` 的取整/折算并不严格互逆，
+ * 每帧拿返回值比较会抖；用自己记的目标值最稳。
+ */
+let dragLastPos = null
+/** 拖拽诊断日志的节流时间戳（正常 1s 一行；PET_DRAG_DEBUG=1 时 250ms 一行） */
+let dragLogAt = 0
+
+/** 拖拽诊断：一行里同时给出光标、窗口、偏移和所在屏的缩放，能直接算出"跟手比例" */
+function logDragSample(win, cursor) {
+  const now = Date.now()
+  const every = process.env.PET_DRAG_DEBUG === '1' ? 250 : 1000
+  if (now - dragLogAt < every) return
+  dragLogAt = now
+  const b = win.getBounds()
+  let display = '?'
+  try {
+    const d = screen.getDisplayNearestPoint(cursor)
+    display = `${d.size.width}×${d.size.height}@${d.scaleFactor}`
+  } catch {
+    display = '(读取失败)'
+  }
+  log(
+    `[拖动] 光标(${cursor.x},${cursor.y}) 窗口(${b.x},${b.y} ${b.width}×${b.height}) ` +
+      `偏移(${cursor.x - b.x},${cursor.y - b.y}) 屏幕=${display}`,
+  )
+}
+
+/**
+ * 把窗口移到 "当前光标 - 抓取偏移" 的位置（拖拽驱动）。
+ *
+ * 两条路径共用它：
+ *  - 渲染端 mousemove → `pet:drag-tick`（借鼠标事件频率，最高 125Hz+）；
+ *  - 主进程 16ms 轮询兜底（鼠标事件丢了 / 渲染端卡住时也不会停下）。
+ *
+ * 目标位置与自己记的 `dragLastPos` 比较（**不读 getPosition()**）：
+ * 混合 DPI 下 setPosition/getPosition 的取整并不严格互逆，读回来比较会抖。
+ */
+function applyDragMove(win) {
+  if (!draggingNow || dragGrab === null) return
+  const cursor = screen.getCursorScreenPoint()
+  const target = dragTarget({ cursor, grab: dragGrab })
+  if (target === null) return
+  if (dragLastPos === null || target.x !== dragLastPos.x || target.y !== dragLastPos.y) {
+    win.setPosition(target.x, target.y)
+    dragLastPos = target
+    renewDrag() // 窗口真的在动 = 人还在拖，看门狗续期
+  }
+  logDragSample(win, cursor)
+}
+
+/**
  * 拖拽态的最后一次续期时间 + 看门狗阈值。
  *
  * ⚠️ 为什么需要看门狗：`draggingNow` 唯一的清零处是渲染端的 `mouseup`。
@@ -711,7 +777,7 @@ let draggingNow = false
  *    6s 只有 3 倍余量；定时器一旦被拖慢（节流/渲染端卡顿/GC 停顿）就会在
  *    **拖拽进行中**误判成"卡住"并把拖拽掐死 —— 用户报的
  *    "一开始能拖，后面突然拖不动了"正是这个症状。
- *    现在多了一条更可靠的续期：拖拽中的每一次 `pet:move-by` 都续期
+ *    现在多了一条更可靠的续期：拖拽驱动本身（`drag-tick` / 每 16ms 轮询）每次真的移动窗口都续期
  *    （鼠标在动就说明人还在拖，不依赖任何定时器）✓
  */
 let draggingLastAt = 0
@@ -763,6 +829,8 @@ function renewDrag() {
 function cancelDrag(win, reason) {
   if (!draggingNow) return false
   draggingNow = false
+  dragGrab = null
+  dragLastPos = null
   if (win && !win.isDestroyed()) win.webContents.send('pet:drag-cancel', reason)
   return true
 }
@@ -789,7 +857,14 @@ function startHitTestLoop(win) {
       log(`⚠️ 拖拽态卡住 ${silent}s 没有续期（松手丢了 / 渲染端卡了）→ 强制复位，否则窗口会一直吞掉点击`)
       cancelDrag(win, 'stale')
     }
-    if (draggingNow || maskUnusable) {
+    if (draggingNow) {
+      applyIgnore(win, false)
+      // 位移在这里驱动（绝对定位，见 dragGrab 注释）。
+      // 渲染端只负责"按下/松手"和点击判定，不再送增量。
+      applyDragMove(win)
+      return
+    }
+    if (maskUnusable) {
       applyIgnore(win, false)
       return
     }
@@ -1459,7 +1534,8 @@ app.whenReady().then(async () => {
     // 行为开关（阶段 4）：点击互动 / 气泡 —— 不需要重启，立刻推给渲染端
     if (
       settings.behavior.clickInteraction !== before.behavior.clickInteraction ||
-      settings.behavior.bubble !== before.behavior.bubble
+      settings.behavior.bubble !== before.behavior.bubble ||
+      settings.behavior.blush !== before.behavior.blush
     ) {
       sendBehavior(win, '设置已改')
     }
@@ -1543,7 +1619,36 @@ app.whenReady().then(async () => {
     }
   })
   ipcMain.on('pet:dragging', (_event, value) => {
-    draggingNow = Boolean(value)
+    const on = Boolean(value)
+    if (on && !draggingNow) {
+      // 按下瞬间记一次"抓取偏移"：光标用主进程的 DIP 坐标，窗口用 bounds（同一套坐标系）。
+      // 之后每帧按"光标 - 偏移"绝对定位，混合 DPI 下也不会漂。
+      const cursor = screen.getCursorScreenPoint()
+      const bounds = win.getBounds()
+      dragGrab = grabOffset({ cursor, bounds })
+      dragLastPos = { x: bounds.x, y: bounds.y }
+      dragLogAt = 0
+      let display = '?'
+      try {
+        const d = screen.getDisplayNearestPoint(cursor)
+        display = `${d.size.width}×${d.size.height}@${d.scaleFactor}`
+      } catch {
+        display = '(读取失败)'
+      }
+      log(
+        `[拖动] 开始 光标(${cursor.x},${cursor.y}) 窗口(${bounds.x},${bounds.y} ${bounds.width}×${bounds.height}) ` +
+          `偏移(${dragGrab?.dx},${dragGrab?.dy}) 屏幕=${display}`,
+      )
+      // 桌宠一动，菜单就不该留在原地（原来这条路在渲染端的 moveBy 里，现在挪到这里）
+      closeMenuWindow()
+    } else if (!on) {
+      if (draggingNow) {
+        const b = win.getBounds()
+        log(`[拖动] 结束 窗口(${b.x},${b.y})`)
+      }
+      dragGrab = null
+    }
+    draggingNow = on
     // 续期时间戳：看门狗据此判断拖拽态是不是"卡住了"
     if (draggingNow) renewDrag()
   })
@@ -1590,14 +1695,18 @@ app.whenReady().then(async () => {
       }, 1500)
     }
   })
-  ipcMain.on('pet:move-by', (_event, dx, dy) => {
+  // 渲染端 mousemove → 立刻跟一下（借鼠标事件频率，最高 125Hz+；16ms 轮询只是兜底）。
+  // 位置仍由主进程自己读光标算，**不信任渲染端坐标**（混合 DPI 下它不可靠）。
+  ipcMain.on('pet:drag-tick', () => {
     if (win.isDestroyed()) return
-    // ⚠️ 鼠标真的在动 —— 这是"人还在拖"最可靠的证据，不依赖任何定时器，必须续期。
-    //    少这一条，拖拽就只能靠渲染端的 2s 定时器续命，定时器一被拖慢就会被看门狗掐死。
+    applyDragMove(win)
+  })
+  ipcMain.on('pet:move-by', (_event, _dx, _dy) => {
+    if (win.isDestroyed()) return
+    // 2026-11-22：**位移已改由主进程驱动**（每 16ms 按抓取偏移绝对定位，见 dragGrab 注释）。
+    // 这里不再 setPosition —— 保留这个通道只为兼容旧渲染端；真按增量再移一次 = 双倍速度。
     if (draggingNow) renewDrag()
     closeMenuWindow() // 桌宠一动，菜单就不该留在原地
-    const [x, y] = win.getPosition()
-    win.setPosition(x + dx, y + dy)
   })
   ipcMain.handle('pet:control', (_event, action, payload) => postControl(action, payload))
 

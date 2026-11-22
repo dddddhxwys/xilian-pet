@@ -124,7 +124,9 @@ import {
   PART_NAMES,
   PART_ZONES,
   contentBand,
+  dragTarget,
   draggingExpired,
+  grabOffset,
   hitTest,
   insideAnyRect,
   pickPartAt,
@@ -196,6 +198,7 @@ import {
   BASE_MOTION,
   EYE_CLOSED_OPEN,
   FLICK_PRESETS,
+  HANDS_DOWN,
   HEAD_PAT,
   INTRO_MOTION,
   STATE_MAP,
@@ -227,6 +230,8 @@ import {
   peakStatus,
 } from '../packages/pet-shell/renderer/peak-time.js'
 import { HOLIDAYS } from '../packages/pet-shell/renderer/holidays.js'
+import { dizzyLayout, shouldToggleDizzy, spiralPath } from '../packages/pet-shell/renderer/dizzy-math.js'
+import { BUBBLE_LINES, QUILL_ROW_HTML, nextBubbleLine } from '../packages/pet-shell/renderer/bubble-lines.js'
 import { ICON_FILE, isAsciiPath, LINK_NAME, planShortcut } from '../tools/lib/desktop-shortcut.mjs'
 import {
   TURN_END_STATE,
@@ -298,6 +303,18 @@ check('初始聚合为 idle', () => {
 check('turn/start → running', () => {
   const s = emit(createPetState(), 'turn/start', 's1', 0)
   assert.equal(aggregate(s), 'running')
+})
+
+check('ask_user_question 这一步 → question 档 【原来没有任何事件会切进 question，姿势永远不变】', () => {
+  const st = createPetState()
+  const asked = emit(st, 'tool/call', 's1', 0, { data: { name: 'ask_user_question' } })
+  assert.equal(aggregate(asked), 'question', '提问工具调用要切到 question 档（托腮+叉腰+问号）')
+  // 别的工具仍然只是 running
+  const other = emit(st, 'tool/call', 's1', 0, { data: { name: 'pwsh' } })
+  assert.equal(aggregate(other), 'running', '普通工具调用不能切到 question')
+  // 用户答完（tool/result）回到 running
+  const answered = emit(asked, 'tool/result', 's1', 1000, { data: { name: 'ask_user_question' } })
+  assert.equal(aggregate(answered), 'running', '答完回到 running')
 })
 
 check('多会话取最高优先级：running + done → done', () => {
@@ -2037,7 +2054,9 @@ check('running：也在荡秋千，但手不抓绳、手放下巴 【用户 2026
   //    荡秋千时会冒出一只"思考的手"，加上抓绳两只 = 三只手
   //    （用户原话："现在这么还是三只手"）。所以**除 running 外的每个状态**
   //    都必须每帧把 Param9 压回 0。
-  for (const s of ['idle', 'done', 'approval', 'question', 'error']) {
+  // ⚠️ 例外：`question` 从 2026-11-12 起**故意**用 Param9=1（一手托腮一手叉腰），
+  //    它由下面专门的断言盯着；其余状态仍必须压 0。
+  for (const s of ['idle', 'done', 'approval', 'error']) {
     assert.equal(
       STATE_MAP[s].force?.Param9,
       0,
@@ -2045,7 +2064,24 @@ check('running：也在荡秋千，但手不抓绳、手放下巴 【用户 2026
     )
   }
   // 开场手势保留（用户确认）
-  assert.equal(INTRO_MOTION, 0)
+  assert.equal(INTRO_MOTION, 0, '开场动作用 Scene[0]（比嘘）')
+  // 2026-11-12 用户重排三个动作用途：开场=招牌(2) / 完成=比嘘(0) / 提问=叉腰(1)
+  assert.equal(STATE_MAP.done.motion, 2, '完成动作 = 招牌（Scene[2]）')
+  assert.equal(STATE_MAP.question.motion, 1, '提问动作 = 叉腰（Scene[1]）')
+  // 2026-11-12 用户："把任务完成时的眼部动作改成跟比嘘配套的那个"
+  // → 用 reset 让动作自带的眼部曲线（眨眼/坏笑）生效；不能再叠 happy（闭眼笑+星光会盖掉）
+  assert.equal(STATE_MAP.done.expression, 'reset', '完成动作 = 招牌（用动作自带的眼部曲线）')
+  // 2026-11-12 用户："试试一只手叉腰，一只手摸下巴" → 2026-11-16 用户："一手叉腰的效果一直没有实现过，
+  //   算了，不做这个" → 最终只保留托腮，叉腰参数一律压 0。
+  const q = STATE_MAP.question.force ?? {}
+  assert.equal(q.Param9, 1, '提问要用手放下巴（托腮）')
+  assert.equal(q.Param16, 0, '提问不画绳子')
+  // 2026-11-16 用户："把那个星星特效去了"
+  assert.equal(q.Param5, 0, '提问要关掉星星特效')
+  assert.equal(q.Param7, 0, '提问要关掉闪耀特效')
+  for (const id of ['Param10', 'Param11', 'Param12', 'Param13', 'Param14', 'Param17', 'Param18']) {
+    assert.equal(q[id], 0, `提问要把组5的 ${id} 压 0（否则会多出一只手/多余道具）`)
+  }
 })
 
 check('切状态时 Param9「思考」必须被撤掉 【否则干完活还一脸思考】', () => {
@@ -2219,6 +2255,50 @@ check('每一档的启动文案都能安全生成 【settle 的 move 是 null，
 
 // ─────────────────────────────────────────────────────────────
 console.log('\n[5] 命中测试（外壳纯函数，不需要 Electron）')
+
+check('拖拽位移：按"光标 - 抓取偏移"绝对定位 【混合 DPI 下外接屏"不跟手"的根因】', () => {
+  // 2026-11-22 用户报："笔记本屏幕上拖动跟手，外接显示器上不跟手"。
+  // 根因：位移原来用渲染端 mousemove 的 screenX/screenY 增量 → 和 setPosition 的 DIP
+  // 不在同一坐标系（混合缩放时按当前屏折算），增量累积成漂移。
+  // 现在主进程用 getCursorScreenPoint（DIP）+ setPosition（DIP）绝对定位：
+  // 抓取偏移在按下时记一次，之后 target = cursor - grab 恒成立 → 任何缩放比都不漂。
+
+  // ① 抓取偏移
+  assert.deepEqual(
+    grabOffset({ cursor: { x: 100, y: 200 }, bounds: { x: 40, y: 120, width: 260, height: 300 } }),
+    { dx: 60, dy: 80 },
+    '偏移 = 光标 - 窗口左上角',
+  )
+
+  // ② 目标位置
+  assert.deepEqual(
+    dragTarget({ cursor: { x: 300, y: 400 }, grab: { dx: 60, dy: 80 } }),
+    { x: 240, y: 320 },
+    '目标 = 光标 - 偏移',
+  )
+
+  // ③ 不变式：拖拽过程中"窗口与光标的相对位置"必须**恒等于**抓取偏移（这是"跟手"的定义）。
+  //    取多组光标位置循环验证，任何一组不成立都说明公式里混进了随缩放变化的量。
+  const grab = grabOffset({ cursor: { x: 517, y: 388 }, bounds: { x: 300, y: 200, width: 260, height: 300 } })
+  for (const cursor of [{ x: 517, y: 388 }, { x: 1400, y: 900 }, { x: -200, y: 50 }, { x: 3000, y: 1600 }]) {
+    const t = dragTarget({ cursor, grab })
+    assert.equal(cursor.x - t.x, grab.dx, `x 跟随必须严格等于抓取偏移（cursor.x=${cursor.x}）`)
+    assert.equal(cursor.y - t.y, grab.dy, `y 跟随必须严格等于抓取偏移（cursor.y=${cursor.y}）`)
+  }
+
+  // ④ 取整：setPosition 用整数，半像素不该被截断成偏移
+  assert.deepEqual(dragTarget({ cursor: { x: 300.6, y: 400.4 }, grab: { dx: 60, dy: 80 } }), { x: 241, y: 320 }, '四舍五入到整数')
+
+  // ⑤ 非法输入返回 null（别让 NaN 写进 setPosition）
+  assert.equal(grabOffset({ cursor: null, bounds: { x: 0, y: 0 } }), null, '缺光标 → null')
+  assert.equal(grabOffset({ cursor: { x: 1, y: 2 }, bounds: null }), null, '缺 bounds → null')
+  assert.equal(dragTarget({ cursor: { x: 1, y: 2 }, grab: null }), null, '缺偏移 → null')
+  assert.equal(dragTarget({ cursor: { x: Number.NaN, y: 2 }, grab: { dx: 0, dy: 0 } }), null, 'NaN 光标 → null')
+
+  // ⑥ 接线：渲染端**不许**再自己 send 增量（否则和主进程绝对定位叠加成双倍位移）
+  const petJs = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+  assert.equal(/api\.moveBy\s*\(/.test(petJs), false, '渲染端不能再调用 api.moveBy(（位移改由主进程驱动）')
+})
 
 check('部件级命中测试：坐标换算 / renderOrder z 序 / 分区归属 【点脸=墨镜 / 点头顶=惊喜 / 点秋千=弹一下】', () => {
   // 用户："点脸：墨镜。点头顶：惊喜"
@@ -4389,7 +4469,7 @@ check('默认设置：三组字段齐全，范围常量符合用户确认值', (
   const d = defaultSettings()
   assert.equal(d.version, SETTINGS_VERSION)
   assert.deepEqual(Object.keys(d.appearance), ['scale', 'opacity', 'mirror', 'autoFace'])
-  assert.deepEqual(Object.keys(d.behavior), ['clickInteraction', 'bubble', 'approvalViaPet'])
+  assert.deepEqual(Object.keys(d.behavior), ['clickInteraction', 'bubble', 'approvalViaPet', 'blush'])
   assert.equal(d.appearance.scale, 1, '大小默认 1.0')
   assert.equal(d.appearance.opacity, 1, '不透明度默认 100%')
   assert.equal(d.appearance.mirror, false, '镜像默认关')
@@ -4397,6 +4477,7 @@ check('默认设置：三组字段齐全，范围常量符合用户确认值', (
   assert.equal(d.behavior.clickInteraction, true)
   assert.equal(d.behavior.bubble, true)
   assert.equal(d.behavior.approvalViaPet, true)
+  assert.equal(d.behavior.blush, true, '腮红默认开')
   // 范围是用户 2026-10-12 确认的，锁住防漂
   assert.equal(SCALE_MIN, 0.6)
   assert.equal(SCALE_MAX, 1.6)
@@ -5095,7 +5176,10 @@ check('点击互动开关：主进程推送 + 渲染端守卫 + 拖拽不受影�
   assert.ok(/onBehavior:/.test(preload), 'preload 必须暴露 onBehavior')
   assert.ok(/'pet:behavior'/.test(preload), '通道名要和主进程一致')
   const pet = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
-  assert.ok(/let behavior = \{ clickInteraction: true, bubble: true \}/.test(pet), '渲染端要有默认全开的状态')
+  assert.ok(
+    /let behavior = \{ clickInteraction: true, bubble: true, blush: true \}/.test(pet),
+    '渲染端要有默认全开的状态（点击互动 / 气泡 / 腮红）',
+  )
   assert.ok(/api\.onBehavior\?\./.test(pet), '渲染端要订阅行为开关')
   assert.ok(/behavior\.clickInteraction === false/.test(pet), '点击互动关闭时必须跳过分区效果')
   // 拖拽必须先处理：关掉"点击互动"不能把"拖得动"也关掉（用户明确要求）
@@ -5122,7 +5206,8 @@ check('设置窗「行为」一节：控件存在 / 按 behavior 分组写盘 / 
 check('气泡开关：渲染端守卫 + 调试注入通道 + 设置窗回填', () => {
   const pet = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
   // showBubble 必须在**显示之前**守卫（关掉后连 DOM 都不该动）
-  const fn = pet.match(/function showBubble\(text\) \{[\s\S]*?\n\}/)?.[0] ?? ''
+  // 2026-11-08：签名变成 showBubble(text, options)，这里放宽到任意参数
+  const fn = pet.match(/function showBubble\(text[^)]*\) \{[\s\S]*?\n\}/)?.[0] ?? ''
   assert.ok(fn.length > 0, '应能定位 showBubble()')
   const guardIdx = fn.indexOf('behavior.bubble === false')
   const showIdx = fn.indexOf('bubble.hidden = false')
@@ -5527,6 +5612,308 @@ check('快捷方式：安装器真的会建它，发行包必需清单三项齐�
     assert.ok(list.includes(rel), `发行包必需清单缺 ${rel}`)
   }
   assert.equal(list.some((rel) => rel.startsWith('.cache/')), false, '必需清单不该引用 .cache（那里不会进包）')
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[24] 工作时气泡：6 句轮换 + 羽毛笔（内容来自用户 2026-11-08 给的 文本.txt）')
+
+check('气泡文案：6 句逐行照抄，轮换不重复、第 7 次回到第一句', () => {
+  // 用户原文件（Desktop\文本.txt，UTF-8，157 B）逐行照抄，一字未改 —— 改文案先改这里
+  assert.deepEqual(BUBBLE_LINES, [
+    '少女思考中...',
+    '正在调用工具...',
+    '迷迷迷...迷迷！',
+    '正在你的电脑中下载崩坏星穹铁道...',
+    '正在构思新故事...',
+    '正在落笔...',
+  ])
+  const seen = []
+  let index = -1
+  for (let i = 0; i < BUBBLE_LINES.length; i += 1) {
+    const step = nextBubbleLine(index)
+    assert.equal(step.index, i)
+    index = step.index
+    seen.push(step.text)
+  }
+  assert.deepEqual(seen, BUBBLE_LINES, '轮换一轮应恰好覆盖全部 6 句且不重复')
+  assert.equal(nextBubbleLine(index).index, 0, '第 7 次要回到第一句（循环）')
+  assert.equal(nextBubbleLine(-1).index, 0, '第一句从 -1 开始')
+  assert.equal(nextBubbleLine(NaN).index, 0, '非法下标当第一句处理')
+})
+
+check('气泡羽毛笔素材：96px、白底已转透明、线条是主题粉', () => {
+  const bytes = readFileSync(new URL('../packages/pet-shell/renderer/assets/bubble-quill.png', import.meta.url))
+  assert.ok(bytes.length > 2000, `素材太小（${bytes.length} B），像占位图`)
+  const px = decodePngRgba(bytes)
+  assert.ok(px, '必须是 8-bit RGBA PNG（解码失败）')
+  assert.equal(px.width, 96)
+  assert.equal(px.height, 96)
+  const total = px.width * px.height
+  let transparent = 0
+  let ink = 0
+  let pink = 0
+  for (let i = 0; i < px.data.length; i += 4) {
+    const r = px.data[i]
+    const g = px.data[i + 1]
+    const b = px.data[i + 2]
+    const a = px.data[i + 3]
+    if (a < 8) transparent += 1 // 生成图白底带纸纹噪声，alpha 1~6 也算透明
+    if (a > 60) {
+      ink += 1
+      if (r > 170 && r - g > 25 && r > b - 20) pink += 1
+    }
+  }
+  assert.ok(transparent / total > 0.5, `白底应已转透明（透明像素只有 ${(transparent / total * 100).toFixed(1)}%）`)
+  assert.ok(ink / total > 0.02, `线条像素太少（${(ink / total * 100).toFixed(1)}%），可能只留了点边`)
+  assert.ok(ink / total < 0.45, `线条像素太多（${(ink / total * 100).toFixed(1)}%），像没抠干净的实心图`)
+  assert.ok(pink / ink > 0.8, `线条应偏主题粉 #e889a6（符合率只有 ${(pink / ink * 100).toFixed(1)}%）`)
+})
+
+check('气泡接线：模块挂全局、pet.js 画行+限流、CSS 用素材、发行包清单带上', () => {
+  const renderer = new URL('../packages/pet-shell/renderer/', import.meta.url)
+  const html = readFileSync(new URL('index.html', renderer), 'utf8')
+  const pet = readFileSync(new URL('pet.js', renderer), 'utf8')
+  const css = readFileSync(new URL('pet.css', renderer), 'utf8')
+
+  assert.ok(/<script type="module" src="bubble-lines\.js"><\/script>/.test(html), 'index.html 要用模块方式引入 bubble-lines.js')
+  assert.ok(pet.includes('window.XL_BUBBLE_LINES'), 'pet.js 要读模块挂的全局（普通脚本不能 import）')
+  assert.ok(pet.includes('showActivityBubble('), 'activity 帧要走新文案')
+  assert.ok(pet.includes('BUBBLE_LINE_MIN_MS'), '轮换要有最小间隔（活动帧连发时会闪屏）')
+  assert.ok(pet.includes("className = 'bq'"), '气泡行要插羽毛笔占位元素')
+  assert.ok(css.includes('url(assets/bubble-quill.png)'), 'pet.css 要用羽毛笔素材')
+  assert.ok(/width:\s*max-content/.test(css), '气泡要 width:max-content，否则长句在半屏处硬折行')
+  const list = requiredInRelease({})
+  for (const rel of [
+    'packages/pet-shell/renderer/bubble-lines.js',
+    'packages/pet-shell/renderer/assets/bubble-quill.png',
+  ]) {
+    assert.ok(list.includes(rel), `发行包必需清单缺 ${rel}`)
+  }
+})
+
+check('气泡笔迹动画：JS 模板的 path 必须和 CSS 的 motion path 完全一致', () => {
+  // 笔的位置由 CSS offset-path 决定、墨迹由 SVG path 决定 —— 两条 path 一旦不一致，
+  // 就会出现"笔在别处、墨迹在另一处"的脱节（这正是要静态锁住的地方）。
+  const css = readFileSync(new URL('../packages/pet-shell/renderer/pet.css', import.meta.url), 'utf8')
+  const norm = (s) => s.replace(/\s+/g, '')
+  const jsPath = QUILL_ROW_HTML.match(/<path d="([^"]+)"/)?.[1]
+  assert.ok(jsPath, 'QUILL_ROW_HTML 里要有 <path d="...">（墨迹）')
+  const cssPath = css.match(/offset-path:\s*path\("([^"]+)"\)/)?.[1]
+  assert.ok(cssPath, 'pet.css 里要用 offset-path: path("...") 让笔沿曲线走')
+  assert.equal(norm(cssPath), norm(jsPath), 'CSS motion path 与模板里的 d 必须一致（否则笔和墨迹脱节）')
+
+  assert.ok(QUILL_ROW_HTML.includes('pathLength="100"'), 'path 要用 pathLength=100 归一化，dashoffset 才能按 100 算')
+  assert.ok(/stroke-dasharray:\s*100/.test(css) && /stroke-dashoffset:\s*100/.test(css), '墨迹要用 dasharray/dashoffset=100 做"不断浮现"')
+  for (const name of ['bqInk', 'bqPen']) assert.ok(css.includes(`@keyframes ${name}`), `缺 @keyframes ${name}`)
+  assert.ok(/animation:\s*bqInk\s+[\d.]+s\s+linear\s+infinite/.test(css), '墨迹动画要 linear + infinite（循环）')
+  assert.ok(/animation:\s*bqPen\s+[\d.]+s\s+linear\s+infinite/.test(css), '笔的动画要 linear + infinite（循环）')
+  assert.ok(/offset-anchor:\s*\d+%\s*\d+%/.test(css), '要用 offset-anchor 对准笔尖（否则沿曲线动的是笔的中心）')
+  assert.ok(/prefers-reduced-motion:\s*reduce/.test(css), '要照顾"减少动态效果"：给静态回退')
+})
+
+check('气泡笔迹动画：pet.js 真把模板插进气泡行首（拿不到模板也不会崩）', () => {
+  const pet = readFileSync(new URL('../packages/pet-shell/renderer/pet.js', import.meta.url), 'utf8')
+  assert.ok(pet.includes('QUILL_ROW_HTML'), 'pet.js 要读 QUILL_ROW_HTML')
+  assert.ok(/mark\.innerHTML\s*=\s*quillRow/.test(pet), '要把模板插进 .bq（模板是静态常量，不含用户输入）')
+  assert.ok(/if \(typeof quillRow === 'string'/.test(pet), '模板缺失时要有兜底（不能因为模块没加载就抛错）')
+  const lines = readFileSync(new URL('../packages/pet-shell/renderer/bubble-lines.js', import.meta.url), 'utf8')
+  assert.ok(
+    lines.includes('window.XL_BUBBLE_LINES = { BUBBLE_LINES, nextBubbleLine, QUILL_ROW_HTML }'),
+    '全局要带上 QUILL_ROW_HTML（pet.js 是普通脚本，只能走 window）',
+  )
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[25] 审批时的蚊香眼（圈圈眼 / ぐるぐる目）')
+
+check('审批姿态：只出蚊香眼 —— 不播惊喜/星星，双手放下、不抓绳、不想事情', () => {
+  const approval = STATE_MAP.approval
+  assert.ok(approval, 'STATE_MAP 里要有 approval')
+  // 2026-11-09 用户："触发审批的时候触发这个蚊香眼表情，并且只触发这个蚊香眼表情"
+  assert.equal(approval.expression, 'reset', '不许再播 surprise（那会带惊喜脸 + 星光）')
+  assert.equal(approval.motion, BASE_MOTION, '动作回到基础荡秋千（手放下也不会去抓绳）')
+  assert.equal(approval.dizzy, true, '要标 dizzy:true，渲染端据此叠蚊香眼')
+  assert.equal(approval.once, undefined, '不是一次性动作：等她确认期间要一直晕着')
+  assert.equal(approval.keepEffect, undefined, '不要 keepEffect（那是"星星一直亮"的开关）')
+  assert.deepEqual(approval.force, HANDS_DOWN, 'force 必须等于 HANDS_DOWN')
+  // "取消思考的动作，双手也放下，不放秋千绳上"
+  for (const id of ['Param9', 'Param16', 'Param10', 'Param11', 'Param12', 'Param13', 'Param14', 'Param17', 'Param18']) {
+    assert.equal(approval.force[id], 0, `${id} 要压 0（不思考 / 不画绳子 / 不抓绳 / 不叉腰 / 不指 / 不比招牌）`)
+  }
+})
+
+check('蚊香螺旋：阿基米德螺旋从中心盘到边缘（半径单调、不出画布）', () => {
+  const d = spiralPath()
+  assert.ok(d.startsWith('M'), 'path 必须以 M 开头')
+  const pts = d
+    .slice(1)
+    .split(' L')
+    .map((pair) => pair.split(' ').map(Number))
+  assert.ok(pts.length >= 90, `点数太少（${pts.length}），螺旋会像折线`)
+  const radii = pts.map(([x, y]) => Math.hypot(x - 20, y - 20))
+  for (let i = 1; i < radii.length; i += 1) {
+    assert.ok(radii[i] >= radii[i - 1] - 1e-6, `第 ${i} 点半径回缩了（不是向外盘的蚊香）`)
+  }
+  assert.ok(radii[0] < 3, `起点应靠近中心（r=${radii[0].toFixed(2)}）`)
+  const last = radii[radii.length - 1]
+  assert.ok(last > 15 && last < 18, `终点应到边缘（r=${last.toFixed(2)}）`)
+  for (const [x, y] of pts) assert.ok(x >= 0 && x <= 40 && y >= 0 && y <= 40, '螺旋不能画出 40×40 画布')
+})
+
+check('螺旋眼布局：尺寸取两眼较小值（防一大一小）、位置各跟各的眼睛', () => {
+  const face = { cx: 0, cy: 0 }
+  // 两眼包围盒故意不一样 + 高度不同（歪头时的真实情况）
+  const layout = dizzyLayout({
+    face,
+    eyes: [
+      { cx: -30, cy: -10, w: 50, h: 30 },
+      { cx: 32, cy: -4, w: 46, h: 28 },
+    ],
+  })
+  assert.ok(layout, '正常眼睛要有布局')
+  assert.ok(Math.abs(layout.size.w - 46 * 1.22) < 1e-9, `宽应取两眼较小值×1.22：${layout.size.w}`)
+  assert.ok(Math.abs(layout.size.h - 28 * 1.22) < 1e-9, `高应取两眼较小值×1.22：${layout.size.h}`)
+  // 2026-11-09 实机反馈"一只眼睛跟随不好"：位置必须各用各的包围盒中心，不能强行同高
+  assert.deepEqual(layout.positions, [
+    { x: -30, y: -10 },
+    { x: 32, y: -4 },
+  ])
+
+  // 只量到一只眼 → 用脸中心镜像补另一只（兜底）
+  const one = dizzyLayout({ face, eyes: [{ cx: -28, cy: -9, w: 48, h: 28 }] })
+  assert.deepEqual(one.positions, [
+    { x: -28, y: -9 },
+    { x: 28, y: -9 },
+  ])
+
+  // 退化输入不能抛错
+  assert.equal(dizzyLayout({ eyes: [] }), null, '没有眼睛 → 不布局')
+  assert.equal(dizzyLayout({ eyes: [{ cx: NaN, cy: 0, w: 10, h: 10 }] }), null, 'NaN → 不布局')
+  const tiny = dizzyLayout({ eyes: [{ cx: 0, cy: 0, w: 2, h: 2 }] })
+  assert.ok(tiny.size.w >= 6 - 1e-9 && tiny.size.h >= 3.6 - 1e-9, `小眼也要有下限：${JSON.stringify(tiny.size)}`)
+
+  // 显示开关（写反过：进入审批反而永远不显示 → 纯函数锁住）
+  assert.equal(shouldToggleDizzy(true, false), false, '本来就隐藏、目标也是隐藏 → 不动')
+  assert.equal(shouldToggleDizzy(true, true), true, '隐藏 → 要显示：必须切')
+  assert.equal(shouldToggleDizzy(false, true), false, '已经显示 → 不动')
+  assert.equal(shouldToggleDizzy(false, false), true, '显示 → 要隐藏：必须切')
+})
+
+check('蚊香眼接线：图层 / 每帧跟随 / 藏眼睛 / 恢复 / 状态驱动 / 发行包清单', () => {
+  const renderer = new URL('../packages/pet-shell/renderer/', import.meta.url)
+  const html = readFileSync(new URL('index.html', renderer), 'utf8')
+  const css = readFileSync(new URL('pet.css', renderer), 'utf8')
+  const live2d = readFileSync(new URL('live2d.js', renderer), 'utf8')
+  assert.ok(/id="dizzyEyes"/.test(html), 'index.html 要有 #dizzyEyes 图层')
+  assert.equal((html.match(/class="deye"/g) ?? []).length, 2, '要有左右两只螺旋眼')
+  assert.equal((html.match(/class="dspiral"/g) ?? []).length, 2, '两只各一条螺旋（d 由 JS 填）')
+  // 用户 2026-11-09："白底 / 眼白都不需要" → 白底、白描边垫都必须彻底消失
+  assert.ok(!html.includes('dspiral-halo'), 'index.html 不许有白描边垫')
+  assert.ok(!html.includes('deye-base'), 'index.html 不许有实心白底椭圆')
+  assert.ok(!css.includes('dspiral-halo'), 'pet.css 不许有白描边垫样式')
+  assert.ok(css.includes('dizzySpin'), 'pet.css 要有螺旋自转动画')
+  assert.ok(/#dizzyEyes[\s\S]*?prefers-reduced-motion/.test(css), '要照顾"减少动态效果"')
+  assert.ok(/from '\.\/dizzy-math\.js'/.test(live2d), 'live2d.js 要 import dizzy-math（纯函数、可自测）')
+  assert.ok(live2d.includes('dizzyLayout('), '尺寸/位置要走 dizzyLayout（对称 + 同尺寸）')
+  // 2026-11-09 实机"一只眼睛跟随不好"：眼睛要按部件里**最大的那块画层**量，
+  // 整个部件的包围盒会把睫毛/高光算进来（实测 41×35 vs 60×36），中心必然偏
+  assert.ok(live2d.includes('biggestDrawableBox('), '眼睛要用 biggestDrawableBox 量（最大画层）')
+  // 方案 B 的核心（用户 2026-11-09 实机验证后指定）：把眼睛画层整体藏掉
+  assert.ok(live2d.includes("'Part13'") && live2d.includes("'Part14'") && live2d.includes("'Part16'"),
+    '要藏 Part13 白眼 / Part14 左眼 / Part16 右眼')
+  assert.ok(live2d.includes('setPartOpacityByIndex'), '要用 Cubism 的 setPartOpacityByIndex 改部件不透明度')
+  assert.ok(/setDizzyHideEyes\(core, true\)/.test(live2d), '每帧要重写"藏眼睛"（动作/表情会重写不透明度）')
+  assert.ok(
+    /setDizzyHideEyes\(state\.model\?\.internalModel\?\.coreModel, false\)/.test(live2d),
+    '撤晕眩时必须把眼睛恢复（否则她一直没眼睛）',
+  )
+  // 方案 A 已回退：不许再压眨眼/闭眼参数
+  assert.ok(!/ParamEyeLOpen: 0, ParamEyeROpen: 0/.test(live2d), '方案 A 的强制闭眼必须已回退')
+  assert.ok(live2d.includes('setDizzyEyes(mapped.dizzy === true)'), '显示/隐藏必须由状态表驱动')
+  // 2026-11-09 用户："弹表情之前会先把手放到秋千绳再往下放" → 进审批必须直接混向"手放下"
+  assert.ok(
+    live2d.includes('startHandPoseMix(HANDS_DOWN)'),
+    '进入审批的手部过渡必须直接混向 HANDS_DOWN（不许走"混回动作"→ 会先抓绳）',
+  )
+  assert.ok(
+    live2d.includes('updateDizzyEyes(model.internalModel.coreModel)'),
+    '每帧要重定位（跟着呼吸/动作/镜像一起动）',
+  )
+  assert.ok(requiredInRelease({}).includes('packages/pet-shell/renderer/dizzy-math.js'), '发行包必需清单缺 dizzy-math.js')
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[26] 自绘腮红（去掉模型腮红层的分界线）')
+
+check('自绘腮红：藏掉模型腮红层、用柔边渐变自绘、每帧跟脸走', () => {
+  const renderer = new URL('../packages/pet-shell/renderer/', import.meta.url)
+  const html = readFileSync(new URL('index.html', renderer), 'utf8')
+  const css = readFileSync(new URL('pet.css', renderer), 'utf8')
+  const live2d = readFileSync(new URL('live2d.js', renderer), 'utf8')
+  assert.ok(/id="blush"/.test(html), 'index.html 要有 #blush 图层')
+  assert.equal((html.match(/class="blush"/g) ?? []).length, 2, '左右各一块腮红')
+  assert.ok(/radial-gradient/.test(css), '腮红必须用径向渐变（柔边才没有分界线）')
+  assert.ok(/#blush \{[\s\S]*?pointer-events: none/.test(css), '#blush 不许挡点击')
+  assert.ok(live2d.includes("'Part21'"), '要藏掉模型自带的腮红画层 Part21')
+  assert.ok(live2d.includes('setBlushHidden(core, true)'), '每帧要重写"藏腮红"（动作/表情会重写部件不透明度）')
+  assert.ok(live2d.includes('updateBlush(model.internalModel.coreModel)'), '每帧要重定位腮红（跟着呼吸/动作/镜像动）')
+  // 2026-11-12 用户："你是不是把新的腮红做错了位置" → 不能按脸框比例硬算，要按模型腮红画层摆
+  assert.ok(live2d.includes('partDrawableBoxes('), '腮红位置必须按模型腮红画层的包围盒算（不是脸框比例）')
+  assert.ok(live2d.includes('BLUSH_SIZE_RATIO'), '腮红大小要有独立旋钮（相对画层框）')
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[27] 嘴部白框（嘴画层自带的白色底）')
+
+check('嘴闭合时藏掉"嘴"画层的白底，张嘴时恢复', () => {
+  const live2d = readFileSync(new URL('../packages/pet-shell/renderer/live2d.js', import.meta.url), 'utf8')
+  assert.ok(live2d.includes("'Part32'"), '要处理 Part32（嘴画层里那块白色底）')
+  assert.ok(live2d.includes('updateMouthWhite(model.internalModel.coreModel)'), '每帧要按嘴开合切换（跟着状态走）')
+  assert.ok(/ParamMouthOpenY/.test(live2d), '要用 ParamMouthOpenY 判断"张嘴"')
+  assert.ok(/mouthWhiteHidden/.test(live2d), '要记住当前隐藏状态，避免每帧重复写部件不透明度')
+  // 2026-11-12 用户："启动时比嘘的动画，动画时的嘴部消失了"
+  // → 只能在基础待机动作期间藏；启动手势/其它一次性动作必须保留（比嘘的嘴画在 Part32 上）
+  assert.ok(
+    /currentMotion === BASE_MOTION/.test(live2d) && /const hide = baseMotionOnly/.test(live2d),
+    '藏白框必须限定在基础动作（Scene3）期间，否则启动比嘘手势的嘴会消失',
+  )
+})
+
+// ─────────────────────────────────────────────────────────────
+console.log('\n[28] 设置里的「腮红」开关')
+
+check('设置：blush 默认开、非法值回退、能序列化', () => {
+  assert.equal(DEFAULT_SETTINGS.behavior.blush, true, '默认应该开腮红')
+  assert.equal(normalizeSettings({}).behavior.blush, true, '缺失 → 默认开')
+  assert.equal(normalizeSettings({ behavior: { blush: false } }).behavior.blush, false, '显式关 → 关')
+  assert.equal(normalizeSettings({ behavior: { blush: 'false' } }).behavior.blush, true, '字符串不能当布尔')
+  const text = serializeSettings({ behavior: { blush: false } })
+  assert.ok(text.includes('"blush": false'), '序列化要写出 blush（否则改了不持久）')
+  assert.ok(text.endsWith('\n'), '序列化要保留末尾换行（git diff 洁癖）')
+})
+
+check('腮红开关的接线：设置窗 → 主进程 → 渲染端 → live2d', () => {
+  const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
+  const shell = (rel) => read('../packages/pet-shell/' + rel)
+  const html = shell('renderer/settings.html')
+  const ui = shell('renderer/settings.js')
+  const main = shell('main.js')
+  const preload = shell('preload.cjs')
+  const pet = shell('renderer/pet.js')
+  const live2d = shell('renderer/live2d.js')
+  assert.ok(/id="blush"/.test(html), '设置窗要有"腮红"开关')
+  assert.ok(/wireToggle\(blushEl, 'behavior', 'blush'/.test(ui), '设置窗要把改动写回 behavior.blush')
+  assert.ok(/blushEl\.checked = blush === true/.test(ui), '设置窗要回填当前值')
+  assert.ok(/\{ clickInteraction, bubble, blush \}/.test(main), '主进程要把 blush 推给渲染端')
+  assert.ok(/settings\.behavior\.blush !== before\.behavior\.blush/.test(main), '改了 blush 要立刻推（不用重启）')
+  assert.ok(/blush: value\?\.blush !== false/.test(preload), 'preload 要把 blush 传过去')
+  assert.ok((pet.match(/setBlushEnabled/g) || []).length >= 2, 'pet.js 要在"设置更新/启动补发"两处应用腮红开关')
+  assert.ok(/export function setBlushEnabled/.test(live2d), 'live2d 要有公开的 setBlushEnabled')
+  // 关掉时不能把模型那层放回来（会露出带分界线的原腮红）
+  assert.ok(
+    /if \(!blushEnabled\) \{[\s\S]{0,160}setBlushHidden\(core, true\)/.test(live2d),
+    '腮红关闭时必须同时保持"藏掉模型腮红"',
+  )
 })
 
 console.log(`\n${'─'.repeat(56)}`)

@@ -66,12 +66,14 @@ import {
   planParamTransition,
   propFadePhases,
   resolvePokeParams,
+  HANDS_DOWN,
 } from './motion-policy.js'
 // ⚠️ 必须是**同目录**的相对路径：`pet://app/` 只服务 renderer/ 目录，
 //    `../hit-test.js` 会被解析成 pet://app/hit-test.js → 404 → 整个模块加载失败 → 静默降级成占位图 ✗（实机踩过）
 import { PART_NAMES, PART_ZONES, pickPartAt, rawToLocal } from './hit-math.js'
 // 构图变换（含镜像）的纯函数：坐标算错是镜像最典型的 bug，单独抽出来用 Node 行为断言钉死
 import { expressionForMirror, fitTransform } from './mirror-math.js'
+import { dizzyLayout, shouldToggleDizzy, spiralPath } from './dizzy-math.js'
 
 /**
  * ⚠️ 这个模型同一时刻**只能有一个表情生效** ——
@@ -85,11 +87,14 @@ let appliedParams = {}
 
 
 /**
- * 开场手势的播放速度。用户反馈"比嘘的手放得太快"——
- * 原速 3 秒里手势只维持约 1.5 秒、放下只用 0.85 秒，太赶。
- * 放慢到 0.6 倍后：抬起约 1.05s、维持约 2.5s、放下约 1.4s，从容得多。
+ * 开场动作的播放速度。
+ *
+ * 历史：早先开场是「比嘘」（Scene[0]，3 秒），用户嫌"手放得太快"→ 放慢到 0.6 倍（约 5 秒）。
+ * 2026-11-12 开场换成「招牌」（Scene[2]，也是 3 秒）：0.6 倍要 5 秒，用户嫌长
+ * → 1.2 倍（约 2.5s）→ 用户又要 **3.5 秒**，所以现在是 3.0s / 3.5s ≈ **0.857 倍**。
+ * 想改时长直接按 `3.0 / 目标秒数` 算这个常数即可（例如 2s → 1.5，4s → 0.75）。
  */
-const INTRO_SPEED = 0.6
+const INTRO_SPEED = 0.857
 /** 开场手势是否还在演（演完/被打断后置 false） */
 let introPending = true
 /**
@@ -116,6 +121,11 @@ let stateWaitingIntro = null
  * （第一版把这个集合写反了：只排除 Scene[1]，其余全接管 —— 那是错的。）
  */
 const EYE_IDLE_MOTIONS = new Set([3])
+// 2026-11-16：**只在"提问"这一档**额外接管眼睛（见 shouldDriveEyes）。
+// 原因：用户实测提问时"眼睛不停一闭一睁" —— Scene[1] 自己的眼部曲线在循环/巡检重开时
+// 反复触发闭眼。交给我们的眨眼逻辑 → 睁眼 + 每 2.4~6.2 秒正常眨一下，问题消失。
+// ⚠️ 不能直接写进 EYE_IDLE_MOTIONS：Scene[1] 现在同时是"完成"动作，完成要的是
+//    笑眼（happy），被我们接管会把笑眼盖掉。所以按**状态**判断，而不是按动作。
 
 // ── 眨眼 ────────────────────────────────────────────────────────────
 // ⚠️ 为什么必须自己实现（这是实测踩出来的 bug）：
@@ -134,9 +144,16 @@ let blinkStartAt = 0 // 本次眨眼开始时刻；0 = 当前没在眨
 let nextBlinkAt = 0
 
 /** 每帧输出眼睛开合（1 = 睁，0 = 闭）。仅用于"自己不驱动眼睛"的动作 */
+function shouldDriveEyes() {
+  // 基础待机动作：库不会自动眨眼，必须我们接管（见上方注释）
+  if (EYE_IDLE_MOTIONS.has(currentMotion)) return true
+  // 提问：同一套"睁眼 + 自己眨"的逻辑（动作换成了 Scene[1]，但眼睛要我们管）
+  return state.currentState === 'question'
+}
+
 function applyBlink(now) {
   // 动作自己在演眼睛时让位（见 EYE_IDLE_MOTIONS 注释）
-  if (!EYE_IDLE_MOTIONS.has(currentMotion)) return
+  if (!shouldDriveEyes()) return
 
   if (blinkStartAt === 0 && now >= nextBlinkAt) {
     blinkStartAt = now
@@ -925,6 +942,424 @@ function markOverlapsHair() {
   return { hits, total }
 }
 
+// ── 嘴部白底（2026-11-12）──────────────────────────────────────────────
+// 用户："嘴巴周围有一圈白边"。
+// 真机对照：把 `Part32 嘴` 压成 0 → 白框消失、嘴的 line 还在（嘴 line 在 Part33 里）。
+// 所以那圈白边是模型"嘴"画层自带的一块**白色底**（贴图里的白底/嘴内底色），
+// 平时嘴闭着也画在皮肤上 → 看着像一圈白框。
+// 修法（动态、保守）：**嘴闭合时**把那层压 0；一旦张嘴（ParamMouthOpenY > 0.02）就恢复，
+// 不影响说话/笑时该有的嘴内效果。
+const MOUTH_WHITE_PART = 'Part32'
+let mouthWhiteIndex = null
+let mouthWhiteHidden = false
+
+function updateMouthWhite(core) {
+  if (!core || typeof core.setPartOpacityByIndex !== 'function') return
+  if (mouthWhiteIndex === null) {
+    const index = partIndexOf(core, MOUTH_WHITE_PART)
+    if (index < 0) return
+    mouthWhiteIndex = index
+  }
+  const open = Number(core.getParameterValueById?.('ParamMouthOpenY') ?? 0)
+  // ⚠️ 2026-11-12 用户："启动时比嘘的动画，动画时的嘴部消失了"。
+  //    原因：启动手势（Scene0 的"右手比嘘"）的嘴是画在 Part32 这块上的 ——
+  //    我们为了去掉白框把整层压 0，手势的嘴就一起没了。
+  //    所以只在**基础待机动作**（Scene3，待机/思考/审批都播它）期间藏；
+  //    启动手势/其它一次性动作原样保留（那段本来就短，白框不明显）。
+  const baseMotionOnly = currentMotion === BASE_MOTION
+  const hide = baseMotionOnly && !(open > 0.02)
+  if (hide !== mouthWhiteHidden) {
+    mouthWhiteHidden = hide
+    core.setPartOpacityByIndex(mouthWhiteIndex, hide ? 0 : 1)
+  }
+}
+
+// ── 自绘腮红（2026-11-12）──────────────────────────────────────────────
+// 模型自带的腮红（Part21）是单独一块贴图叠在脸上，边缘有颜色落差 —— 缩小显示时
+// 能看到一条浅浅的分界线（用户实机截图确认）。做法：把那层藏掉，改画两块
+// **柔边径向渐变**（CSS radial-gradient，边缘渐隐到全透明），天然不可能有硬边。
+// 位置每帧按脸（Part18）包围盒算，跟着呼吸/动作/镜像一起动（和蚊香眼、问号同一套）。
+const BLUSH_PART = 'Part21'
+const BLUSH_DX_RATIO = 0.155 // 两眼之间偏侧向（× 脸宽）
+const BLUSH_DY_RATIO = 0.07 // 往下（× 脸高）
+const BLUSH_SIZE_RATIO = 0.8
+const BLUSH_DOWN_RATIO = 0.15 // 画层框里那块腮红偏下 → 中心再往下挪一点才和原画重合 // 自绘腮红相对"模型腮红画层"的大小
+const BLUSH_W_RATIO = 0.3 // 宽（× 脸宽，仅兜底）
+const BLUSH_H_RATIO = 0.2 // 高（× 脸高）
+let blushOriginal = null
+let blushLastSize = null
+
+/** 藏掉模型自带的腮红画层（记下原不透明度，方便以后想恢复） */
+function setBlushHidden(core, hide) {
+  if (!core || typeof core.setPartOpacityByIndex !== 'function') return
+  if (hide) {
+    if (!blushOriginal) {
+      const index = partIndexOf(core, BLUSH_PART)
+      if (index < 0) return
+      blushOriginal = { index, opacity: core.getPartOpacityByIndex?.(index) ?? 1 }
+    }
+    core.setPartOpacityByIndex(blushOriginal.index, 0)
+  } else if (blushOriginal) {
+    core.setPartOpacityByIndex(blushOriginal.index, blushOriginal.opacity)
+    blushOriginal = null
+  }
+}
+
+/** 取某部件下每块画层的屏幕 CSS 包围盒（腮红是左右两块画层；隐藏后几何仍在） */
+function partDrawableBoxes(core, canvas, partId, model, sx, sy) {
+  const count = core.getDrawableCount?.() ?? 0
+  const out = []
+  for (let i = 0; i < count; i += 1) {
+    if (core.getPartId?.(core.getDrawableParentPartIndex?.(i)) !== partId) continue
+    const positions = core.getDrawableVertexPositions?.(i)
+    const vertexCount = core.getDrawableVertexCount?.(i) ?? 0
+    if (!positions || vertexCount < 3) continue
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (let v = 0; v < vertexCount; v += 1) {
+      const pt = rawToLocal(positions[v * 2], positions[v * 2 + 1], canvas)
+      if (pt.x < minX) minX = pt.x
+      if (pt.y < minY) minY = pt.y
+      if (pt.x > maxX) maxX = pt.x
+      if (pt.y > maxY) maxY = pt.y
+    }
+    const center = model.toGlobal({ x: (minX + maxX) / 2, y: (minY + maxY) / 2 })
+    out.push({
+      cx: center.x,
+      cy: center.y,
+      w: (maxX - minX) * sx,
+      h: (maxY - minY) * sy,
+    })
+  }
+  return out
+}
+
+/** 设置里的「腮红」开关：true = 显示自绘腮红；false = **完全不显示腮红**（模型那层也保持藏掉） */
+/** 诊断：逐帧强制写一组参数（传 null 取消）。只给实验页试姿势用 */
+let debugParamOverride = null
+export function debugSetParamOverride(values) {
+  debugParamOverride = values && typeof values === 'object' ? { ...values } : null
+}
+function applyDebugParamOverride() {
+  if (!debugParamOverride) return
+  setParams(debugParamOverride)
+}
+
+let blushEnabled = true
+export function setBlushEnabled(on) {
+  blushEnabled = on === true
+}
+
+/** 诊断开关：关掉自绘腮红、并把**模型自带腮红**放回来（A/B 对比用，不是用户开关） */
+let blushDebugOff = false
+export function debugSetBlushEnabled(on) {
+  blushDebugOff = on !== true
+  if (blushDebugOff) {
+    const root = document.getElementById('blush')
+    if (root) root.hidden = true
+    const core = state.model?.internalModel?.coreModel
+    if (core && blushOriginal) {
+      core.setPartOpacityByIndex(blushOriginal.index, blushOriginal.opacity)
+      blushOriginal = null
+    }
+  }
+}
+
+/** 每帧：按脸的包围盒摆两块柔边腮红 */
+function updateBlush(core) {
+  const root = document.getElementById('blush')
+  if (!root || !core) return
+  if (blushDebugOff) {
+    root.hidden = true
+    return
+  }
+  if (!blushEnabled) {
+    root.hidden = true
+    // 用户把腮红关了 → 模型自带那层也要保持藏掉，否则会露出带分界线的原腮红
+    setBlushHidden(core, true)
+    return
+  }
+  const model = state.model
+  if (!model) return
+  const canvas = localCanvas()
+  const sx = Math.abs(model.scale.x)
+  const sy = Math.abs(model.scale.y)
+  const face = boxToCss(partBoxLocal(core, canvas, DIZZY_FACE_PART), model, sx, sy)
+  if (!face) {
+    root.hidden = true
+    return
+  }
+  setBlushHidden(core, true)
+  root.hidden = false
+  // ⚠️ 2026-11-12 用户："你是不是把新的腮红做错了位置" —— 是的。
+  //    之前按"脸包围盒 × 比例"硬算，实测明显偏高偏窄（脸框中心本身偏上）：
+  //    模型原腮红两块中心 (244.9,401.1)/(325.1,401.1) 约 56×56，
+  //    自绘的却跑到 (251.5,368.5)/(295,368.5) 约 42×30。
+  //    现在改成**按 Part21 的两块画层逐块摆**（隐藏后几何仍在，和蚊香眼同一套）；
+  //    只有完全量不到画层时，才退回"脸包围盒 × 比例"的兜底。
+  const boxes = partDrawableBoxes(core, canvas, BLUSH_PART, model, sx, sy)
+    .sort((a, b) => a.cx - b.cx)
+    .slice(0, 2)
+  const els = root.querySelectorAll('.blush')
+  const rects = []
+  if (boxes.length > 0) {
+    for (let i = 0; i < els.length; i += 1) {
+      const box = boxes[Math.min(i, boxes.length - 1)]
+      rects.push({
+        x: box.cx - (box.w * BLUSH_SIZE_RATIO) / 2,
+        y: box.cy + box.h * BLUSH_DOWN_RATIO - (box.h * BLUSH_SIZE_RATIO) / 2,
+        w: box.w * BLUSH_SIZE_RATIO,
+        h: box.h * BLUSH_SIZE_RATIO,
+      })
+    }
+  } else {
+    const w = face.w * BLUSH_W_RATIO
+    const h = face.h * BLUSH_H_RATIO
+    const dx = face.w * BLUSH_DX_RATIO
+    const dy = face.h * BLUSH_DY_RATIO
+    for (let i = 0; i < els.length; i += 1) {
+      const x = face.cx + (i === 0 ? -dx : dx)
+      const y = face.cy + dy
+      rects.push({ x: x - w / 2, y: y - h / 2, w, h })
+    }
+  }
+  if (!blushLastSize || Math.abs(rects[0].w - blushLastSize.w) > 0.01 || Math.abs(rects[0].h - blushLastSize.h) > 0.01) {
+    blushLastSize = { w: rects[0].w, h: rects[0].h }
+    for (let i = 0; i < els.length; i += 1) {
+      els[i].style.width = `${rects[i].w.toFixed(2)}px`
+      els[i].style.height = `${rects[i].h.toFixed(2)}px`
+    }
+  }
+  for (let i = 0; i < els.length; i += 1) {
+    els[i].style.transform = `translate3d(${rects[i].x.toFixed(2)}px, ${rects[i].y.toFixed(2)}px, 0)`
+  }
+}
+
+// ── 蚊香眼（2026-11-09）：审批时的"晕" ─────────────────────────────────
+// ACG 的圈圈眼 = **整个眼睛变螺旋**（没有眼白、没有白底）。
+// 方案 B（用户实测方案 A 后指定）：**把眼睛画层整体藏掉**（不透明度 0），
+//   她的脸就只剩皮肤 + 腮红；再把螺旋画在眼睛原来的位置上 —— 螺旋就是眼睛本身。
+// 实测依据（.cache/dizzy-lab）：`core.setPartOpacityByIndex(idx, 0)` 存在，写进去 800ms 后读回仍是 0
+//   （不会被动作/物理冲掉）；把 Part13 白眼 / Part14 左眼 / Part16 右眼 藏掉后，
+//   眼睛（含睫毛/眼白/瞳孔）全部消失，脸上只剩光洁皮肤 —— 正是参考图那种画法需要的底。
+const DIZZY_MEASURE_PARTS = ['Part14', 'Part16'] // 量位置/尺寸用（隐藏后几何仍在）
+const DIZZY_HIDE_PARTS = ['Part13', 'Part14', 'Part16'] // 眼睛画层：白眼 / 左眼 / 右眼
+const DIZZY_FACE_PART = 'Part18' // 脸：用来把左右位置强制对称
+let dizzySpiralReady = false
+let dizzyTrace = false
+let dizzyTraceAt = 0
+const dizzyLastSize = [null, null]
+/** 隐藏前的部件不透明度（按 index 记），撤晕眩时原样恢复 */
+let dizzyHiddenOriginal = null
+
+/**
+ * 诊断开关（只给实验页用；环境变量在渲染端读不到 —— `process` 是 vendor/process-shim.js 的壳）：
+ *  · `debugSetDizzyKeepEyes(true)` → 只画螺旋、不藏眼睛，用来肉眼核对"螺旋有没有对准瞳孔"
+ *  · `debugSetDizzyTrace(true)` → 打布局日志
+ */
+let dizzyKeepEyes = false
+export function debugSetDizzyKeepEyes(on) {
+  dizzyKeepEyes = on === true
+}
+export function debugSetDizzyTrace(on) {
+  dizzyTrace = on === true
+}
+
+/** 当前状态要不要"晕"（目前只有 STATE_MAP.approval 带 dizzy:true） */
+function dizzyActive() {
+  return STATE_MAP[state.currentState]?.dizzy === true
+}
+
+/** 按部件 id 找索引（找不到返回 -1） */
+function partIndexOf(core, partId) {
+  const n = core.getPartCount?.() ?? 0
+  for (let i = 0; i < n; i += 1) {
+    if (core.getPartId?.(i) === partId) return i
+  }
+  return -1
+}
+
+/**
+ * 藏 / 恢复眼睛画层。
+ * 每帧都调用一次（hide=true 时重复写 0）—— 动作/表情每帧会重写参数，重写不透明度最保险。
+ */
+function setDizzyHideEyes(core, hide) {
+  if (!core || typeof core.setPartOpacityByIndex !== 'function') return
+  if (hide) {
+    if (!dizzyHiddenOriginal) {
+      const records = []
+      for (const id of DIZZY_HIDE_PARTS) {
+        const index = partIndexOf(core, id)
+        if (index < 0) continue
+        records.push({ index, opacity: core.getPartOpacityByIndex?.(index) ?? 1 })
+      }
+      dizzyHiddenOriginal = records
+      state.log(`[晕] 藏眼睛画层 ${records.map((r) => `#${r.index}`).join(',') || '(没找到)'}`)
+    }
+    for (const r of dizzyHiddenOriginal) core.setPartOpacityByIndex(r.index, 0)
+  } else if (dizzyHiddenOriginal) {
+    for (const r of dizzyHiddenOriginal) core.setPartOpacityByIndex(r.index, r.opacity)
+    dizzyHiddenOriginal = null
+  }
+}
+
+/** 第一次显示时把螺旋的 path 填进 SVG（path 由纯函数算出来，见 dizzy-math.js） */
+function ensureDizzySpiral() {
+  if (dizzySpiralReady) return
+  const root = document.getElementById('dizzyEyes')
+  if (!root) return
+  const d = spiralPath()
+  for (const path of root.querySelectorAll('.dspiral')) path.setAttribute('d', d)
+  dizzySpiralReady = true
+}
+
+/** 显示/隐藏蚊香眼（由 STATE_MAP 的 `dizzy` 字段驱动） */
+function setDizzyEyes(on) {
+  const root = document.getElementById('dizzyEyes')
+  if (!root) return
+  const want = on === true
+  if (!shouldToggleDizzy(root.hidden, want)) return // 已经是目标状态，不重复写 DOM / 打日志
+  if (want) {
+    ensureDizzySpiral()
+    dizzyLastSize[0] = null
+    dizzyLastSize[1] = null
+  } else {
+    // 撤晕眩：把眼睛画层恢复原样（不恢复的话她会一直"没有眼睛"）
+    setDizzyHideEyes(state.model?.internalModel?.coreModel, false)
+  }
+  root.hidden = !want
+  state.log(`[晕] 蚊香眼${want ? '显示' : '隐藏'}`)
+}
+
+/** 一个部件下所有画层的合并包围盒（局部画布坐标）；没有画层返回 null。
+ *  ⚠️ 故意**不过滤"当前不可见"的画层**：眼睛被压闭合时正是看不见的时候，过滤掉就量不到了。 */
+function partBoxLocal(core, canvas, partId) {
+  const count = core.getDrawableCount?.() ?? 0
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  let sumX = 0
+  let sumY = 0
+  let verts = 0
+  let found = false
+  for (let i = 0; i < count; i += 1) {
+    if (core.getPartId?.(core.getDrawableParentPartIndex?.(i)) !== partId) continue
+    const positions = core.getDrawableVertexPositions?.(i)
+    const vertexCount = core.getDrawableVertexCount?.(i) ?? 0
+    if (!positions || vertexCount < 3) continue
+    found = true
+    for (let v = 0; v < vertexCount; v += 1) {
+      const p = rawToLocal(positions[v * 2], positions[v * 2 + 1], canvas)
+      if (p.x < minX) minX = p.x
+      if (p.y < minY) minY = p.y
+      if (p.x > maxX) maxX = p.x
+      if (p.y > maxY) maxY = p.y
+      sumX += p.x
+      sumY += p.y
+      verts += 1
+    }
+  }
+  // ⚠️ 中心用**顶点质心**而不是包围盒中心：包围盒会被离群顶点（睫毛/高光）带偏，
+  //    2026-11-09 实机"一只眼睛跟随不好"就可能来自这里。
+  return found
+    ? { minX, minY, maxX, maxY, cx: verts ? sumX / verts : (minX + maxX) / 2, cy: verts ? sumY / verts : (minY + maxY) / 2 }
+    : null
+}
+
+/**
+ * 取部件里**最大的一块画层**的包围盒（眼睛 = 那块大的：眼白/瞳孔；睫毛是细长小画层）。
+ *
+ * 2026-11-09 实机"一只眼睛跟随不好"的真正原因：直接拿整个部件的包围盒当眼睛 ——
+ * 实测两个眼睛部件的包围盒一个 41×35、一个 60×36（一边多算了睫毛/高光），
+ * 用它的中心当眼睛中心必然一只偏、用它的宽度当螺旋宽度必然偏大。
+ */
+function biggestDrawableBox(core, canvas, partId) {
+  const count = core.getDrawableCount?.() ?? 0
+  let best = null
+  for (let i = 0; i < count; i += 1) {
+    if (core.getPartId?.(core.getDrawableParentPartIndex?.(i)) !== partId) continue
+    const positions = core.getDrawableVertexPositions?.(i)
+    const vertexCount = core.getDrawableVertexCount?.(i) ?? 0
+    if (!positions || vertexCount < 3) continue
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (let v = 0; v < vertexCount; v += 1) {
+      const pt = rawToLocal(positions[v * 2], positions[v * 2 + 1], canvas)
+      if (pt.x < minX) minX = pt.x
+      if (pt.y < minY) minY = pt.y
+      if (pt.x > maxX) maxX = pt.x
+      if (pt.y > maxY) maxY = pt.y
+    }
+    const area = (maxX - minX) * (maxY - minY)
+    if (!best || area > best.area) best = { minX, minY, maxX, maxY, area }
+  }
+  return best
+}
+
+/** 把一个部件包围盒换算成屏幕 CSS 空间的 {cx, cy, w, h}（脸） */
+function boxToCss(box, model, sx, sy) {
+  if (!box) return null
+  const center = model.toGlobal({ x: box.cx ?? (box.minX + box.maxX) / 2, y: box.cy ?? (box.minY + box.maxY) / 2 })
+  return {
+    cx: center.x,
+    cy: center.y,
+    w: (box.maxX - box.minX) * sx,
+    h: (box.maxY - box.minY) * sy,
+  }
+}
+
+/**
+ * 每帧：把两只"螺旋眼"摆到眼睛原来的位置上。
+ *
+ * 方案 B：眼睛画层已经被藏掉（只剩皮肤），所以这里直接按**眼睛画层的包围盒**定位 ——
+ * 隐藏不会改变几何，量出来就是原来的眼睛位置；左右再以脸中心强制对称（防"一大一小"）。
+ */
+function updateDizzyEyes(core) {
+  const root = document.getElementById('dizzyEyes')
+  if (!root || root.hidden || !core) return
+  const model = state.model
+  if (!model) return
+  const canvas = localCanvas()
+  const sx = Math.abs(model.scale.x)
+  const sy = Math.abs(model.scale.y)
+  // 每帧重写一次"藏眼睛"（动作/表情可能重写部件不透明度）
+  if (!dizzyKeepEyes) setDizzyHideEyes(core, true)
+  const face = boxToCss(partBoxLocal(core, canvas, DIZZY_FACE_PART), model, sx, sy)
+  const eyes = DIZZY_MEASURE_PARTS.map((id) => boxToCss(biggestDrawableBox(core, canvas, id), model, sx, sy))
+  const layout = dizzyLayout({ eyes: eyes.filter(Boolean), face })
+  const els = root.querySelectorAll('.deye')
+  if (!layout) {
+    for (const el of els) el.style.opacity = '0'
+    return
+  }
+  for (let i = 0; i < els.length; i += 1) {
+    const el = els[i]
+    const pos = layout.positions[i]
+    el.style.transform = `translate3d(${pos.x.toFixed(2)}px, ${pos.y.toFixed(2)}px, 0) translate(-50%, -50%)`
+    const last = dizzyLastSize[i]
+    if (!last || Math.abs(layout.size.w - last.w) > 0.01 || Math.abs(layout.size.h - last.h) > 0.01) {
+      dizzyLastSize[i] = { w: layout.size.w, h: layout.size.h }
+      el.style.width = `${layout.size.w.toFixed(2)}px`
+      el.style.height = `${layout.size.h.toFixed(2)}px`
+    }
+    el.style.opacity = '1'
+  }
+  if (dizzyTrace && Date.now() - dizzyTraceAt > 800) {
+    dizzyTraceAt = Date.now()
+    const rects = layout.positions.map((p) => `(${p.x.toFixed(0)},${p.y.toFixed(0)})`).join(' ')
+    state.log(
+      `[晕] 螺旋眼 ${rects} ${layout.size.w.toFixed(1)}x${layout.size.h.toFixed(1)}` +
+        ` | 脸 (${face ? `${face.cx.toFixed(0)},${face.cy.toFixed(0)}` : '-'})` +
+        ` | 眼框 ${eyes.filter(Boolean).map((e) => `${e.w.toFixed(0)}x${e.h.toFixed(0)}`).join('/')}`,
+    )
+  }
+}
+
 function updateQuestionMarkPosition() {
   const el = document.getElementById('questionMark')
   if (!el || el.hidden) return
@@ -1168,6 +1603,105 @@ export function debugAllParts() {
     out.push({ index: i, id, name: PART_NAMES[id] ?? '(未收录)' })
   }
   return out
+}
+
+/**
+ * 诊断用：把内部的 Cubism CoreModel 暴露出来（只给"实验页/排错"用，业务代码别依赖它）。
+ *
+ * 2026-11-09 加它是因为蚊香眼要验证"能不能把眼睛画层藏起来"（`setPartOpacityByIndex` 到底存不存在、
+ * 写进去会不会被 `update()` 覆盖）—— 光看文档/压缩代码猜不出，只能拿真模型试。
+ */
+/** 诊断：列出某部件下每个画层的屏幕 CSS 包围盒（查腮红/嘴这类"分块"画层的位置） */
+export function debugDrawableBoxes(partId) {
+  const core = state.model?.internalModel?.coreModel
+  const model = state.model
+  if (!core || !model) return null
+  const canvas = localCanvas()
+  const sx = Math.abs(model.scale.x)
+  const sy = Math.abs(model.scale.y)
+  const count = core.getDrawableCount?.() ?? 0
+  const out = []
+  for (let i = 0; i < count; i += 1) {
+    if (core.getPartId?.(core.getDrawableParentPartIndex?.(i)) !== partId) continue
+    const positions = core.getDrawableVertexPositions?.(i)
+    const vertexCount = core.getDrawableVertexCount?.(i) ?? 0
+    if (!positions || vertexCount < 3) continue
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (let v = 0; v < vertexCount; v += 1) {
+      const pt = rawToLocal(positions[v * 2], positions[v * 2 + 1], canvas)
+      if (pt.x < minX) minX = pt.x
+      if (pt.y < minY) minY = pt.y
+      if (pt.x > maxX) maxX = pt.x
+      if (pt.y > maxY) maxY = pt.y
+    }
+    const center = model.toGlobal({ x: (minX + maxX) / 2, y: (minY + maxY) / 2 })
+    out.push({ index: i, cx: +center.x.toFixed(1), cy: +center.y.toFixed(1), w: +((maxX - minX) * sx).toFixed(1), h: +((maxY - minY) * sy).toFixed(1) })
+  }
+  return out
+}
+
+/** 诊断：立刻应用某状态的 force 并读回（查"写进去到底有没有留住"） */
+export function debugForceNow(name) {
+  const mapped = STATE_MAP[name] ?? STATE_MAP.idle
+  if (mapped.force) setParams(mapped.force)
+  const core = state.model?.internalModel?.coreModel
+  const read = {}
+  for (const id of Object.keys(mapped.force ?? {})) read[id] = core?.getParameterValueById?.(id) ?? null
+  return { force: mapped.force ?? null, read }
+}
+
+/** 诊断：逐帧采样参数（在 beforeModelUpdate 里读 = 真正进渲染的值） */
+let debugWatch = null
+export function debugStartParamWatch(ids, ms = 3000) {
+  debugWatch = { ids: [...ids], until: performance.now() + ms, seen: 0, min: {}, max: {} }
+  return debugWatch.ids
+}
+export function debugParamWatch() {
+  if (!debugWatch) return null
+  return { ids: debugWatch.ids, seen: debugWatch.seen, min: debugWatch.min, max: debugWatch.max, done: performance.now() > debugWatch.until }
+}
+function debugSampleParams(core) {
+  if (!debugWatch) return
+  for (const id of debugWatch.ids) {
+    const v = core?.getParameterValueById?.(id)
+    if (!Number.isFinite(v)) continue
+    debugWatch.min[id] = debugWatch.min[id] === undefined ? v : Math.min(debugWatch.min[id], v)
+    debugWatch.max[id] = debugWatch.max[id] === undefined ? v : Math.max(debugWatch.max[id], v)
+  }
+  debugWatch.seen += 1
+}
+
+/** 诊断：当前状态 / 手部过渡是否在跑 / 蚊香眼是否开着（只给实验页用） */
+export function debugInfo() {
+  return {
+    currentState: state.currentState,
+    handMixActive: handMix !== null,
+    dizzyActive: dizzyActive(),
+    dizzyEyePartsHidden: dizzyHiddenOriginal ? dizzyHiddenOriginal.length : 0,
+  }
+}
+
+export function debugCoreModel() {
+  return state.model?.internalModel?.coreModel ?? null
+}
+
+/** 诊断用：读/写某个部件的整体不透明度（找不到返回 null）。 */
+export function debugPartOpacity(partId, opacity) {
+  const core = state.model?.internalModel?.coreModel
+  if (!core) return null
+  const n = core.getPartCount?.() ?? 0
+  for (let i = 0; i < n; i += 1) {
+    if (core.getPartId?.(i) !== partId) continue
+    if (Number.isFinite(opacity)) {
+      if (typeof core.setPartOpacityByIndex === 'function') core.setPartOpacityByIndex(i, opacity)
+      else if (typeof core.setPartOpacity === 'function') core.setPartOpacity(partId, opacity)
+    }
+    return { index: i, id: partId, opacity: core.getPartOpacityByIndex?.(i) ?? null }
+  }
+  return null
 }
 
 /**
@@ -1417,6 +1951,11 @@ function applyState() {
   // 被弹的振荡：**最后叠加**（位置在动作/表情/物理之后），所以是在正常动作之上"颤一下" ✓
   const flicked = stepFlick(performance.now())
   if (flicked !== null) setParams(flicked)
+  // 实验页的"试姿势"覆盖（只影响诊断；正常运行时不生效）
+  applyDebugParamOverride()
+  // 蚊香眼：只由状态表决定（目前只有 approval 带 dizzy:true）——
+  // 放在这里是为了和状态切换同一帧生效/消失，不依赖额外的事件。
+  setDizzyEyes(mapped.dizzy === true)
   // 眨眼也在这里输出 —— 位置在动作之后，才能压过被动作冻结的眼睛参数
   applyBlink(performance.now())
   // ⚠️ **最后一步**：分区互动的临时参数覆盖（摸头顶）。
@@ -1558,6 +2097,14 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, handD
     if (mirrorMode && questionMarkVisible()) setParams({ Param6: 0, Param8: 0 })
     // 镜像问号是 DOM 元素，位置必须**每帧**按模型变换重算，才能跟着她呼吸/动作一起动
     updateQuestionMarkPosition()
+    // 蚊香眼贴片也要**每帧**按眼睛画层重定位（呼吸/动作/转头时才会跟着走）
+    // 放在采样的**后面**：采样要读的是 applyState 写完之后的值
+    debugSampleParams(model.internalModel.coreModel)
+    updateDizzyEyes(model.internalModel.coreModel)
+    // 自绘腮红也要每帧重定位（跟着呼吸/动作/镜像动）
+    updateBlush(model.internalModel.coreModel)
+    // 嘴闭合时藏掉"嘴"画层自带的白色底（张嘴时自动恢复）
+    updateMouthWhite(model.internalModel.coreModel)
     samplerSample(model.internalModel.coreModel)
   })
 
@@ -1663,7 +2210,7 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, handD
     // 放慢到 INTRO_SPEED 倍 —— 原速下手放得太快（用户反馈）。
     setMotionTimeScale(INTRO_SPEED)
     state.log(
-      `开场手势 Scene[${INTRO_MOTION}]（只演一次，${INTRO_SPEED}x 慢放），之后落到待机 Scene[${BASE_MOTION}]`,
+      `开场动作 Scene[${INTRO_MOTION}]（招牌·只演一次，${INTRO_SPEED}x 慢放），之后落到待机 Scene[${BASE_MOTION}]`,
     )
     startMotion(INTRO_MOTION, false)
     // 兜底：万一循环没关掉（motionFinish 不触发），按时长强制结束。
@@ -1675,7 +2222,8 @@ export async function init({ canvas, modelUrl, log, forceMotion, sampleMs, handD
           finishIntro()
         }
       },
-      Math.round(3600 / INTRO_SPEED),
+      // 兜底：开场动作（比嘘 Scene[0]，3s）÷ 0.857 ≈ 3.5s，这里给到约 5.6s（留足余量）
+    Math.round(4800 / INTRO_SPEED),
     )
   }
 
@@ -2174,8 +2722,22 @@ function applyStateMotion(next, animate) {
   // 进/出它的时候要**两段式混合**：先把手卸掉、再上新姿势（或混回动作的抓绳姿势）。
   // ⚠️ 不能交叉淡化（手是互斥资源 → 会同时出现两只手），也不能直接切（跳变）。
   if (handState === 'running' && next !== 'running') {
-    startHandPoseMix(null) // 离开：混回动作自己的值（秋千的抓绳姿势自然回来）
-    state.log('手部姿势：离开 running → 两段式混回动作')
+    // ⚠️ 2026-11-09 用户："弹表情之前，会先把手放到秋千绳后再往下放，不需要中间这个动作"
+    //    真因：离开 running 一律"混回动作自己的值"，而荡秋千动作的手部曲线就是**抓绳** →
+    //    手先被动作带到绳子上，等过渡结束 force 才把手压下来 = 中间多了一次"抓绳再放下"。
+    //    目标状态本身要求"双手放下"（approval 的 force === HANDS_DOWN）时，直接混向它，不绕路。
+    const nextForce = STATE_MAP[next]?.force
+    if (nextForce === HANDS_DOWN) {
+      startHandPoseMix(HANDS_DOWN) // 先卸掉 → 再落到"手放下"（中间不经过抓绳）
+      state.log('手部姿势：进入审批 → 直接混向"手放下"（不绕回抓绳）')
+    } else if (next === 'question' && nextForce) {
+      // 提问是"一手托腮"，也不该先绕回抓绳再变
+      startHandPoseMix(nextForce)
+      state.log('手部姿势：进入提问 → 直接混向"托腮"')
+    } else {
+      startHandPoseMix(null) // 其它状态：混回动作自己的值（秋千的抓绳姿势自然回来）
+      state.log('手部姿势：离开 running → 两段式混回动作')
+    }
   } else if (next === 'running' && handState !== 'running') {
     startHandPoseMix(STATE_MAP.running.force) // 进入：先卸掉所有手部姿势，再上思考姿势
     state.log('手部姿势：进入 running → 两段式混向思考姿势')

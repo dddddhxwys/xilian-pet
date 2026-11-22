@@ -129,6 +129,11 @@ export function requiredInRelease(options = {}) {
     'packages/pet-shell/launcher-icon.ico',
     'tools/make-desktop-shortcut.ps1',
     'tools/lib/desktop-shortcut.mjs',
+    // 工作时气泡：文案模块 + 羽毛笔素材（index.html / pet.css 直接引用，漏了气泡就空/掉图标）
+    'packages/pet-shell/renderer/bubble-lines.js',
+    'packages/pet-shell/renderer/assets/bubble-quill.png',
+    // 蚊香眼（审批）：live2d.js import 的纯函数模块，漏了整段渲染端加载失败
+    'packages/pet-shell/renderer/dizzy-math.js',
     // 从模型贴图抠出来的原版问号（镜像时用；不是第三方新素材，见 NOTICE.md）
     'packages/pet-shell/renderer/assets/question-mark.png',
     'packages/pet-shell/renderer/settings.html',

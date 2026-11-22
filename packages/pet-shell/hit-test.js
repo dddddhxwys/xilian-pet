@@ -117,6 +117,43 @@ export function draggingExpired({ draggingNow, lastAt, now, staleMs }) {
   return now - lastAt > staleMs
 }
 
+/**
+ * 拖拽：按下时记录"光标相对窗口左上角"的偏移（DIP）。
+ *
+ * 为什么要这样算：**不能用渲染端的 screenX/screenY 增量来移动窗口**。
+ * 混合 DPI 场景（笔记本内屏 + 外接屏缩放比例不同）实测：
+ * 光标在渲染端报的是"按当前页面 DPI 折算"的坐标，而 `win.setPosition()` 吃的是 DIP，
+ * 两者比例不一致 → 累积增量会把窗口越拖越偏（用户报的"外接屏上拖动不跟手"）。
+ * 改成主进程用 `screen.getCursorScreenPoint()`（DIP）和 `getBounds()/setPosition()`（DIP）
+ * 这一套**同坐标系**的 API 绝对定位，任何缩放比下都自洽。
+ *
+ * @param {{x:number,y:number}} cursor 光标（屏幕 DIP）
+ * @param {{x:number,y:number,width?:number,height?:number}} bounds 窗口 bounds（DIP）
+ * @returns {{dx:number,dy:number}|null}
+ */
+export function grabOffset({ cursor, bounds }) {
+  if (!cursor || !bounds) return null
+  if (!Number.isFinite(cursor.x) || !Number.isFinite(cursor.y)) return null
+  if (!Number.isFinite(bounds.x) || !Number.isFinite(bounds.y)) return null
+  return { dx: cursor.x - bounds.x, dy: cursor.y - bounds.y }
+}
+
+/**
+ * 拖拽：光标在当前位置时，窗口左上角应该落在哪里（DIP，已取整）。
+ *
+ * 取整的意义：`setPosition` 接受整数，不取整会在 60Hz 下因半像素抖动而频繁重复设位。
+ *
+ * @param {{x:number,y:number}} cursor 当前光标（屏幕 DIP）
+ * @param {{dx:number,dy:number}} grab grabOffset() 的结果
+ * @returns {{x:number,y:number}|null}
+ */
+export function dragTarget({ cursor, grab }) {
+  if (!cursor || !grab) return null
+  if (!Number.isFinite(cursor.x) || !Number.isFinite(cursor.y)) return null
+  if (!Number.isFinite(grab.dx) || !Number.isFinite(grab.dy)) return null
+  return { x: Math.round(cursor.x - grab.dx), y: Math.round(cursor.y - grab.dy) }
+}
+
 // ── 部件级命中测试：真源在 `renderer/hit-math.js`（渲染端只能 fetch 到 renderer/ 内的文件）──
 // 这里 re-export，好让**主进程**（main.js）与**自测**（tools/check-plugin.mjs）照旧从本文件取。
 export {

@@ -42,7 +42,18 @@ contextBridge.exposeInMainWorld('xilianPet', {
    * 约 3 秒后测量完成再跳一下（用户实测报的"打开一会突然变大"）。
    */
   fitReady: () => ipcRenderer.send('pet:fit-ready'),
-  /** 拖拽：按屏幕坐标增量移动窗口 */
+  /**
+   * 拖拽中的"立刻跟一下"信号（渲染端 mousemove 时发）。
+   *
+   * 位移本身由**主进程**算（DIP 绝对定位，解决混合 DPI "不跟手"），
+   * 这里只是把事件频率（鼠标 125Hz+）借给主进程，别被 16ms 的轮询节流住。
+   * 主进程收到后会自己再读一次 `screen.getCursorScreenPoint()`，不信任渲染端坐标。
+   */
+  dragTick: () => ipcRenderer.send('pet:drag-tick'),
+  /**
+   * 旧的增量移动通道：**已废弃**（2026-11-22 改成主进程绝对定位）。
+   * 保留只为兼容旧渲染端；主进程收到也不会再 setPosition（否则双倍位移）。
+   */
   moveBy: (dx, dy) => ipcRenderer.send('pet:move-by', Math.round(dx), Math.round(dy)),
   /** 反向操控：prompt / interrupt / focus */
   control: (action, payload) => ipcRenderer.invoke('pet:control', action, payload),
@@ -80,7 +91,11 @@ contextBridge.exposeInMainWorld('xilianPet', {
    */
   onBehavior: (callback) =>
     ipcRenderer.on('pet:behavior', (_event, value) =>
-      callback({ clickInteraction: value?.clickInteraction !== false, bubble: value?.bubble !== false }),
+      callback({
+        clickInteraction: value?.clickInteraction !== false,
+        bubble: value?.bubble !== false,
+        blush: value?.blush !== false,
+      }),
     ),
   /** 请主进程立刻截一张自检截图（用于精确捕捉动作的关键帧） */
   snapshotNow: () => ipcRenderer.send('pet:snapshot-now'),

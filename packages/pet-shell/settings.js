@@ -45,6 +45,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     clickInteraction: true, // 点击互动（脸/头顶/秋千）
     bubble: true, // 气泡提示
     approvalViaPet: true, // 审批由桌宠同意（⚠️ 改它要重启 DSH，见设置窗提示）
+    blush: true, // 腮红（false = 完全不显示腮红：模型自带那层也藏掉）
   }),
 })
 
@@ -95,6 +96,7 @@ export function normalizeSettings(raw) {
     out.behavior.clickInteraction = boolOr(beh.clickInteraction, out.behavior.clickInteraction)
     out.behavior.bubble = boolOr(beh.bubble, out.behavior.bubble)
     out.behavior.approvalViaPet = boolOr(beh.approvalViaPet, out.behavior.approvalViaPet)
+    out.behavior.blush = boolOr(beh.blush, out.behavior.blush)
   }
 
   return out
@@ -122,6 +124,7 @@ export function serializeSettings(settings) {
           clickInteraction: s.behavior.clickInteraction,
           bubble: s.behavior.bubble,
           approvalViaPet: s.behavior.approvalViaPet,
+          blush: s.behavior.blush,
         },
       },
       null,

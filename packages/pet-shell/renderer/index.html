@@ -30,6 +30,32 @@
         ⚠️ 放在 canvas **之前**（下层）：这样她的头发摆过来是"头发挡住问号"，自然遮挡。
       -->
       <div id="questionMark" hidden><i class="qmark-inner"></i></div>
+      <!--
+        蚊香眼（2026-11-09 用户要求：**审批时**触发，且只触发这个表情）：
+        ACG 里的圈圈眼 = **整个眼睛变螺旋**（没有眼白、没有白底）。
+        做法：触发时把她的眼睛参数压成闭合（见 live2d.js 的 dizzyActive → ParamEyeLOpen/ROpen = 0），
+        只留眼睑皮肤；然后在这块皮肤上画螺旋 —— 螺旋就是眼睛本身。
+      -->
+      <!--
+        自绘腮红（2026-11-12 用户："腮红这块与旁边的部分有一条浅浅的分界线"）：
+        分界线来自模型自带的腮红画层（Part21）边缘 —— 它是单独一块贴图叠在脸上。
+        做法：把那层藏掉，改画两块**柔边径向渐变**；边缘天然渐隐 → 不会再有分界线。
+        位置每帧按脸（Part18）的包围盒算，跟着她呼吸/动作/镜像一起动。
+      -->
+      <div id="blush" hidden>
+        <i class="blush"></i>
+        <i class="blush"></i>
+      </div>
+      <div id="dizzyEyes" hidden>
+        <i class="deye"
+          ><svg viewBox="0 0 40 40" preserveAspectRatio="none" aria-hidden="true"
+            ><g transform="rotate(-10 20 20)"><path class="dspiral" d="" /></g></svg
+        ></i>
+        <i class="deye"
+          ><svg viewBox="0 0 40 40" preserveAspectRatio="none" aria-hidden="true"
+            ><g transform="rotate(10 20 20)"><path class="dspiral" d="" /></g></svg
+        ></i>
+      </div>
       <!-- Live2D 渲染面。模型加载失败时保持隐藏，改用下面的占位图（验收项 A10 降级） -->
       <canvas id="live2dCanvas"></canvas>
       <img id="petSprite" src="assets/placeholder.png" alt="昔涟" draggable="false" />
@@ -82,6 +108,10 @@
     <script src="vendor/unsafe-eval.min.js"></script>
     <script src="vendor/live2dcubismcore.min.js"></script>
     <script src="vendor/cubism4.min.js"></script>
+    <!-- 工作时气泡的文案（6 句，来自用户给的 文本.txt）。
+         它是 ES 模块，模块脚本是 defer 的 → 一定在解析完之后才执行；
+         而 pet.js 只在**真正弹气泡时**才读 window.XL_BUBBLE_LINES，所以这个顺序没问题。 -->
+    <script type="module" src="bubble-lines.js"></script>
     <script src="pet.js"></script>
   </body>
 </html>
