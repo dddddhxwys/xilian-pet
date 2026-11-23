@@ -1,25 +1,25 @@
 {
   "schema": 1,
-  "latest": "0.3.0",
-  "releasedAt": "2026-11-22",
-  "notes": "0.3.0：工作气泡 6 句轮换 + 羽毛笔动画；审批时转圈圈眼；新增腮红开关；动作重排（提问托腮 + 叉腰 + 问号）；拖拽跟手修复；自测 284 项。",
+  "latest": "0.3.1",
+  "releasedAt": "2026-11-23",
+  "notes": "0.3.1：申请授权时张成 O 形嘴、提问时普通张嘴，离开这两个状态自动闭嘴；自测 285 项。",
   "releaseUrl": "https://github.com/dddddhxwys/xilian-pet/releases",
   "assets": [
     {
-      "version": "0.3.0",
+      "version": "0.3.1",
       "flavor": "full-model",
-      "file": "xilian-pet-v0.3.0-full-model-20261122-1912.zip",
-      "size": 163831613,
-      "sha256": "77ef6d72107197998bef40594e73e63d54e68f56986a1ab4947bf7c4f86ae00b",
-      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.3.0/xilian-pet-v0.3.0-full-model-20261122-1912.zip"
+      "file": "xilian-pet-v0.3.1-full-model-20261123-2101.zip",
+      "size": 163835209,
+      "sha256": "51cbaa1c6aa315f4b320411c7ddd9d1cce142a773012f86e3d366b74277c31ef",
+      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.3.1/xilian-pet-v0.3.1-full-model-20261123-2101.zip"
     },
     {
-      "version": "0.3.0",
+      "version": "0.3.1",
       "flavor": "slim-model",
-      "file": "xilian-pet-v0.3.0-slim-model-20261122-1912.zip",
-      "size": 2328338,
-      "sha256": "b1c2671d242e9c20f97f1f7fd6a841d08e363bea189cff0b8da658c1f7982eb1",
-      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.3.0/xilian-pet-v0.3.0-slim-model-20261122-1912.zip"
+      "file": "xilian-pet-v0.3.1-slim-model-20261123-2101.zip",
+      "size": 2331935,
+      "sha256": "2eb6dbaa44defab64cd844e766a735dd66ea7230985bec8c380aed94f7936fbc",
+      "url": "https://github.com/dddddhxwys/xilian-pet/releases/download/v0.3.1/xilian-pet-v0.3.1-slim-model-20261123-2101.zip"
     }
   ]
 }

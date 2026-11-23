@@ -43,7 +43,7 @@
 | `packages/pet-plugin/` | Host 插件（`index.js` 路由/接线、`reducer.js` 状态机、`approval-config.js` 审批开关、`cordis.patch.yml` 包内默认配置） |
 | `packages/pet-shell/` | Electron 主进程（`main.js`）、`sse-link.js`、`dsh-discovery.js`、`hit-test.js`、`settings.js`、`window-placement.js`、`tray-model.js`、`launcher-icon.ico` |
 | `packages/pet-shell/renderer/` | 渲染端页面与脚本（`index.html`/`pet.js`/`live2d.js`/`menu.*`/`settings.*`/`approval.*`/`tokens.css`） |
-| `tools/` | `check-plugin.mjs`（自测，**284 项**，不需要 DSH）、`package-release.mjs`、`publish-release.mjs`、`bump-version.mjs`、`setup.mjs`、`install-plugin.mjs`、`fetch-electron.mjs`、`lib/`（纯逻辑，可单测：`release-files` / `update-check` / `release-publish` / `desktop-shortcut` / `zip-writer` / `patch-edit`） |
+| `tools/` | `check-plugin.mjs`（自测，**285 项**，不需要 DSH）、`package-release.mjs`、`publish-release.mjs`、`bump-version.mjs`、`setup.mjs`、`install-plugin.mjs`、`fetch-electron.mjs`、`lib/`（纯逻辑，可单测：`release-files` / `update-check` / `release-publish` / `desktop-shortcut` / `zip-writer` / `patch-edit`） |
 | `docs/` | 接手状态报告（**权威现状**）、开发日志、测试指引、交接文档、复核报告 |
 | `dist-release/` | 打包产物（zip + `.sha256` + `RELEASE-NOTES.md`）—— **整个目录 gitignore**，不随仓库分发 |
 | `assets/live2d/Cyrene/` | 第三方 Live2D 模型（经作者授权，唯一入库的第三方素材之一） |
@@ -59,13 +59,13 @@
 | profile 的 `cordis.patch.yml` | 会让插件重新 `apply()`，**但加载的仍是旧模块** | 同上：**只看 `code`** |
 
 ```powershell
-node tools/check-plugin.mjs                              # 自测（284 项；不需要 DSH）
+node tools/check-plugin.mjs                              # 自测（285 项；不需要 DSH）
 Invoke-RestMethod "$env:DSH_WEB_URL/xilian-pet/health"   # 活体；端口会变，别写死
 .\start-pet.cmd                                          # 起桌宠（Ctrl+Shift+Q 退出）
 ```
 
 - `code` = `CODE_REVISION`（**插件代码版本**）：每改一次插件就 +1，用来确认"重启后到底加载的是不是新代码"。
-  当前源码 **29**（本机运行中的 DSH 重启前仍报 28）；自测当前 **284**（数字会变，**以实际输出为准**）。
+  当前源码 **29**（活体 2026-11-23 实测已是 29）；自测当前 **285**（数字会变，**以实际输出为准**）。
 - 本机环境（2026-11 实测）：Windows 11 25H2、DSH **0.2.1-rc.5**（`F:\dsh`）、Electron **44.5.1**、node 24。
   环境事实/边界/网络/沙箱限制见 [docs/开发日志.md](docs/开发日志.md) §一/§三；接手先看
   [docs/接手状态报告-2026-10-11.md](docs/接手状态报告-2026-10-11.md) §0.1。
