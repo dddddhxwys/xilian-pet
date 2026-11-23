@@ -2084,6 +2084,44 @@ check('running：也在荡秋千，但手不抓绳、手放下巴 【用户 2026
   }
 })
 
+check('申请授权 / 提问时要「张嘴」 【2026-11-22 用户："在这两个状态的动作中加上张嘴的表情"】', () => {
+  // 2026-11-22：真机逐档预览过 0.35 / 0.50 / 0.80，0.50 最像"正在说话"
+  for (const s of ['approval', 'question']) {
+    const v = STATE_MAP[s].params?.ParamMouthOpenY
+    assert.ok(
+      typeof v === 'number' && v > 0.2 && v < 0.9,
+      `${s} 要张嘴：params.ParamMouthOpenY 应在 (0.2, 0.9)，实际 ${String(v)}`,
+    )
+  }
+  // 2026-11-22 用户："提权的表情我认为嘴应该张成 O 形"
+  // O 形 = 开合 + 负的嘴形（ParamMouthForm 负值把嘴角收圆）
+  const ap = STATE_MAP.approval.params ?? {}
+  assert.ok(
+    typeof ap.ParamMouthForm === 'number' && ap.ParamMouthForm <= -0.6,
+    `审批要 O 形嘴：ParamMouthForm 应为负值（实际 ${String(ap.ParamMouthForm)}）`,
+  )
+  assert.ok(ap.ParamMouthOpenY >= 0.4, '审批 O 形嘴的开口度不能太小（否则看不出）')
+  // 提问保持"普通张嘴"，不该被 O 形参数波及
+  assert.equal(
+    STATE_MAP.question.params?.ParamMouthForm,
+    undefined,
+    '提问不要带嘴形参数（保持原样）',
+  )
+  // 离开时要闭回去 —— 走的是 params 通道，切状态时由 planParamTransition 清零
+  const leaving = planParamTransition(
+    { ParamMouthOpenY: STATE_MAP.question.params.ParamMouthOpenY },
+    STATE_MAP.idle,
+  )
+  assert.ok(leaving.clear.includes('ParamMouthOpenY'), '离开提问必须把"张嘴"清掉（否则会一直张着嘴）')
+  // 反过来：进入这些状态必须真的设上（别只清了没设）
+  const entering = planParamTransition({}, STATE_MAP.approval)
+  assert.equal(
+    entering.set.ParamMouthOpenY,
+    STATE_MAP.approval.params.ParamMouthOpenY,
+    '进入审批要把嘴张开',
+  )
+})
+
 check('切状态时 Param9「思考」必须被撤掉 【否则干完活还一脸思考】', () => {
   // setParams 只写指定参数、不会重置其它的 → 离开 running 时必须自己清零
   const leaving = planParamTransition({ Param9: 1 }, STATE_MAP.idle)

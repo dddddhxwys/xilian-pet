@@ -77,6 +77,29 @@ export const HANDS_DOWN = {
 const THINKING_OFF = { Param9: 0 }
 
 /**
+ * 「张嘴」的开口度（2026-11-22 用户："在申请授权和提问时的动作中加上张嘴的表情"）。
+ *
+ * 为什么用 0.5：真机逐档预览过（0.35 / 0.50 / 0.80，见 `.cache/dizzy-lab/mouth-montage.png`）——
+ * 0.35 几乎看不出；0.80 张太大、像喊；**0.50 最像"正在说话"**。
+ *
+ * 走 `params` 而不是 `force`：`force` 是"手部姿势"通道（会参与两段式手部混合、
+ * 并被当成上一帧手部姿态的基准），把嘴塞进去会污染那条链；`params` 只做普通参数叠加，
+ * 而且切状态时由 `planParamTransition()` 自动清零 → 离开这两个状态嘴就会闭上，不留残余。
+ */
+export const TALK_MOUTH_OPEN = 0.5
+
+/**
+ * 「O 形嘴」参数（2026-11-22 用户："提权的表情我认为嘴应该张成 O 形"）。
+ *
+ * 模型只有两个嘴参数：`ParamMouthOpenY`（开合）和 `ParamMouthForm`（嘴形）。
+ * 真机逐档预览（`.cache/dizzy-lab/zoomomouth-montage.png`）后取：
+ *   - 开合 **0.6**（比提问的 0.5 略大，但比"说话"那种小）；
+ *   - 嘴形 **-1**（负值把嘴角收起来 → 圆形收紧，接近 "o"）。
+ * 0.5/0.7/0.8/0.9 都对比过：0.6 配 -1 最像一个小小的圆嘴。
+ */
+export const O_MOUTH = { ParamMouthOpenY: 0.6, ParamMouthForm: -1 }
+
+/**
  * 启动时先演一次的动作：**Scene[0]**（比嘘：一只手放下巴 + 右手比嘘）。演完落待机。
  *
  * 2026-11-12 曾按用户要求改成「招牌」(2)；2026-11-16 用户："还是把启动和完成任务的动画换成之前那版吧"
@@ -119,6 +142,9 @@ export const STATE_MAP = {
     motion: BASE_MOTION,
     expression: 'reset',
     dizzy: true,
+    // 2026-11-22 用户："申请授权…加上张嘴的表情" → 先是普通张嘴；
+    // 同日用户："提权的表情我认为嘴应该张成 O 形" → 改成 O 形嘴（含嘴形参数）
+    params: { ...O_MOUTH },
     force: HANDS_DOWN,
   },
   // 提问：**一手托腮** + 问号。**保持循环** —— 要一直等用户回答。
@@ -127,6 +153,8 @@ export const STATE_MAP = {
   question: {
     motion: 1,
     expression: 'question',
+    // 2026-11-22 用户："提问…加上张嘴的表情" → 像正在问你问题
+    params: { ParamMouthOpenY: TALK_MOUTH_OPEN },
     force: {
       Param9: 1, // 手放下巴（托腮）
       Param16: 0, // 绳子不画
